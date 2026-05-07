@@ -12,6 +12,7 @@ import {
   Settings,
   Info,
   Github,
+  Sparkles,
 } from 'lucide-react';
 import { useLanguage } from '@/hooks/useLanguage';
 import { t } from '@/lib/i18n';
@@ -24,6 +25,7 @@ export default function Sidebar() {
   const nav = [
     { href: '/', label: tr.overview, icon: LayoutDashboard },
     { href: '/projects', label: tr.projects, icon: Search },
+    { href: '/predict', label: tr.predict, icon: Sparkles },
     { href: '/categories', label: tr.categories, icon: Tag },
     { href: '/trends', label: tr.trends, icon: TrendingUp },
     { href: '/countries', label: tr.countries, icon: Globe },

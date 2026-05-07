@@ -363,7 +363,6 @@ export default function ProjectsPage() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="bg-gray-50 text-left text-xs font-semibold text-gray-400 uppercase tracking-wide">
-                    <th className="px-4 py-3 w-10">#</th>
                     <th className="px-4 py-3 w-8">
                       <input
                         type="checkbox"
@@ -373,6 +372,7 @@ export default function ProjectsPage() {
                         className="rounded border-gray-300 accent-ks-green cursor-pointer"
                       />
                     </th>
+                    <th className="px-4 py-3 w-10">#</th>
                     <th className="px-4 py-3">{tr.colName}</th>
                     <th className="px-4 py-3">{tr.colStatus}</th>
                     <th className="px-4 py-3">{tr.colCategory}</th>
@@ -397,9 +397,6 @@ export default function ProjectsPage() {
                     return (
                       <tr key={p.id} className={`transition-colors ${selected ? 'bg-ks-green-light/40' : 'hover:bg-gray-50/80'}`}>
                         <td className="px-4 py-3">
-                          <RowBadge n={rowNum} />
-                        </td>
-                        <td className="px-4 py-3">
                           <input
                             type="checkbox"
                             checked={selected}
@@ -408,12 +405,15 @@ export default function ProjectsPage() {
                           />
                         </td>
                         <td className="px-4 py-3">
+                          <RowBadge n={rowNum} />
+                        </td>
+                        <td className="px-4 py-3">
                           <Link href={`/projects/${p.id}`} className="group block">
                             <div className="font-medium text-gray-900 max-w-xs truncate group-hover:text-ks-green transition-colors">{p.name}</div>
                             <div className="text-xs text-gray-400 max-w-xs truncate mt-0.5">{p.blurb}</div>
                           </Link>
                         </td>
-                        <td className="px-4 py-3">
+                        <td className="px-4 py-3 whitespace-nowrap">
                           <span className={`px-2 py-0.5 rounded-full text-xs ${STATE_BADGE[p.state] ?? 'bg-gray-100 text-gray-600'}`}>
                             {stateTr[p.state as keyof typeof stateTr] ?? p.state}
                           </span>
