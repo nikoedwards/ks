@@ -13,18 +13,18 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const user = token ? getSessionUser(token) : null;
     if (!user) return NextResponse.json({ ok: false, message: 'Please sign in to import data.' }, { status: 401 });
 
-    const project = await getProjectById(id) as { source_url?: string; slug?: string } | null;
+    const project = await getProjectById(id) as { source_url?: string; slug?: string; creator_slug?: string } | null;
     if (!project) return NextResponse.json({ ok: false, message: 'Project not found.' }, { status: 404 });
 
+    // Prefer DB creator_slug; fall back to extracting from source_url for legacy rows
     const sourceUrl = project.source_url ?? '';
-    const creatorSlug = extractCreatorSlug(sourceUrl);
-    // Prefer DB slug, fall back to extracting from URL
+    const creatorSlug = project.creator_slug || extractCreatorSlug(sourceUrl);
     const projectSlug = project.slug || extractProjectSlug(sourceUrl);
 
     if (!creatorSlug || !projectSlug) {
       return NextResponse.json({
         ok: false,
-        message: `Cannot derive Kicktraq URL. Source URL: "${sourceUrl || '(empty)'}"`
+        message: `Cannot derive Kicktraq URL — creator slug: "${creatorSlug || '(missing)'}", project slug: "${projectSlug || '(missing)'}". Re-sync data to fix.`
       }, { status: 422 });
     }
 

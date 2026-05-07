@@ -57,14 +57,22 @@ function parseRecord(raw: RawRecord): Record<string, unknown> | null {
   } catch { /* ignore */ }
 
   let creator_name: string | null = null;
+  let creator_slug: string | null = null;
   try {
-    creator_name = JSON.parse(raw.creator || '{}').name ?? null;
+    const creatorJson = JSON.parse(raw.creator || '{}');
+    creator_name = creatorJson.name ?? null;
+    creator_slug = creatorJson.slug ?? null;
   } catch { /* ignore */ }
 
   const goal = parseFloat(raw.goal || '0') || 0;
   const pledged = parseFloat(raw.pledged || '0') || 0;
   const usd_rate = parseFloat(raw.static_usd_rate || '1') || 1;
   const usd_pledged = parseFloat(raw.usd_pledged || String(pledged * usd_rate)) || 0;
+
+  const projectSlug = raw.slug ?? null;
+  const source_url = creator_slug && projectSlug
+    ? `https://www.kickstarter.com/projects/${creator_slug}/${projectSlug}`
+    : raw.source_url ?? null;
 
   return {
     id: raw.id,
@@ -82,13 +90,9 @@ function parseRecord(raw: RawRecord): Record<string, unknown> | null {
     launched_at: raw.launched_at ? parseInt(raw.launched_at) || null : null,
     deadline: raw.deadline ? parseInt(raw.deadline) || null : null,
     creator_name,
-    source_url: (() => {
-      try {
-        const parsed = JSON.parse(raw.urls || '{}');
-        return parsed?.web?.project ?? raw.source_url ?? null;
-      } catch { return raw.source_url ?? null; }
-    })(),
-    slug: raw.slug ?? null,
+    creator_slug,
+    source_url,
+    slug: projectSlug,
   };
 }
 

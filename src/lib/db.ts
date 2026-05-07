@@ -41,6 +41,7 @@ function getDB(): Database {
       launched_at INTEGER,
       deadline INTEGER,
       creator_name TEXT,
+      creator_slug TEXT,
       source_url TEXT,
       slug TEXT
     );
@@ -159,6 +160,8 @@ function getDB(): Database {
 
   // Add email_verified column to existing users table if absent
   try { db.exec('ALTER TABLE users ADD COLUMN email_verified INTEGER DEFAULT 1'); } catch { /* already exists */ }
+  // Add creator_slug column to existing projects table if absent
+  try { db.exec('ALTER TABLE projects ADD COLUMN creator_slug TEXT'); } catch { /* already exists */ }
 
   globalThis.__ksDb = db;
   return db;
@@ -352,11 +355,11 @@ export function upsertBatch(db: Database, rows: Record<string, unknown>[]): void
     INSERT OR REPLACE INTO projects
       (id, name, blurb, goal, pledged, usd_pledged, state, country, country_name,
        currency, category_id, category_name, category_parent, backers_count,
-       staff_pick, created_at, launched_at, deadline, creator_name, source_url, slug)
+       staff_pick, created_at, launched_at, deadline, creator_name, creator_slug, source_url, slug)
     VALUES
       (@id, @name, @blurb, @goal, @pledged, @usd_pledged, @state, @country, @country_name,
        @currency, @category_id, @category_name, @category_parent, @backers_count,
-       @staff_pick, @created_at, @launched_at, @deadline, @creator_name, @source_url, @slug)
+       @staff_pick, @created_at, @launched_at, @deadline, @creator_name, @creator_slug, @source_url, @slug)
   `);
   const insertMany = db.transaction((items: Record<string, unknown>[]) => {
     for (const row of items) insert.run(row);
@@ -445,7 +448,7 @@ export async function getProjectById(id: string) {
     `SELECT id, name, blurb, state, country, country_name, currency,
             category_id, category_parent, category_name, goal, pledged, usd_pledged,
             backers_count, staff_pick, created_at, launched_at, deadline,
-            creator_name, source_url, slug
+            creator_name, creator_slug, source_url, slug
      FROM projects WHERE id = ?`
   ).get(id) ?? null;
 }
