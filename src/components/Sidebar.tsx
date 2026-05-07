@@ -6,9 +6,7 @@ import { usePathname } from 'next/navigation';
 import {
   LayoutDashboard,
   Search,
-  Tag,
-  TrendingUp,
-  Globe,
+  BarChart2,
   Settings,
   Info,
   Github,
@@ -25,10 +23,8 @@ export default function Sidebar() {
   const nav = [
     { href: '/', label: tr.overview, icon: LayoutDashboard },
     { href: '/projects', label: tr.projects, icon: Search },
+    { href: '/analysis', label: tr.analysis, icon: BarChart2 },
     { href: '/predict', label: tr.predict, icon: Sparkles },
-    { href: '/categories', label: tr.categories, icon: Tag },
-    { href: '/trends', label: tr.trends, icon: TrendingUp },
-    { href: '/countries', label: tr.countries, icon: Globe },
     { href: '/settings', label: tr.sync, icon: Settings },
   ];
 
@@ -46,7 +42,7 @@ export default function Sidebar() {
 
       <nav className="flex-1 py-3 px-2.5 space-y-0.5">
         {nav.map(({ href, label, icon: Icon }) => {
-          const active = pathname === href;
+          const active = pathname === href || (href !== '/' && pathname.startsWith(href + '/'));
           return (
             <Link
               key={href}
@@ -89,7 +85,7 @@ export default function Sidebar() {
         {/* Language switcher */}
         <div className="flex items-center gap-1 px-3 py-2">
           <span className="text-[10px] text-white/30 mr-1">LANG</span>
-          {(['cn', 'en'] as const).map(l => (
+          {(['en', 'cn'] as const).map(l => (
             <button
               key={l}
               onClick={() => setLang(l)}

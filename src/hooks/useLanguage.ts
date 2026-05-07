@@ -7,8 +7,8 @@ const KEY = 'ks_lang';
 const EVENT = 'ks_lang_change';
 
 function getLang(): Lang {
-  if (typeof window === 'undefined') return 'cn';
-  return (localStorage.getItem(KEY) as Lang) ?? 'cn';
+  if (typeof window === 'undefined') return 'en';
+  return (localStorage.getItem(KEY) as Lang) ?? 'en';
 }
 
 export function setLang(lang: Lang) {
@@ -17,7 +17,7 @@ export function setLang(lang: Lang) {
 }
 
 export function useLanguage(): [Lang, (l: Lang) => void] {
-  const [lang, setLangState] = useState<Lang>('cn');
+  const [lang, setLangState] = useState<Lang>('en');
 
   useEffect(() => {
     setLangState(getLang());

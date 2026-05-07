@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef } from 'react';
-import { Search, CheckCircle, Loader2, AlertCircle, Star, TrendingUp, Sparkles, RefreshCw } from 'lucide-react';
+import { Search, CheckCircle, Loader2, AlertCircle, Star, TrendingUp, Sparkles, RefreshCw, Eye, ShieldCheck, Target, Zap } from 'lucide-react';
 import { useLanguage } from '@/hooks/useLanguage';
 import { t } from '@/lib/i18n';
 
@@ -33,6 +33,21 @@ interface ProjectInfo {
   creator: string;
   description: string;
 }
+
+const METHODOLOGY = {
+  cn: [
+    { icon: Eye,         title: '信号提取', desc: '仅分析预热页面公开可见的信息，不引入外部假设或背景数据，确保评分的信息隔离性。' },
+    { icon: ShieldCheck, title: '独立评审', desc: '五个维度互相独立评分，评分过程不相互影响，最终再汇总为综合分。' },
+    { icon: Target,      title: '基准校准', desc: '各维度分值锚定于 Kickstarter 历史众筹成功规律，确保横向可比性与客观性。' },
+    { icon: Zap,         title: '鹰眼验证', desc: '综合分落入灰色区间（40–65分）时，触发额外多维交叉验证，再输出最终结论。' },
+  ],
+  en: [
+    { icon: Eye,         title: 'Signal Extraction',       desc: 'Only publicly visible pre-launch page data is analyzed — no external assumptions or out-of-band context.' },
+    { icon: ShieldCheck, title: 'Blind Audit',             desc: 'Each of the 5 dimensions is scored independently before aggregation, preventing score bleed across categories.' },
+    { icon: Target,      title: 'Benchmark Calibration',   desc: 'Scores are anchored against historical Kickstarter success patterns to ensure cross-project comparability.' },
+    { icon: Zap,         title: 'Eagle-Eye Validation',    desc: 'Projects landing in the gray zone (40–65) trigger a secondary cross-dimension review before a final verdict is issued.' },
+  ],
+} as const;
 
 const DIM_COLORS: Record<string, string> = {
   brand: '#3B82F6',
@@ -204,6 +219,29 @@ export default function PredictPage() {
             </div>
           )}
           <p className="text-xs text-amber-700 bg-amber-50 rounded-lg px-3 py-2 leading-relaxed">{tr.hint}</p>
+        </div>
+      )}
+
+      {/* Methodology section (idle/error only) */}
+      {(status === 'idle' || status === 'error') && (
+        <div className="space-y-3">
+          <div>
+            <h2 className="text-sm font-bold text-gray-700">{tr.methodologyTitle}</h2>
+            <p className="text-xs text-gray-400 mt-0.5">{tr.methodologyDesc}</p>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {METHODOLOGY[lang].map(({ icon: Icon, title, desc }) => (
+              <div key={title} className="bg-white rounded-xl border border-gray-100 p-4 shadow-sm flex gap-3">
+                <div className="w-8 h-8 rounded-lg bg-ks-green/10 flex items-center justify-center shrink-0">
+                  <Icon className="w-4 h-4 text-ks-green" />
+                </div>
+                <div>
+                  <p className="text-xs font-semibold text-gray-800">{title}</p>
+                  <p className="text-xs text-gray-500 mt-0.5 leading-relaxed">{desc}</p>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 

@@ -1,12 +1,15 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { getCategories } from '@/lib/db';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
-    const data = await getCategories();
+    const sp = req.nextUrl.searchParams;
+    const dateFrom = sp.get('dateFrom') ? Number(sp.get('dateFrom')) : undefined;
+    const dateTo   = sp.get('dateTo')   ? Number(sp.get('dateTo'))   : undefined;
+    const data = await getCategories({ dateFrom, dateTo });
     return NextResponse.json({ data });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });

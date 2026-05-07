@@ -159,7 +159,13 @@ export async function getProjects(filter: ProjectFilter = {}) {
   return { total, rows, page, limit };
 }
 
-export async function getCategories() {
+export async function getCategories(filter: { dateFrom?: number; dateTo?: number } = {}) {
+  const { dateFrom, dateTo } = filter;
+  const extra: string[] = [];
+  const params: Record<string, unknown> = {};
+  if (dateFrom) { extra.push('launched_at >= @dateFrom'); params.dateFrom = dateFrom; }
+  if (dateTo)   { extra.push('launched_at <= @dateTo');   params.dateTo   = dateTo;   }
+  const where = `WHERE category_parent IS NOT NULL AND state IN ('successful','failed')${extra.length ? ' AND ' + extra.join(' AND ') : ''}`;
   return getDB().prepare(`
     SELECT
       category_parent as category,
@@ -172,12 +178,19 @@ export async function getCategories() {
       ROUND(AVG(usd_pledged), 0) as avg_pledged,
       SUM(backers_count) as total_backers
     FROM projects
-    WHERE category_parent IS NOT NULL AND state IN ('successful','failed')
+    ${where}
     GROUP BY category_parent ORDER BY total DESC LIMIT 25
-  `).all();
+  `).all(params);
 }
 
-export async function getTrends() {
+export async function getTrends(filter: { dateFrom?: number; dateTo?: number } = {}) {
+  const { dateFrom, dateTo } = filter;
+  const extra: string[] = [];
+  const params: Record<string, unknown> = {};
+  if (dateFrom) { extra.push('launched_at >= @dateFrom'); params.dateFrom = dateFrom; }
+  if (dateTo)   { extra.push('launched_at <= @dateTo');   params.dateTo   = dateTo;   }
+  const defaultWindow = !dateFrom && !dateTo ? "AND launched_at > strftime('%s', date('now', '-36 months'))" : '';
+  const where = `WHERE launched_at IS NOT NULL AND state IN ('successful','failed') ${defaultWindow}${extra.length ? ' AND ' + extra.join(' AND ') : ''}`;
   return getDB().prepare(`
     SELECT
       strftime('%Y-%m', datetime(launched_at, 'unixepoch')) as month,
@@ -187,13 +200,18 @@ export async function getTrends() {
         THEN (CASE WHEN state='successful' THEN 1.0 ELSE 0.0 END) END)*100, 1) as success_rate,
       ROUND(SUM(usd_pledged)/1000000.0, 2) as total_pledged_m
     FROM projects
-    WHERE launched_at IS NOT NULL AND state IN ('successful','failed')
-      AND launched_at > strftime('%s', date('now', '-36 months'))
+    ${where}
     GROUP BY month ORDER BY month ASC
-  `).all();
+  `).all(params);
 }
 
-export async function getCountries() {
+export async function getCountries(filter: { dateFrom?: number; dateTo?: number } = {}) {
+  const { dateFrom, dateTo } = filter;
+  const extra: string[] = [];
+  const params: Record<string, unknown> = {};
+  if (dateFrom) { extra.push('launched_at >= @dateFrom'); params.dateFrom = dateFrom; }
+  if (dateTo)   { extra.push('launched_at <= @dateTo');   params.dateTo   = dateTo;   }
+  const where = `WHERE country IS NOT NULL AND state IN ('successful','failed')${extra.length ? ' AND ' + extra.join(' AND ') : ''}`;
   return getDB().prepare(`
     SELECT
       country,
@@ -205,9 +223,9 @@ export async function getCountries() {
       ROUND(SUM(usd_pledged)/1000000.0, 2) as total_pledged_m,
       SUM(backers_count) as total_backers
     FROM projects
-    WHERE country IS NOT NULL AND state IN ('successful','failed')
+    ${where}
     GROUP BY country ORDER BY total DESC LIMIT 20
-  `).all();
+  `).all(params);
 }
 
 export async function getCategoryList(): Promise<string[]> {
