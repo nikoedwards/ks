@@ -1,6 +1,6 @@
 # Kicksonar — Session Context
 
-Last updated: 2026-05-08 (post-analysis-merge session)
+Last updated: 2026-05-08 (auth + landing page session)
 
 ## Project
 
@@ -11,53 +11,64 @@ Last updated: 2026-05-08 (post-analysis-merge session)
 - GitHub: https://github.com/nikoedwards/ks
 - Brand color: Kickstarter green #05CE78
 
+## Architecture
+
+- `/` → Landing page (no sidebar, Social Blade inspired, Kickstarter green hero)
+- `/(app)/` → All dashboard pages (sidebar layout via route group)
+- `/dashboard` → Current data overview (moved from former `/`)
+- Auth: session-based (Node.js crypto + SQLite sessions table, httpOnly cookie `ks_session`)
+- No extra npm packages needed for auth
+
 ## Completed features
 
-- Dashboard: KPIs, pie chart, bar/line charts
-- Project list: search, filter by state/category/country/time period, paginated
-- **Analysis page** at /analysis: merged Categories + Trends + Countries into one page with tab navigation (Categories / Trends / Countries) and a unified time-range filter (All Time, per-year 2019–2025, Custom date range)
-- Project detail page at /projects/[id]: funding progress, stats, simulated curve, links
-- About page at /about
-- Sidebar: Kicksonar branding, sonar SVG logo, About + GitHub footer links
-- DataSource component: dynamic date range from /api/meta
-- sync.ts: parses urls.web.project from raw CSV for real project URLs
-- /api/meta: returns earliestDate, latestDate, lastSyncDate
-- /api/projects/[id]: single project by ID
-- Bilingual README.md (English primary) + README.zh-CN.md (Chinese)
-- **i18n (CN/EN)**: full-site language switch via src/lib/i18n.ts + src/hooks/useLanguage.ts; all pages translated including project detail + analysis + predict methodology; inline pill switcher in Sidebar footer (EN first)
-- **Default language**: EN (new users get English; localStorage persists preference)
-- **Column sort**: click goal/pledged/funding rate/backers/launched headers to toggle ASC/DESC; arrow indicators; sortDir passed to db.ts
-- **CSV export with cross-page checkbox selection**: per-row checkboxes, select-all on page, selections/data cached across pages via useRef<Map>, UTF-8 BOM for Excel
-- **Row number badges**: gold (1-3), silver (4-10), plain gray (11+); checkbox column is leftmost
-- **Table layout fix**: whitespace-nowrap on status cell fixes badge wrap bug; overflow-x-auto working
-- **/predict page**: paste Kickstarter URL → SSE stream → 5 dimension AI scoring → final score + verdict; requires ANTHROPIC_API_KEY in .env.local; methodology section (4 cards: Signal Extraction, Blind Audit, Benchmark Calibration, Eagle-Eye Validation) shown on idle/error state
-- **Sidebar active highlight fix**: sub-routes like /projects/[id] now correctly highlight parent nav item using `pathname.startsWith(href + '/')`
+- Landing page (`/`): Hero with Kickstarter green, platform stats, 3 feature cards, nav with auth state, footer
+- Auth system: register + login + logout + me APIs; username+password, SHA-256 hash, 30-day sessions in SQLite
+- LoginModal: center modal with tabs (Sign In / Create Account), used everywhere via AuthContext
+- AuthContext (`src/contexts/AuthContext.tsx`): React context + provider; `showLogin(onSuccess?)` for gating
+- Sidebar: Logo → `/` (landing); Favorites link (heart icon, red); user avatar / login button at bottom
+- Favorites: `/favorites` page; heart button on projects list + detail; `/api/favorites` CRUD
+- Login gates:
+  - Projects: period buttons, filter dropdowns, sort headers, pagination all require login (first page free)
+  - Analysis: period filter buttons require login
+  - Predict: Analyze button requires login
+- Dashboard: KPIs, pie chart, bar/line charts (at `/dashboard`)
+- Project list: search, filter, paginated; login-gated filters; CSV export; row badges; heart button
+- Analysis page: merged Categories + Trends + Countries with tab nav + unified time-range filter
+- Project detail page at `/projects/[id]`: funding progress, stats, simulated curve, links, heart/save button
+- About page at `/about`
+- DataSource component: dynamic data range from /api/meta
+- i18n (CN/EN): full-site with `auth`, `favorites`, `landing` namespaces added; default EN; EN switcher first
+- /predict page: SSE streaming AI scoring + methodology section (4 cards)
 
 ## Known issues / pending
 
-- Project links (ExternalLink icon) only work after a RESYNC since old data has category URLs in source_url, not project URLs. After resync, source_url will contain the full https://www.kickstarter.com/projects/creator/slug URL.
-- Project detail page shows a simulated funding curve (no real time-series data). Real daily data would require building a separate scraper beyond webrobots.io.
-- The /about page is a static page (no 'use client' needed).
-- Old /categories, /trends, /countries routes still exist as standalone pages (not removed, not linked from sidebar anymore). Can be deleted in a future cleanup.
+- Old `/categories`, `/trends`, `/countries` routes remain as standalone pages (not in sidebar, but not deleted)
+- Project links only work after RESYNC (old data has category URLs in source_url)
+- Project detail page shows simulated funding curve (no real daily data)
+
+## DB tables
+
+- `projects` — main data
+- `sync_logs` — sync history
+- `users` (id, username, email, password_hash, created_at)
+- `sessions` (token, user_id, expires_at)
+- `favorites` (user_id, project_id, created_at)
 
 ## Key files
 
-- src/lib/db.ts — all DB queries; getCategories/getTrends/getCountries now accept { dateFrom?, dateTo? }
-- src/lib/sync.ts — CSV sync, parses urls.web.project for source_url
-- src/lib/i18n.ts — full CN/EN translation dictionary (as const); includes analysis + predict.methodology namespaces
-- src/hooks/useLanguage.ts — localStorage + CustomEvent language hook; default EN
-- src/app/analysis/page.tsx — merged analysis page: period filter bar + tab navigation + all 3 analysis views
-- src/app/predict/page.tsx — predict page with SSE streaming + methodology section
-- src/app/projects/page.tsx — sort, checkboxes, CSV export, row badges, i18n
-- src/app/projects/[id]/page.tsx — project detail page
-- src/app/about/page.tsx — about page
-- src/app/api/meta/route.ts — meta endpoint
-- src/app/api/categories/route.ts — accepts dateFrom/dateTo query params
-- src/app/api/trends/route.ts — accepts dateFrom/dateTo query params
-- src/app/api/countries/route.ts — accepts dateFrom/dateTo query params
-- src/components/Sidebar.tsx — navigation with Kicksonar branding + CN/EN switcher (EN first); Analysis link replaces 3 separate links; active highlight works for sub-routes
-- src/components/DataSource.tsx — dynamic data source footer
-- public/logo.svg — sonar SVG logo
-- public/favicon.svg — SVG favicon
-- README.md — English primary README with cross-link to zh-CN
-- README.zh-CN.md — Chinese README with cross-link to English
+- src/app/page.tsx — landing page
+- src/app/(app)/layout.tsx — dashboard layout (sidebar)
+- src/app/(app)/dashboard/page.tsx — data overview
+- src/app/(app)/projects/page.tsx — project list with gates + heart
+- src/app/(app)/projects/[id]/page.tsx — project detail with heart button
+- src/app/(app)/analysis/page.tsx — merged analysis with gates
+- src/app/(app)/predict/page.tsx — predict with login gate on analyze
+- src/app/(app)/favorites/page.tsx — favorites list
+- src/app/api/auth/{login,logout,register,me}/route.ts — auth endpoints
+- src/app/api/favorites/route.ts + [id]/route.ts — favorites CRUD
+- src/contexts/AuthContext.tsx — React auth context + AuthProvider
+- src/components/LoginModal.tsx — login/register modal
+- src/components/Sidebar.tsx — nav + avatar + favorites link
+- src/lib/auth.ts — server-side auth: hash, session, favorites DB ops
+- src/lib/db.ts — main DB with users/sessions/favorites tables
+- src/lib/i18n.ts — translations incl. auth/favorites/landing namespaces

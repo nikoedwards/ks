@@ -33,10 +33,16 @@
       "Bash(git rm *)",
       "Bash(git commit *)",
       "Bash(Remove-Item -Recurse -Force .git)",
-      "Bash(npx tsc *)"
+      "Bash(npx tsc *)",
+      "Bash(mkdir -p \"C:\\\\Users\\\\115416\\\\Desktop\\\\ks\\\\src\\\\app\\\\api\\\\projects\\\\[id]\")",
+      "Bash(powershell -Command \"\\(Get-Content src\\\\app\\\\categories\\\\page.tsx\\) -replace '<DataSource note=\\\\\"[^\\\\\"]*\\\\\" />', '<DataSource />' | Set-Content src\\\\app\\\\categories\\\\page.tsx; \\(Get-Content src\\\\app\\\\page.tsx\\) -replace '<DataSource note=\\\\\"[^\\\\\"]*\\\\\" />', '<DataSource />' | Set-Content src\\\\app\\\\page.tsx; \\(Get-Content src\\\\app\\\\countries\\\\page.tsx\\) -replace '<DataSource note=\\\\\"[^\\\\\"]*\\\\\" />', '<DataSource />' | Set-Content src\\\\app\\\\countries\\\\page.tsx; \\(Get-Content src\\\\app\\\\projects\\\\page.tsx\\) -replace '<DataSource note=\\\\\"[^\\\\\"]*\\\\\" />', '<DataSource />' | Set-Content src\\\\app\\\\projects\\\\page.tsx; \\(Get-Content src\\\\app\\\\trends\\\\page.tsx\\) -replace '<DataSource note=\\\\\"[^\\\\\"]*\\\\\" />', '<DataSource />' | Set-Content src\\\\app\\\\trends\\\\page.tsx\")",
+      "Bash(mkdir -p \"C:\\\\Users\\\\115416\\\\Desktop\\\\ks\\\\src\\\\app\\\\projects\\\\[id]\")",
+      "Bash(node -e \"const fs=require\\('fs'\\); const buf=fs.readFileSync\\('C:/Users/115416/Desktop/ks/src/app/categories/page.tsx'\\); console.log\\('first4:', buf.slice\\(0,4\\).toString\\('hex'\\)\\); console.log\\('size:', buf.length\\); // Check for BOM or non-UTF8 var invalid=[]; for\\(var i=0;i<buf.length;i++\\){var b=buf[i];if\\(b>0x7f\\){if\\(\\(b&0xE0\\)===0xC0\\){if\\(\\(buf[i+1]&0xC0\\)!==0x80\\)invalid.push\\(i\\);}else if\\(\\(b&0xF0\\)===0xE0\\){if\\(\\(buf[i+1]&0xC0\\)!==0x80||\\(buf[i+2]&0xC0\\)!==0x80\\)invalid.push\\(i\\);}else if\\(\\(b&0xF0\\)===0xF0\\){if\\(\\(buf[i+1]&0xC0\\)!==0x80||\\(buf[i+2]&0xC0\\)!==0x80||\\(buf[i+3]&0xC0\\)!==0x80\\)invalid.push\\(i\\);} } } console.log\\('invalid at:', invalid.slice\\(0,10\\)\\);\")"
     ],
     "additionalDirectories": [
-      "\\tmp"
+      "\\tmp",
+      "C:\\Users\\115416\\Desktop\\ks\\src\\app\\api\\projects",
+      "C:\\Users\\115416\\Desktop\\ks\\src\\app\\projects"
     ]
   }
 }

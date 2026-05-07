@@ -2,10 +2,11 @@
 
 import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { ArrowLeft, ExternalLink, Users, Target, TrendingUp, Calendar, Award } from 'lucide-react';
+import { ArrowLeft, ExternalLink, Users, Target, TrendingUp, Calendar, Award, Heart } from 'lucide-react';
 import DataSource from '@/components/DataSource';
 import { useLanguage } from '@/hooks/useLanguage';
 import { t } from '@/lib/i18n';
+import { useAuth } from '@/contexts/AuthContext';
 
 interface Project {
   id: string;
@@ -64,12 +65,12 @@ function buildFundingCurve(p: Project): { day: number; pct: number; pledged: num
   const finalRate = p.goal > 0 ? (p.usd_pledged / p.goal) * 100 : 0;
   const curve: { day: number; pct: number; pledged: number }[] = [];
   for (let i = 0; i <= points; i++) {
-    const t = i / points;
-    const sigmoid = 1 / (1 + Math.exp(-8 * (t - 0.5)));
-    const blended = 0.4 * (t < 0.1 ? t * 3 : 0.3 + (t - 0.1) * (0.7 / 0.9)) + 0.6 * sigmoid;
+    const tFrac = i / points;
+    const sigmoid = 1 / (1 + Math.exp(-8 * (tFrac - 0.5)));
+    const blended = 0.4 * (tFrac < 0.1 ? tFrac * 3 : 0.3 + (tFrac - 0.1) * (0.7 / 0.9)) + 0.6 * sigmoid;
     const cappedV = Math.min(1, Math.max(0, blended));
     curve.push({
-      day: Math.round(t * duration),
+      day: Math.round(tFrac * duration),
       pct: Math.round(cappedV * finalRate * 10) / 10,
       pledged: Math.round(cappedV * p.usd_pledged),
     });
@@ -83,10 +84,12 @@ export default function ProjectDetailPage() {
   const [lang] = useLanguage();
   const tr = t[lang].projectDetail;
   const stateTr = t[lang].states;
+  const { user, showLogin } = useAuth();
 
   const [project, setProject] = useState<Project | null>(null);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
+  const [isFavorited, setIsFavorited] = useState(false);
 
   useEffect(() => {
     if (!params?.id) return;
@@ -95,6 +98,25 @@ export default function ProjectDetailPage() {
       .then(d => { if (d) setProject(d); setLoading(false); })
       .catch(() => setLoading(false));
   }, [params?.id]);
+
+  useEffect(() => {
+    if (!user || !params?.id) return;
+    fetch('/api/favorites').then(r => r.json()).then(d => {
+      setIsFavorited(((d.ids ?? []) as string[]).includes(params.id));
+    }).catch(() => {});
+  }, [user, params?.id]);
+
+  const toggleFavorite = async () => {
+    if (!user) { showLogin(); return; }
+    if (!project) return;
+    if (isFavorited) {
+      await fetch(`/api/favorites/${project.id}`, { method: 'DELETE' });
+      setIsFavorited(false);
+    } else {
+      await fetch('/api/favorites', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ projectId: project.id }) });
+      setIsFavorited(true);
+    }
+  };
 
   if (loading) return <div className="flex items-center justify-center h-full text-gray-400">{tr.loading}</div>;
   if (notFound) return (
@@ -110,20 +132,14 @@ export default function ProjectDetailPage() {
   const avgDailyPledged = duration && duration > 0 ? project.usd_pledged / duration : null;
   const curve = buildFundingCurve(project);
   const ksUrl = project.source_url?.startsWith('https://www.kickstarter.com/projects/')
-    ? project.source_url
-    : null;
-  const kicktraqUrl = project.slug
-    ? `https://www.kicktraq.com/projects/${project.slug}/`
-    : null;
-
+    ? project.source_url : null;
+  const kicktraqUrl = project.slug ? `https://www.kicktraq.com/projects/${project.slug}/` : null;
   const barMax = curve.length > 0 ? Math.max(...curve.map(c => c.pct)) : 100;
 
   return (
     <div className="max-w-5xl mx-auto space-y-6">
-      <button
-        onClick={() => router.back()}
-        className="flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-800 transition-colors"
-      >
+      <button onClick={() => router.back()}
+        className="flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-800 transition-colors">
         <ArrowLeft className="w-4 h-4" />
         {tr.back}
       </button>
@@ -150,15 +166,28 @@ export default function ProjectDetailPage() {
                 <span>
                   {lang === 'cn'
                     ? tr.createdBy(project.creator_name)
-                    : <><span className="text-gray-600 font-medium">{project.creator_name}</span> {tr.createdBy('')}</>
-                  }
+                    : <><span className="text-gray-600 font-medium">{project.creator_name}</span> {tr.createdBy('')}</>}
                 </span>
               )}
               <span>{project.country_name || project.country}</span>
               <span>{project.currency}</span>
             </div>
           </div>
-          <div className="flex gap-2 shrink-0">
+          <div className="flex gap-2 shrink-0 items-start">
+            {/* Favorite button */}
+            <button
+              onClick={toggleFavorite}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
+                isFavorited
+                  ? 'bg-red-50 text-red-500 border-red-100 hover:bg-red-100'
+                  : 'bg-gray-50 text-gray-500 border-gray-200 hover:bg-red-50 hover:text-red-500 hover:border-red-100'
+              }`}
+            >
+              <Heart className={`w-3.5 h-3.5 ${isFavorited ? 'fill-current' : ''}`} />
+              {isFavorited
+                ? (lang === 'cn' ? '已收藏' : 'Saved')
+                : (lang === 'cn' ? '收藏' : 'Save')}
+            </button>
             {ksUrl && (
               <a href={ksUrl} target="_blank" rel="noopener noreferrer"
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-ks-green text-white text-xs font-semibold hover:bg-ks-green-dark transition-colors">
@@ -188,10 +217,7 @@ export default function ProjectDetailPage() {
             </span>
           </div>
           <div className="w-full bg-gray-100 rounded-full h-3 overflow-hidden">
-            <div
-              className="h-3 rounded-full bg-ks-green transition-all"
-              style={{ width: `${Math.min(100, fundingRate)}%` }}
-            />
+            <div className="h-3 rounded-full bg-ks-green transition-all" style={{ width: `${Math.min(100, fundingRate)}%` }} />
           </div>
           <div className="flex items-center justify-between mt-2 text-xs text-gray-400">
             <span>{tr.goalLabel(fmtUsd(project.goal))}</span>
@@ -240,20 +266,12 @@ export default function ProjectDetailPage() {
       {/* Simulated funding curve */}
       {curve.length > 1 && (
         <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6">
-          <div className="flex items-center justify-between mb-1">
-            <h3 className="font-semibold text-gray-700">{tr.curveName}</h3>
-          </div>
+          <h3 className="font-semibold text-gray-700 mb-1">{tr.curveName}</h3>
           <p className="text-xs text-gray-400 mb-4">{tr.curveNote}</p>
           <div className="flex items-end gap-0.5 h-40 overflow-hidden">
             {curve.map((c, i) => (
-              <div
-                key={i}
-                className="flex-1 min-w-0 rounded-t-sm transition-all"
-                style={{
-                  height: `${barMax > 0 ? (c.pct / barMax) * 100 : 0}%`,
-                  backgroundColor: c.pct >= 100 ? '#05CE78' : '#d1fae5',
-                  minHeight: '2px',
-                }}
+              <div key={i} className="flex-1 min-w-0 rounded-t-sm transition-all"
+                style={{ height: `${barMax > 0 ? (c.pct / barMax) * 100 : 0}%`, backgroundColor: c.pct >= 100 ? '#05CE78' : '#d1fae5', minHeight: '2px' }}
                 title={`${lang === 'cn' ? '第' : 'Day'} ${c.day}: ${c.pct.toFixed(1)}% · ${fmtUsd(c.pledged)}`}
               />
             ))}
@@ -270,7 +288,7 @@ export default function ProjectDetailPage() {
         </div>
       )}
 
-      {/* Note about real data */}
+      {/* Note */}
       <div className="bg-amber-50 border border-amber-100 rounded-xl p-4">
         <p className="text-xs text-amber-700 leading-relaxed">
           <span className="font-semibold">{tr.dataTitle}</span>

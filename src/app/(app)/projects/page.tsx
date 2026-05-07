@@ -2,11 +2,12 @@
 
 import { useEffect, useState, useCallback, useRef } from 'react';
 import Link from 'next/link';
-import { Search, ExternalLink, ChevronLeft, ChevronRight, Download, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
+import { Search, ExternalLink, ChevronLeft, ChevronRight, Download, ArrowUp, ArrowDown, ArrowUpDown, Heart } from 'lucide-react';
 import EmptyState from '@/components/EmptyState';
 import DataSource from '@/components/DataSource';
 import { useLanguage } from '@/hooks/useLanguage';
 import { t } from '@/lib/i18n';
+import { useAuth } from '@/contexts/AuthContext';
 
 interface Project {
   id: string;
@@ -110,6 +111,7 @@ export default function ProjectsPage() {
   const [lang] = useLanguage();
   const tr = t[lang].projects;
   const stateTr = t[lang].states;
+  const { user, showLogin } = useAuth();
 
   const [data, setData] = useState<{ total: number; rows: Project[]; categories: string[]; countries: { country: string; country_name: string }[] } | null>(null);
   const [loading, setLoading] = useState(true);
@@ -129,6 +131,32 @@ export default function ProjectsPage() {
   // Cross-page selection: Set for re-render, Map for data cache
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const selectedCache = useRef<Map<string, Project>>(new Map());
+
+  // Favorites
+  const [favoriteIds, setFavoriteIds] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    if (!user) { setFavoriteIds(new Set()); return; }
+    fetch('/api/favorites').then(r => r.json()).then(d => {
+      setFavoriteIds(new Set((d.ids ?? []) as string[]));
+    }).catch(() => {});
+  }, [user]);
+
+  const toggleFavorite = async (projectId: string) => {
+    if (!user) { showLogin(); return; }
+    if (favoriteIds.has(projectId)) {
+      await fetch(`/api/favorites/${projectId}`, { method: 'DELETE' });
+      setFavoriteIds(prev => { const n = new Set(prev); n.delete(projectId); return n; });
+    } else {
+      await fetch('/api/favorites', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ projectId }) });
+      setFavoriteIds(prev => new Set([...prev, projectId]));
+    }
+  };
+
+  // Auth gate: runs fn immediately if logged in, else shows login modal then runs fn on success
+  const gate = (fn: () => void) => {
+    if (user) { fn(); return; }
+    showLogin(fn);
+  };
 
   const handleColumnSort = useCallback((col: string) => {
     if (col === sort) {
@@ -229,7 +257,7 @@ export default function ProjectsPage() {
   const SortableTh = ({ col, children, right }: { col: SortableCol; children: React.ReactNode; right?: boolean }) => (
     <th
       className={`px-4 py-3 ${right ? 'text-right' : ''} cursor-pointer select-none hover:text-gray-600 transition-colors`}
-      onClick={() => handleColumnSort(col)}
+      onClick={() => gate(() => handleColumnSort(col))}
     >
       <span className="inline-flex items-center gap-0.5">
         {children}
@@ -255,7 +283,7 @@ export default function ProjectsPage() {
               <button
                 key={p}
                 type="button"
-                onClick={() => { setTimePeriod(p); setPage(1); }}
+                onClick={() => gate(() => { setTimePeriod(p); setPage(1); })}
                 className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
                   timePeriod === p
                     ? 'bg-ks-green text-white shadow-sm'
@@ -293,7 +321,7 @@ export default function ProjectsPage() {
 
           <div>
             <label className="text-xs font-medium text-gray-400 mb-1 block">{tr.statusLabel}</label>
-            <select value={state} onChange={e => { setState(e.target.value); setPage(1); }} className={selectCls}>
+            <select value={state} onChange={e => gate(() => { setState(e.target.value); setPage(1); })} className={selectCls}>
               {(Object.keys(tr.states) as (keyof typeof tr.states)[]).map(k => (
                 <option key={k} value={k}>{tr.states[k]}</option>
               ))}
@@ -302,7 +330,7 @@ export default function ProjectsPage() {
 
           <div>
             <label className="text-xs font-medium text-gray-400 mb-1 block">{tr.categoryLabel}</label>
-            <select value={category} onChange={e => { setCategory(e.target.value); setPage(1); }} className={selectCls}>
+            <select value={category} onChange={e => gate(() => { setCategory(e.target.value); setPage(1); })} className={selectCls}>
               <option value="">{tr.allCategories}</option>
               {(data?.categories ?? []).map(c => <option key={c} value={c}>{c}</option>)}
             </select>
@@ -310,7 +338,7 @@ export default function ProjectsPage() {
 
           <div>
             <label className="text-xs font-medium text-gray-400 mb-1 block">{tr.countryLabel}</label>
-            <select value={country} onChange={e => { setCountry(e.target.value); setPage(1); }} className={selectCls}>
+            <select value={country} onChange={e => gate(() => { setCountry(e.target.value); setPage(1); })} className={selectCls}>
               <option value="">{tr.allCountries}</option>
               {(data?.countries ?? []).map(c => (
                 <option key={c.country} value={c.country}>{c.country_name || c.country}</option>
@@ -320,7 +348,7 @@ export default function ProjectsPage() {
 
           <div>
             <label className="text-xs font-medium text-gray-400 mb-1 block">{tr.sortLabel}</label>
-            <select value={sort} onChange={e => { setSort(e.target.value); setSortDir('desc'); setPage(1); }} className={selectCls}>
+            <select value={sort} onChange={e => gate(() => { setSort(e.target.value); setSortDir('desc'); setPage(1); })} className={selectCls}>
               {(Object.keys(tr.sorts) as (keyof typeof tr.sorts)[]).map(k => (
                 <option key={k} value={k}>{tr.sorts[k]}</option>
               ))}
@@ -443,12 +471,21 @@ export default function ProjectsPage() {
                         <td className="px-4 py-3 text-gray-500 text-xs">{p.country}</td>
                         <td className="px-4 py-3 text-gray-400 whitespace-nowrap text-xs">{fmtDate(p.launched_at)}</td>
                         <td className="px-4 py-3">
-                          {ksUrl && (
-                            <a href={ksUrl} target="_blank" rel="noopener noreferrer"
-                              className="text-ks-green hover:text-ks-green-dark transition-colors">
-                              <ExternalLink className="w-4 h-4" />
-                            </a>
-                          )}
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              onClick={() => toggleFavorite(p.id)}
+                              className={`transition-colors ${favoriteIds.has(p.id) ? 'text-red-500 hover:text-red-400' : 'text-gray-300 hover:text-red-400'}`}
+                              title={t[lang].auth.loginToFavorite}
+                            >
+                              <Heart className={`w-4 h-4 ${favoriteIds.has(p.id) ? 'fill-current' : ''}`} />
+                            </button>
+                            {ksUrl && (
+                              <a href={ksUrl} target="_blank" rel="noopener noreferrer"
+                                className="text-gray-300 hover:text-ks-green transition-colors">
+                                <ExternalLink className="w-4 h-4" />
+                              </a>
+                            )}
+                          </div>
                         </td>
                       </tr>
                     );
@@ -461,11 +498,11 @@ export default function ProjectsPage() {
               <div className="px-4 py-3 border-t border-gray-50 flex items-center justify-between">
                 <span className="text-sm text-gray-400">{tr.pageOf(page, totalPages)}</span>
                 <div className="flex gap-2">
-                  <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page <= 1}
+                  <button onClick={() => gate(() => setPage(p => Math.max(1, p - 1)))} disabled={page <= 1}
                     className="p-1.5 rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed">
                     <ChevronLeft className="w-4 h-4" />
                   </button>
-                  <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page >= totalPages}
+                  <button onClick={() => gate(() => setPage(p => Math.min(totalPages, p + 1)))} disabled={page >= totalPages}
                     className="p-1.5 rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed">
                     <ChevronRight className="w-4 h-4" />
                   </button>

@@ -4,6 +4,7 @@ import { useState, useRef } from 'react';
 import { Search, CheckCircle, Loader2, AlertCircle, Star, TrendingUp, Sparkles, RefreshCw, Eye, ShieldCheck, Target, Zap } from 'lucide-react';
 import { useLanguage } from '@/hooks/useLanguage';
 import { t } from '@/lib/i18n';
+import { useAuth } from '@/contexts/AuthContext';
 
 interface Step {
   label: string;
@@ -60,6 +61,7 @@ const DIM_COLORS: Record<string, string> = {
 export default function PredictPage() {
   const [lang] = useLanguage();
   const tr = t[lang].predict;
+  const { user, showLogin } = useAuth();
 
   const [url, setUrl] = useState('');
   const [status, setStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
@@ -71,6 +73,7 @@ export default function PredictPage() {
   const abortRef = useRef<AbortController | null>(null);
 
   const handleAnalyze = async () => {
+    if (!user) { showLogin(); return; }
     const trimmed = url.trim();
     if (!trimmed || !trimmed.includes('kickstarter.com')) {
       setErrorMsg(tr.errorInvalid);

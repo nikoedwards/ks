@@ -7,6 +7,7 @@ import EmptyState from '@/components/EmptyState';
 import DataSource from '@/components/DataSource';
 import { useLanguage } from '@/hooks/useLanguage';
 import { t } from '@/lib/i18n';
+import { useAuth } from '@/contexts/AuthContext';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -69,6 +70,9 @@ export default function AnalysisPage() {
   const tTrend = t[lang].trends;
   const tCoun = t[lang].countries;
 
+  const { user, showLogin } = useAuth();
+  const gate = (fn: () => void) => { if (user) { fn(); return; } showLogin(fn); };
+
   const [tab, setTab] = useState<Tab>('categories');
   const [period, setPeriod] = useState<Period>('all');
   const [customFrom, setCustomFrom] = useState('');
@@ -122,7 +126,7 @@ export default function AnalysisPage() {
         <span className="text-xs font-semibold text-gray-400 uppercase tracking-wide mr-1">{tr.period}</span>
 
         <button
-          onClick={() => setPeriod('all')}
+          onClick={() => gate(() => setPeriod('all'))}
           className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${period === 'all' ? 'bg-ks-green text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
         >
           {tr.allTime}
@@ -131,7 +135,7 @@ export default function AnalysisPage() {
         {YEAR_PRESETS.map(y => (
           <button
             key={y}
-            onClick={() => setPeriod(y)}
+            onClick={() => gate(() => setPeriod(y))}
             className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${period === y ? 'bg-ks-green text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
           >
             {y}
@@ -139,7 +143,7 @@ export default function AnalysisPage() {
         ))}
 
         <button
-          onClick={() => setPeriod('custom')}
+          onClick={() => gate(() => setPeriod('custom'))}
           className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${period === 'custom' ? 'bg-ks-green text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
         >
           {tr.customRange}

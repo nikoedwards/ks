@@ -49,6 +49,28 @@ function getDB(): Database {
     CREATE INDEX IF NOT EXISTS idx_country ON projects(country);
     CREATE INDEX IF NOT EXISTS idx_launched ON projects(launched_at);
     CREATE INDEX IF NOT EXISTS idx_pledged ON projects(usd_pledged);
+    CREATE TABLE IF NOT EXISTS users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      username TEXT UNIQUE NOT NULL,
+      email TEXT,
+      password_hash TEXT NOT NULL,
+      created_at INTEGER DEFAULT (unixepoch())
+    );
+    CREATE TABLE IF NOT EXISTS sessions (
+      token TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+    CREATE TABLE IF NOT EXISTS favorites (
+      user_id INTEGER NOT NULL,
+      project_id TEXT NOT NULL,
+      created_at INTEGER DEFAULT (unixepoch()),
+      PRIMARY KEY (user_id, project_id),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+    CREATE INDEX IF NOT EXISTS idx_favorites_user ON favorites(user_id);
     CREATE TABLE IF NOT EXISTS sync_logs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       url TEXT,
