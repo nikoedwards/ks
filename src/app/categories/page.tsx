@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import BarChart from '@/components/charts/BarChart';
 import EmptyState from '@/components/EmptyState';
+import DataSource from '@/components/DataSource';
 
 interface CategoryRow {
   category: string;
@@ -49,7 +50,7 @@ export default function CategoriesPage() {
         <BarChart
           data={top12}
           xKey="category"
-          bars={[{ key: 'success_rate', name: '成功率 (%)', color: '#10B981' }]}
+          bars={[{ key: 'success_rate', name: '成功率 (%)', color: '#05CE78' }]}
           title="各类目成功率"
           yFormatter={v => `${v}%`}
           height={320}
@@ -69,14 +70,13 @@ export default function CategoriesPage() {
         xKey="category"
         bars={[
           { key: 'total', name: '总项目数', color: '#6366F1' },
-          { key: 'successful', name: '成功数', color: '#10B981' },
+          { key: 'successful', name: '成功数', color: '#05CE78' },
           { key: 'failed', name: '失败数', color: '#EF4444' },
         ]}
         title="各类目项目数量分布"
         height={320}
       />
 
-      {/* Table */}
       <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
         <div className="px-5 py-4 border-b border-gray-50">
           <h3 className="font-semibold text-gray-700">类目详细数据</h3>
@@ -84,7 +84,7 @@ export default function CategoriesPage() {
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="bg-gray-50 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
+              <tr className="bg-gray-50 text-left text-xs font-semibold text-gray-400 uppercase tracking-wide">
                 <th className="px-5 py-3">类目</th>
                 <th className="px-5 py-3 text-right">总项目数</th>
                 <th className="px-5 py-3 text-right">成功</th>
@@ -97,13 +97,13 @@ export default function CategoriesPage() {
             </thead>
             <tbody className="divide-y divide-gray-50">
               {data.map(row => (
-                <tr key={row.category} className="hover:bg-gray-50">
+                <tr key={row.category} className="hover:bg-gray-50/80">
                   <td className="px-5 py-3 font-medium text-gray-900">{row.category}</td>
                   <td className="px-5 py-3 text-right text-gray-600">{row.total.toLocaleString()}</td>
-                  <td className="px-5 py-3 text-right text-green-600">{row.successful.toLocaleString()}</td>
+                  <td className="px-5 py-3 text-right text-ks-green font-medium">{row.successful.toLocaleString()}</td>
                   <td className="px-5 py-3 text-right text-red-500">{row.failed.toLocaleString()}</td>
                   <td className="px-5 py-3 text-right">
-                    <span className={`font-medium ${row.success_rate >= 40 ? 'text-green-600' : row.success_rate >= 25 ? 'text-amber-500' : 'text-red-500'}`}>
+                    <span className={`font-semibold ${row.success_rate >= 40 ? 'text-ks-green' : row.success_rate >= 25 ? 'text-amber-500' : 'text-red-500'}`}>
                       {row.success_rate}%
                     </span>
                   </td>
@@ -116,6 +116,8 @@ export default function CategoriesPage() {
           </table>
         </div>
       </div>
+
+      <DataSource note="仅统计已结束项目（成功 + 失败），Top 25 类目" />
     </div>
   );
 }

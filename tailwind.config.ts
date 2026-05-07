@@ -9,12 +9,10 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        brand: {
-          50: '#eff6ff',
-          100: '#dbeafe',
-          500: '#3b82f6',
-          600: '#2563eb',
-          700: '#1d4ed8',
+        ks: {
+          green: '#05CE78',
+          'green-dark': '#04a862',
+          'green-light': '#e8fdf4',
         },
       },
     },

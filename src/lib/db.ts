@@ -114,11 +114,13 @@ export interface ProjectFilter {
   sort?: string;
   page?: number;
   limit?: number;
+  dateFrom?: number;
+  dateTo?: number;
 }
 
 export async function getProjects(filter: ProjectFilter = {}) {
   const db = getDB();
-  const { state, category, country, search, sort = 'usd_pledged', page = 1, limit = 20 } = filter;
+  const { state, category, country, search, sort = 'usd_pledged', page = 1, limit = 20, dateFrom, dateTo } = filter;
 
   const conditions: string[] = [];
   const params: Record<string, unknown> = {};
@@ -127,6 +129,8 @@ export async function getProjects(filter: ProjectFilter = {}) {
   if (category) { conditions.push('category_parent = @category'); params.category = category; }
   if (country) { conditions.push('country = @country'); params.country = country; }
   if (search) { conditions.push('(name LIKE @search OR blurb LIKE @search)'); params.search = `%${search}%`; }
+  if (dateFrom) { conditions.push('launched_at >= @dateFrom'); params.dateFrom = dateFrom; }
+  if (dateTo) { conditions.push('launched_at <= @dateTo'); params.dateTo = dateTo; }
 
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
 
@@ -146,7 +150,7 @@ export async function getProjects(filter: ProjectFilter = {}) {
   const rows = db.prepare(
     `SELECT id, name, blurb, state, country, country_name, currency,
             category_parent, category_name, goal, pledged, usd_pledged,
-            backers_count, staff_pick, launched_at, deadline, source_url
+            backers_count, staff_pick, launched_at, deadline, source_url, slug
      FROM projects ${where} ORDER BY ${orderBy} LIMIT @limit OFFSET @offset`
   ).all({ ...params, limit, offset });
 

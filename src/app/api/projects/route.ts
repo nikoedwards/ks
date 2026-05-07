@@ -15,6 +15,8 @@ export async function GET(req: NextRequest) {
       sort: sp.get('sort') ?? undefined,
       page: parseInt(sp.get('page') ?? '1'),
       limit: Math.min(parseInt(sp.get('limit') ?? '20'), 100),
+      dateFrom: sp.get('dateFrom') ? parseInt(sp.get('dateFrom')!) : undefined,
+      dateTo: sp.get('dateTo') ? parseInt(sp.get('dateTo')!) : undefined,
     });
     const categories = await getCategoryList();
     const countries = await getCountryList();

@@ -6,9 +6,10 @@ import PieChart from '@/components/charts/PieChart';
 import BarChart from '@/components/charts/BarChart';
 import LineChart from '@/components/charts/LineChart';
 import EmptyState from '@/components/EmptyState';
+import DataSource from '@/components/DataSource';
 
 const STATE_COLORS: Record<string, string> = {
-  successful: '#10B981',
+  successful: '#05CE78',
   failed: '#EF4444',
   live: '#3B82F6',
   canceled: '#F59E0B',
@@ -25,8 +26,8 @@ const STATE_LABELS: Record<string, string> = {
 
 export default function DashboardPage() {
   const [statsData, setStatsData] = useState<{ stats: Record<string, number>; stateDistribution: { state: string; count: number }[] } | null>(null);
-  const [catData, setCatData] = useState<Record<string, unknown>[]>([]);
-  const [trendData, setTrendData] = useState<Record<string, unknown>[]>([]);
+  const [catData, setCatData] = useState<object[]>([]);
+  const [trendData, setTrendData] = useState<object[]>([]);
   const [loading, setLoading] = useState(true);
   const [empty, setEmpty] = useState(false);
 
@@ -63,57 +64,32 @@ export default function DashboardPage() {
         <p className="text-sm text-gray-500 mt-1">Kickstarter 众筹平台全量数据分析</p>
       </div>
 
-      {/* Stat Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard
-          title="总项目数"
-          value={Number(stats.total).toLocaleString()}
-          sub="全平台历史累计"
-          color="blue"
-        />
-        <StatCard
-          title="成功率"
-          value={`${stats.success_rate ?? 0}%`}
-          sub={`${Number(stats.successful).toLocaleString()} 个项目成功`}
-          color="green"
-        />
-        <StatCard
-          title="总众筹金额"
-          value={`$${stats.total_pledged_usd ?? 0}M`}
-          sub="美元，历史累计"
-          color="purple"
-        />
-        <StatCard
-          title="平均支持人数"
-          value={Number(stats.avg_backers ?? 0).toLocaleString()}
-          sub="每个项目平均"
-          color="amber"
-        />
+        <StatCard title="总项目数" value={Number(stats.total).toLocaleString()} sub="全平台历史累计" />
+        <StatCard title="项目成功率" value={`${stats.success_rate ?? 0}%`} sub={`${Number(stats.successful).toLocaleString()} 个项目成功`} accent />
+        <StatCard title="总众筹金额" value={`$${stats.total_pledged_usd ?? 0}M`} sub="美元，历史累计" />
+        <StatCard title="平均支持人数" value={Number(stats.avg_backers ?? 0).toLocaleString()} sub="每个项目平均" />
       </div>
 
-      {/* Charts Row 1 */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
         <PieChart data={pieData} title="项目状态分布" />
         <BarChart
           data={catData}
           xKey="category"
-          bars={[
-            { key: 'success_rate', name: '成功率 (%)', color: '#10B981' },
-          ]}
+          bars={[{ key: 'success_rate', name: '成功率 (%)', color: '#05CE78' }]}
           title="各类目成功率 Top 12"
           yFormatter={v => `${v}%`}
           height={280}
         />
       </div>
 
-      {/* Charts Row 2 */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
         <LineChart
           data={trendData}
           xKey="month"
           lines={[
             { key: 'total', name: '发起数量', color: '#3B82F6' },
-            { key: 'successful', name: '成功数量', color: '#10B981' },
+            { key: 'successful', name: '成功数量', color: '#05CE78' },
           ]}
           title="近24个月项目发起趋势"
           height={280}
@@ -121,26 +97,25 @@ export default function DashboardPage() {
         <LineChart
           data={trendData}
           xKey="month"
-          lines={[
-            { key: 'success_rate', name: '成功率 (%)', color: '#8B5CF6' },
-          ]}
+          lines={[{ key: 'success_rate', name: '成功率 (%)', color: '#8B5CF6' }]}
           title="近24个月成功率趋势"
           yFormatter={v => `${v}%`}
           height={280}
         />
       </div>
 
-      {/* Top categories bar */}
       <BarChart
         data={catData}
         xKey="category"
         bars={[
           { key: 'total', name: '总项目数', color: '#3B82F6' },
-          { key: 'successful', name: '成功项目数', color: '#10B981' },
+          { key: 'successful', name: '成功项目数', color: '#05CE78' },
         ]}
         title="各类目项目数量 Top 12"
         height={300}
       />
+
+      <DataSource note="全量历史数据，已结束项目统计" />
     </div>
   );
 }

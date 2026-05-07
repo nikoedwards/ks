@@ -1,0 +1,42 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(NODE_OPTIONS=\"--max-old-space-size=8192\" npm run dev -- -p 3002)",
+      "Bash(echo \"PID: $!\")",
+      "Read(//tmp/**)",
+      "Bash(node -e ' *)",
+      "Bash(netstat -ano)",
+      "Bash(node -e \"const f = require\\('fs'\\); const s = f.statSync\\('data/kickstarter.db'\\); console.log\\('DB size:', Math.round\\(s.size/1024/1024\\) + 'MB'\\);\")",
+      "Bash(node --max-old-space-size=4096 -e ' *)",
+      "Bash(npm run dev -- -p 3002 > /tmp/ks-dev4.log 2>&1 & *)",
+      "Bash(powershell -command \"Get-Process -Id 5500 | Select-Object CPU, WorkingSet, Id\")",
+      "Bash(powershell -command \"Stop-Process -Id 5500 -Force\")",
+      "Bash(npm run *)",
+      "Bash(npm --version)",
+      "Bash(where cl.exe)",
+      "Bash(where gcc.exe)",
+      "Bash(npm install *)",
+      "Bash(node -e \"const db = require\\('better-sqlite3'\\)\\('test.db'\\); db.exec\\('CREATE TABLE IF NOT EXISTS t \\(x TEXT\\)'\\); db.prepare\\('INSERT INTO t VALUES \\(?\\)'\\).run\\('hello'\\); const row = db.prepare\\('SELECT * FROM t'\\).get\\(\\); console.log\\('better-sqlite3 works:', row.x\\); db.close\\(\\); require\\('fs'\\).unlinkSync\\('test.db'\\);\")",
+      "Bash(npm list *)",
+      "Bash(npm uninstall *)",
+      "PowerShell($base = \"http://localhost:3002\"; @\\(\"/api/stats\", \"/api/projects\", \"/api/categories\", \"/api/trends\", \"/api/countries\", \"/api/sync/status\"\\) | ForEach-Object { try { $r = Invoke-WebRequest -Uri \"$base$_\" -UseBasicParsing -TimeoutSec 15; \"$_ → $\\($r.StatusCode\\) \\($\\(\\($r.Content\\).Length\\) bytes\\)\" } catch { \"$_ → ERROR: $_\" } })",
+      "PowerShell($base = \"http://localhost:3002\"; \\(Invoke-WebRequest -Uri \"$base/api/stats\" -UseBasicParsing\\).Content; Write-Host \"---\"; \\(Invoke-WebRequest -Uri \"$base/api/sync/status\" -UseBasicParsing\\).Content)",
+      "PowerShell(node -e $script)",
+      "PowerShell(node -e \"const db = require\\('better-sqlite3'\\)\\('C:/Users/115416/Desktop/ks/data/kickstarter.db'\\); const r = db.prepare\\(\\\\\"UPDATE sync_logs SET status='interrupted', error_message='Server restarted before sync completed' WHERE status='running'\\\\\"\\).run\\(\\); console.log\\('Fixed', r.changes, 'stale sync log\\(s\\)'\\); db.close\\(\\);\")",
+      "Bash(start http://localhost:3002)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "Bash(git init *)",
+      "Bash(git remote *)",
+      "Bash(git branch *)",
+      "Bash(git rm *)",
+      "Bash(git commit *)",
+      "Bash(Remove-Item -Recurse -Force .git)",
+      "Bash(npx tsc *)"
+    ],
+    "additionalDirectories": [
+      "\\tmp"
+    ]
+  }
+}

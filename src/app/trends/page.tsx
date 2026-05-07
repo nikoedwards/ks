@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import LineChart from '@/components/charts/LineChart';
 import BarChart from '@/components/charts/BarChart';
 import EmptyState from '@/components/EmptyState';
+import DataSource from '@/components/DataSource';
 
 interface TrendRow {
   month: string;
@@ -47,7 +48,6 @@ export default function TrendsPage() {
         <p className="text-sm text-gray-500 mt-1">近36个月 Kickstarter 月度趋势（仅含已结束项目）</p>
       </div>
 
-      {/* Summary Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         {[
           { label: '统计月份', value: `${data.length} 个月` },
@@ -56,8 +56,8 @@ export default function TrendsPage() {
           { label: '最高发起月', value: summary.peakMonth },
         ].map(c => (
           <div key={c.label} className="bg-white rounded-xl border border-gray-100 p-5 shadow-sm">
-            <p className="text-xs text-gray-500 font-medium">{c.label}</p>
-            <p className="text-xl font-bold text-gray-900 mt-1">{c.value}</p>
+            <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">{c.label}</p>
+            <p className="text-xl font-bold text-gray-900 mt-1.5">{c.value}</p>
           </div>
         ))}
       </div>
@@ -67,7 +67,7 @@ export default function TrendsPage() {
         xKey="month"
         lines={[
           { key: 'total', name: '发起项目数', color: '#3B82F6' },
-          { key: 'successful', name: '成功项目数', color: '#10B981' },
+          { key: 'successful', name: '成功项目数', color: '#05CE78' },
         ]}
         title="月度项目发起 & 成功数量"
         height={320}
@@ -92,7 +92,6 @@ export default function TrendsPage() {
         />
       </div>
 
-      {/* Monthly data table */}
       <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
         <div className="px-5 py-4 border-b border-gray-50">
           <h3 className="font-semibold text-gray-700">月度明细数据</h3>
@@ -100,7 +99,7 @@ export default function TrendsPage() {
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="bg-gray-50 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
+              <tr className="bg-gray-50 text-left text-xs font-semibold text-gray-400 uppercase tracking-wide">
                 <th className="px-5 py-3">月份</th>
                 <th className="px-5 py-3 text-right">发起项目数</th>
                 <th className="px-5 py-3 text-right">成功项目数</th>
@@ -111,12 +110,12 @@ export default function TrendsPage() {
             </thead>
             <tbody className="divide-y divide-gray-50">
               {[...data].reverse().map(row => (
-                <tr key={row.month} className="hover:bg-gray-50">
+                <tr key={row.month} className="hover:bg-gray-50/80">
                   <td className="px-5 py-3 font-medium text-gray-900">{row.month}</td>
                   <td className="px-5 py-3 text-right text-gray-600">{row.total.toLocaleString()}</td>
-                  <td className="px-5 py-3 text-right text-green-600">{row.successful.toLocaleString()}</td>
+                  <td className="px-5 py-3 text-right text-ks-green font-medium">{row.successful.toLocaleString()}</td>
                   <td className="px-5 py-3 text-right">
-                    <span className={`font-medium ${row.success_rate >= 40 ? 'text-green-600' : 'text-amber-500'}`}>
+                    <span className={`font-semibold ${row.success_rate >= 40 ? 'text-ks-green' : 'text-amber-500'}`}>
                       {row.success_rate}%
                     </span>
                   </td>
@@ -124,14 +123,9 @@ export default function TrendsPage() {
                   <td className="px-5 py-3">
                     <div className="flex items-center gap-2">
                       <div className="flex-1 bg-gray-100 rounded-full h-1.5">
-                        <div
-                          className="bg-blue-500 h-1.5 rounded-full"
-                          style={{ width: `${(row.total / totalMax) * 100}%` }}
-                        />
+                        <div className="bg-ks-green h-1.5 rounded-full" style={{ width: `${(row.total / totalMax) * 100}%` }} />
                       </div>
-                      <span className="text-xs text-gray-400 w-8 text-right">
-                        {Math.round((row.total / totalMax) * 100)}%
-                      </span>
+                      <span className="text-xs text-gray-400 w-8 text-right">{Math.round((row.total / totalMax) * 100)}%</span>
                     </div>
                   </td>
                 </tr>
@@ -140,6 +134,8 @@ export default function TrendsPage() {
           </table>
         </div>
       </div>
+
+      <DataSource note="近 36 个月月度数据，仅含已结束项目" />
     </div>
   );
 }

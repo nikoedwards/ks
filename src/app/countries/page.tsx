@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import BarChart from '@/components/charts/BarChart';
 import EmptyState from '@/components/EmptyState';
+import DataSource from '@/components/DataSource';
 
 interface CountryRow {
   country: string;
@@ -48,7 +49,7 @@ export default function CountriesPage() {
           xKey="country"
           bars={[
             { key: 'total', name: '总项目数', color: '#3B82F6' },
-            { key: 'successful', name: '成功项目数', color: '#10B981' },
+            { key: 'successful', name: '成功项目数', color: '#05CE78' },
           ]}
           title="项目数量 Top 10 国家"
           height={320}
@@ -72,7 +73,6 @@ export default function CountriesPage() {
         height={300}
       />
 
-      {/* Country table */}
       <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
         <div className="px-5 py-4 border-b border-gray-50">
           <h3 className="font-semibold text-gray-700">国家/地区详细数据</h3>
@@ -80,7 +80,7 @@ export default function CountriesPage() {
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="bg-gray-50 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
+              <tr className="bg-gray-50 text-left text-xs font-semibold text-gray-400 uppercase tracking-wide">
                 <th className="px-5 py-3">排名</th>
                 <th className="px-5 py-3">国家/地区</th>
                 <th className="px-5 py-3 text-right">总项目数</th>
@@ -92,16 +92,16 @@ export default function CountriesPage() {
             </thead>
             <tbody className="divide-y divide-gray-50">
               {data.map((row, i) => (
-                <tr key={row.country} className="hover:bg-gray-50">
+                <tr key={row.country} className="hover:bg-gray-50/80">
                   <td className="px-5 py-3 text-gray-400 font-medium">#{i + 1}</td>
                   <td className="px-5 py-3">
                     <div className="font-medium text-gray-900">{row.country_name || row.country}</div>
                     <div className="text-xs text-gray-400">{row.country}</div>
                   </td>
                   <td className="px-5 py-3 text-right text-gray-600">{row.total.toLocaleString()}</td>
-                  <td className="px-5 py-3 text-right text-green-600">{row.successful.toLocaleString()}</td>
+                  <td className="px-5 py-3 text-right text-ks-green font-medium">{row.successful.toLocaleString()}</td>
                   <td className="px-5 py-3 text-right">
-                    <span className={`font-medium ${row.success_rate >= 40 ? 'text-green-600' : row.success_rate >= 25 ? 'text-amber-500' : 'text-red-500'}`}>
+                    <span className={`font-semibold ${row.success_rate >= 40 ? 'text-ks-green' : row.success_rate >= 25 ? 'text-amber-500' : 'text-red-500'}`}>
                       {row.success_rate}%
                     </span>
                   </td>
@@ -113,6 +113,8 @@ export default function CountriesPage() {
           </table>
         </div>
       </div>
+
+      <DataSource note="仅统计已结束项目，Top 20 国家/地区" />
     </div>
   );
 }
