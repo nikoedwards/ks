@@ -4,6 +4,8 @@ import { useEffect, useState } from 'react';
 import LineChart from '@/components/charts/LineChart';
 import EmptyState from '@/components/EmptyState';
 import DataSource from '@/components/DataSource';
+import { useLanguage } from '@/hooks/useLanguage';
+import { t } from '@/lib/i18n';
 
 interface TrendRow {
   month: string;
@@ -14,6 +16,9 @@ interface TrendRow {
 }
 
 export default function TrendsPage() {
+  const [lang] = useLanguage();
+  const tr = t[lang].trends;
+
   const [data, setData] = useState<TrendRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [empty, setEmpty] = useState(false);
@@ -29,7 +34,7 @@ export default function TrendsPage() {
       .catch(() => setLoading(false));
   }, []);
 
-  if (loading) return <div className="flex items-center justify-center h-full text-gray-400">加载中...</div>;
+  if (loading) return <div className="flex items-center justify-center h-full text-gray-400">{lang === 'cn' ? '加载中...' : 'Loading...'}</div>;
   if (empty) return <EmptyState />;
 
   const totalMax = Math.max(...data.map(d => d.total));
@@ -43,16 +48,16 @@ export default function TrendsPage() {
   return (
     <div className="max-w-7xl mx-auto space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-gray-900">趋势分析</h1>
-        <p className="text-sm text-gray-500 mt-1">近36个月 Kickstarter 月度趋势（仅含已结束项目）</p>
+        <h1 className="text-2xl font-bold text-gray-900">{tr.title}</h1>
+        <p className="text-sm text-gray-500 mt-1">{tr.subtitle}</p>
       </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         {[
-          { label: '统计月份', value: `${data.length} 个月` },
-          { label: '区间内总项目', value: summary.totalProjects },
-          { label: '平均月成功率', value: `${summary.avgSuccess}%` },
-          { label: '最高发起月', value: summary.peakMonth },
+          { label: tr.months, value: `${data.length}${tr.monthsUnit}` },
+          { label: tr.totalProjects, value: summary.totalProjects },
+          { label: tr.avgSuccess, value: `${summary.avgSuccess}%` },
+          { label: tr.peakMonth, value: summary.peakMonth },
         ].map(c => (
           <div key={c.label} className="bg-white rounded-xl border border-gray-100 p-5 shadow-sm">
             <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">{c.label}</p>
@@ -65,10 +70,10 @@ export default function TrendsPage() {
         data={data}
         xKey="month"
         lines={[
-          { key: 'total', name: '发起项目数', color: '#3B82F6' },
-          { key: 'successful', name: '成功项目数', color: '#05CE78' },
+          { key: 'total', name: tr.launches, color: '#3B82F6' },
+          { key: 'successful', name: tr.successes, color: '#05CE78' },
         ]}
-        title="月度项目发起 & 成功数量"
+        title={tr.chartTitle}
         height={320}
       />
 
@@ -76,16 +81,16 @@ export default function TrendsPage() {
         <LineChart
           data={data}
           xKey="month"
-          lines={[{ key: 'success_rate', name: '成功率 (%)', color: '#8B5CF6' }]}
-          title="月度成功率趋势"
+          lines={[{ key: 'success_rate', name: tr.successRate, color: '#8B5CF6' }]}
+          title={tr.rateTitle}
           yFormatter={v => `${v}%`}
           height={280}
         />
         <LineChart
           data={data}
           xKey="month"
-          lines={[{ key: 'total_pledged_m', name: '融资金额 (M USD)', color: '#F59E0B' }]}
-          title="月度融资总额趋势"
+          lines={[{ key: 'total_pledged_m', name: tr.raisedName, color: '#F59E0B' }]}
+          title={tr.raisedTitle}
           yFormatter={v => `$${v}M`}
           height={280}
         />
@@ -93,18 +98,18 @@ export default function TrendsPage() {
 
       <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
         <div className="px-5 py-4 border-b border-gray-50">
-          <h3 className="font-semibold text-gray-700">月度明细数据</h3>
+          <h3 className="font-semibold text-gray-700">{tr.tableTitle}</h3>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-gray-50 text-left text-xs font-semibold text-gray-400 uppercase tracking-wide">
-                <th className="px-5 py-3">月份</th>
-                <th className="px-5 py-3 text-right">发起项目数</th>
-                <th className="px-5 py-3 text-right">成功项目数</th>
-                <th className="px-5 py-3 text-right">成功率</th>
-                <th className="px-5 py-3 text-right">融资总额</th>
-                <th className="px-5 py-3">发起量占比</th>
+                <th className="px-5 py-3">{tr.colMonth}</th>
+                <th className="px-5 py-3 text-right">{tr.colLaunches}</th>
+                <th className="px-5 py-3 text-right">{tr.colSuccess}</th>
+                <th className="px-5 py-3 text-right">{tr.colRate}</th>
+                <th className="px-5 py-3 text-right">{tr.colRaised}</th>
+                <th className="px-5 py-3">{tr.colShare}</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-50">

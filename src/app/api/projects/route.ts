@@ -13,6 +13,7 @@ export async function GET(req: NextRequest) {
       country: sp.get('country') ?? undefined,
       search: sp.get('search') ?? undefined,
       sort: sp.get('sort') ?? undefined,
+      sortDir: (sp.get('sortDir') as 'asc' | 'desc') || 'desc',
       page: parseInt(sp.get('page') ?? '1'),
       limit: Math.min(parseInt(sp.get('limit') ?? '20'), 100),
       dateFrom: sp.get('dateFrom') ? parseInt(sp.get('dateFrom')!) : undefined,

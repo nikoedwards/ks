@@ -112,6 +112,7 @@ export interface ProjectFilter {
   country?: string;
   search?: string;
   sort?: string;
+  sortDir?: 'asc' | 'desc';
   page?: number;
   limit?: number;
   dateFrom?: number;
@@ -120,7 +121,7 @@ export interface ProjectFilter {
 
 export async function getProjects(filter: ProjectFilter = {}) {
   const db = getDB();
-  const { state, category, country, search, sort = 'usd_pledged', page = 1, limit = 20, dateFrom, dateTo } = filter;
+  const { state, category, country, search, sort = 'usd_pledged', sortDir = 'desc', page = 1, limit = 20, dateFrom, dateTo } = filter;
 
   const conditions: string[] = [];
   const params: Record<string, unknown> = {};
@@ -134,14 +135,15 @@ export async function getProjects(filter: ProjectFilter = {}) {
 
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
 
+  const dir = sortDir === 'asc' ? 'ASC' : 'DESC';
   const sortMap: Record<string, string> = {
-    usd_pledged: 'usd_pledged DESC',
-    backers: 'backers_count DESC',
-    goal: 'goal DESC',
-    launched: 'launched_at DESC',
-    funding_rate: '(CASE WHEN goal>0 THEN usd_pledged/goal ELSE 0 END) DESC',
+    usd_pledged: `usd_pledged ${dir}`,
+    backers: `backers_count ${dir}`,
+    goal: `goal ${dir}`,
+    launched: `launched_at ${dir}`,
+    funding_rate: `(CASE WHEN goal>0 THEN usd_pledged/goal ELSE 0 END) ${dir}`,
   };
-  const orderBy = sortMap[sort] || 'usd_pledged DESC';
+  const orderBy = sortMap[sort] || `usd_pledged ${dir}`;
   const offset = (page - 1) * limit;
 
   const countRow = db.prepare(`SELECT COUNT(*) as c FROM projects ${where}`).get(params) as { c: number };

@@ -4,6 +4,8 @@ import { useEffect, useState } from 'react';
 import BarChart from '@/components/charts/BarChart';
 import EmptyState from '@/components/EmptyState';
 import DataSource from '@/components/DataSource';
+import { useLanguage } from '@/hooks/useLanguage';
+import { t } from '@/lib/i18n';
 
 interface CategoryRow {
   category: string;
@@ -16,9 +18,10 @@ interface CategoryRow {
   total_backers: number;
 }
 
-function fmtM(v: number) { return `$${v}M`; }
-
 export default function CategoriesPage() {
+  const [lang] = useLanguage();
+  const tr = t[lang].categories;
+
   const [data, setData] = useState<CategoryRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [empty, setEmpty] = useState(false);
@@ -34,7 +37,7 @@ export default function CategoriesPage() {
       .catch(() => setLoading(false));
   }, []);
 
-  if (loading) return <div className="flex items-center justify-center h-full text-gray-400">加载中...</div>;
+  if (loading) return <div className="flex items-center justify-center h-full text-gray-400">{lang === 'cn' ? '加载中...' : 'Loading...'}</div>;
   if (empty) return <EmptyState />;
 
   const top12 = data.slice(0, 12);
@@ -42,25 +45,25 @@ export default function CategoriesPage() {
   return (
     <div className="max-w-7xl mx-auto space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-gray-900">类目分析</h1>
-        <p className="text-sm text-gray-500 mt-1">各类目项目成功率、融资金额对比（仅含已结束项目）</p>
+        <h1 className="text-2xl font-bold text-gray-900">{tr.title}</h1>
+        <p className="text-sm text-gray-500 mt-1">{tr.subtitle}</p>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
         <BarChart
           data={top12}
           xKey="category"
-          bars={[{ key: 'success_rate', name: '成功率 (%)', color: '#05CE78' }]}
-          title="各类目成功率"
+          bars={[{ key: 'success_rate', name: tr.rate, color: '#05CE78' }]}
+          title={tr.chartRate}
           yFormatter={v => `${v}%`}
           height={320}
         />
         <BarChart
           data={top12}
           xKey="category"
-          bars={[{ key: 'total_pledged_m', name: '总金额 (M USD)', color: '#3B82F6' }]}
-          title="各类目总融资金额"
-          yFormatter={fmtM}
+          bars={[{ key: 'total_pledged_m', name: tr.raised, color: '#3B82F6' }]}
+          title={tr.chartRaised}
+          yFormatter={v => `$${v}M`}
           height={320}
         />
       </div>
@@ -69,30 +72,30 @@ export default function CategoriesPage() {
         data={top12}
         xKey="category"
         bars={[
-          { key: 'total', name: '总项目数', color: '#6366F1' },
-          { key: 'successful', name: '成功数', color: '#05CE78' },
-          { key: 'failed', name: '失败数', color: '#EF4444' },
+          { key: 'total', name: tr.total, color: '#6366F1' },
+          { key: 'successful', name: tr.successful, color: '#05CE78' },
+          { key: 'failed', name: tr.failed, color: '#EF4444' },
         ]}
-        title="各类目项目数量分布"
+        title={tr.chartDist}
         height={320}
       />
 
       <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
         <div className="px-5 py-4 border-b border-gray-50">
-          <h3 className="font-semibold text-gray-700">类目详细数据</h3>
+          <h3 className="font-semibold text-gray-700">{tr.tableTitle}</h3>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-gray-50 text-left text-xs font-semibold text-gray-400 uppercase tracking-wide">
-                <th className="px-5 py-3">类目</th>
-                <th className="px-5 py-3 text-right">总项目数</th>
-                <th className="px-5 py-3 text-right">成功</th>
-                <th className="px-5 py-3 text-right">失败</th>
-                <th className="px-5 py-3 text-right">成功率</th>
-                <th className="px-5 py-3 text-right">总融资</th>
-                <th className="px-5 py-3 text-right">平均融资</th>
-                <th className="px-5 py-3 text-right">总支持人数</th>
+                <th className="px-5 py-3">{tr.colCategory}</th>
+                <th className="px-5 py-3 text-right">{tr.colTotal}</th>
+                <th className="px-5 py-3 text-right">{tr.colSuccess}</th>
+                <th className="px-5 py-3 text-right">{tr.colFailed}</th>
+                <th className="px-5 py-3 text-right">{tr.colRate}</th>
+                <th className="px-5 py-3 text-right">{tr.colRaised}</th>
+                <th className="px-5 py-3 text-right">{tr.colAvg}</th>
+                <th className="px-5 py-3 text-right">{tr.colBackers}</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-50">

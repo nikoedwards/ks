@@ -1,10 +1,12 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import Link from 'next/link';
-import { Search, ExternalLink, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Search, ExternalLink, ChevronLeft, ChevronRight, Download, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
 import EmptyState from '@/components/EmptyState';
 import DataSource from '@/components/DataSource';
+import { useLanguage } from '@/hooks/useLanguage';
+import { t } from '@/lib/i18n';
 
 interface Project {
   id: string;
@@ -27,10 +29,7 @@ interface Project {
 }
 
 type TimePeriod = 'all' | 'week' | 'month' | 'year' | 'custom';
-
-const PERIOD_LABELS: Record<TimePeriod, string> = {
-  all: '全部时间', week: '近一周', month: '近一月', year: '近一年', custom: '自定义',
-};
+type SortDir = 'asc' | 'desc';
 
 const STATE_BADGE: Record<string, string> = {
   successful: 'bg-ks-green-light text-ks-green-dark font-semibold',
@@ -38,10 +37,6 @@ const STATE_BADGE: Record<string, string> = {
   live: 'bg-blue-50 text-blue-600',
   canceled: 'bg-amber-50 text-amber-600',
   suspended: 'bg-purple-50 text-purple-600',
-};
-
-const STATE_LABELS: Record<string, string> = {
-  successful: '成功', failed: '失败', live: '进行中', canceled: '已取消', suspended: '已暂停',
 };
 
 function fmtUsd(v: number) {
@@ -62,7 +57,60 @@ function calcDays(p: Project): number | null {
   return Math.round(Math.abs(end - p.launched_at) / 86400);
 }
 
+function exportCsv(rows: Project[], filename = 'kicksonar-export.csv') {
+  const headers = ['#', 'ID', 'Name', 'State', 'Category', 'Goal (USD)', 'Pledged (USD)', 'Funded %', 'Backers', 'Days', 'Country', 'Launched', 'URL'];
+  const csvRows = rows.map((p, i) => {
+    const fundingRate = p.goal > 0 ? ((p.usd_pledged / p.goal) * 100).toFixed(1) : '0';
+    const days = calcDays(p) ?? '';
+    const launched = p.launched_at ? new Date(p.launched_at * 1000).toISOString().slice(0, 10) : '';
+    const url = p.source_url?.startsWith('https://www.kickstarter.com/projects/') ? p.source_url : '';
+    return [
+      i + 1, p.id,
+      `"${(p.name || '').replace(/"/g, '""')}"`,
+      p.state, p.category_parent,
+      p.goal, p.usd_pledged, fundingRate,
+      p.backers_count, days, p.country, launched,
+      `"${url}"`,
+    ].join(',');
+  });
+  const csv = [headers.join(','), ...csvRows].join('\n');
+  const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function RowBadge({ n }: { n: number }) {
+  if (n <= 3) return (
+    <span className="inline-flex items-center justify-center w-6 h-6 rounded-full text-xs font-black bg-amber-400 text-white shadow-sm">
+      {n}
+    </span>
+  );
+  if (n <= 10) return (
+    <span className="inline-flex items-center justify-center w-6 h-6 rounded-full text-xs font-bold bg-slate-200 text-slate-600">
+      {n}
+    </span>
+  );
+  return <span className="text-xs text-gray-400 font-medium">#{n}</span>;
+}
+
+function SortIcon({ col, sort, sortDir }: { col: string; sort: string; sortDir: SortDir }) {
+  if (sort !== col) return <ArrowUpDown className="w-3 h-3 text-gray-300 ml-1 inline-block" />;
+  return sortDir === 'desc'
+    ? <ArrowDown className="w-3 h-3 text-ks-green ml-1 inline-block" />
+    : <ArrowUp className="w-3 h-3 text-ks-green ml-1 inline-block" />;
+}
+
+const SORTABLE_COLS = ['goal', 'usd_pledged', 'funding_rate', 'backers', 'launched'] as const;
+
 export default function ProjectsPage() {
+  const [lang] = useLanguage();
+  const tr = t[lang].projects;
+  const stateTr = t[lang].states;
+
   const [data, setData] = useState<{ total: number; rows: Project[]; categories: string[]; countries: { country: string; country_name: string }[] } | null>(null);
   const [loading, setLoading] = useState(true);
   const [empty, setEmpty] = useState(false);
@@ -72,10 +120,25 @@ export default function ProjectsPage() {
   const [category, setCategory] = useState('');
   const [country, setCountry] = useState('');
   const [sort, setSort] = useState('usd_pledged');
+  const [sortDir, setSortDir] = useState<SortDir>('desc');
   const [page, setPage] = useState(1);
   const [timePeriod, setTimePeriod] = useState<TimePeriod>('all');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
+
+  // Cross-page selection: Set for re-render, Map for data cache
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const selectedCache = useRef<Map<string, Project>>(new Map());
+
+  const handleColumnSort = useCallback((col: string) => {
+    if (col === sort) {
+      setSortDir(d => d === 'desc' ? 'asc' : 'desc');
+    } else {
+      setSort(col);
+      setSortDir('desc');
+    }
+    setPage(1);
+  }, [sort]);
 
   const fetchData = useCallback(() => {
     setLoading(true);
@@ -88,7 +151,7 @@ export default function ProjectsPage() {
     const tsTo = timePeriod === 'custom' && dateTo ? Math.floor(new Date(dateTo).getTime() / 1000) : undefined;
 
     const params = new URLSearchParams({
-      page: String(page), limit: '20', sort,
+      page: String(page), limit: '20', sort, sortDir,
       ...(state !== 'all' ? { state } : {}),
       ...(category ? { category } : {}),
       ...(country ? { country } : {}),
@@ -104,32 +167,91 @@ export default function ProjectsPage() {
         setLoading(false);
       })
       .catch(() => setLoading(false));
-  }, [page, sort, state, category, country, search, timePeriod, dateFrom, dateTo]);
+  }, [page, sort, sortDir, state, category, country, search, timePeriod, dateFrom, dateTo]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
   const handleSearch = (e: React.FormEvent) => { e.preventDefault(); setPage(1); fetchData(); };
 
+  const currentRows = data?.rows ?? [];
+  const currentIds = currentRows.map(p => p.id);
+  const allPageSelected = currentIds.length > 0 && currentIds.every(id => selectedIds.has(id));
+  const somePageSelected = currentIds.some(id => selectedIds.has(id));
+
+  const handleSelectAll = () => {
+    const next = new Set(selectedIds);
+    if (allPageSelected) {
+      currentIds.forEach(id => { next.delete(id); selectedCache.current.delete(id); });
+    } else {
+      currentRows.forEach(p => { next.add(p.id); selectedCache.current.set(p.id, p); });
+    }
+    setSelectedIds(next);
+  };
+
+  const handleSelectRow = (p: Project) => {
+    const next = new Set(selectedIds);
+    if (next.has(p.id)) {
+      next.delete(p.id);
+      selectedCache.current.delete(p.id);
+    } else {
+      next.add(p.id);
+      selectedCache.current.set(p.id, p);
+    }
+    setSelectedIds(next);
+  };
+
+  const handleExport = () => {
+    let rows: Project[];
+    if (selectedIds.size > 0) {
+      rows = Array.from(selectedCache.current.values());
+    } else {
+      rows = currentRows;
+    }
+    exportCsv(rows);
+  };
+
   if (empty && !loading) return <EmptyState />;
 
   const totalPages = data ? Math.ceil(data.total / 20) : 0;
-
   const selectCls = 'border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ks-green bg-white';
+
+  const periods = Object.keys(tr.periods) as TimePeriod[];
+
+  type SortableCol = typeof SORTABLE_COLS[number];
+  const colSortKey: Record<string, SortableCol> = {
+    goal: 'goal',
+    usd_pledged: 'usd_pledged',
+    funding_rate: 'funding_rate',
+    backers: 'backers',
+    launched: 'launched',
+  };
+
+  const SortableTh = ({ col, children, right }: { col: SortableCol; children: React.ReactNode; right?: boolean }) => (
+    <th
+      className={`px-4 py-3 ${right ? 'text-right' : ''} cursor-pointer select-none hover:text-gray-600 transition-colors`}
+      onClick={() => handleColumnSort(col)}
+    >
+      <span className="inline-flex items-center gap-0.5">
+        {children}
+        <SortIcon col={col} sort={sort} sortDir={sortDir} />
+      </span>
+    </th>
+  );
 
   return (
     <div className="max-w-7xl mx-auto space-y-5">
       <div>
-        <h1 className="text-2xl font-bold text-gray-900">项目列表</h1>
-        <p className="text-sm text-gray-500 mt-1">搜索和筛选 Kickstarter 历史项目</p>
+        <h1 className="text-2xl font-bold text-gray-900">{tr.title}</h1>
+        <p className="text-sm text-gray-500 mt-1">{tr.subtitle}</p>
       </div>
 
       {/* Filters */}
       <div className="bg-white rounded-xl border border-gray-100 p-4 shadow-sm space-y-3">
         {/* Time period */}
         <div className="flex flex-wrap items-center gap-2">
-          <span className="text-xs font-semibold text-gray-400 uppercase tracking-wide w-16">发起时间</span>
+          <span className="text-xs font-semibold text-gray-400 uppercase tracking-wide w-16">{tr.period}</span>
           <div className="flex flex-wrap gap-1.5">
-            {(Object.keys(PERIOD_LABELS) as TimePeriod[]).map(p => (
+            {periods.map(p => (
               <button
                 key={p}
                 type="button"
@@ -140,17 +262,15 @@ export default function ProjectsPage() {
                     : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
                 }`}
               >
-                {PERIOD_LABELS[p]}
+                {tr.periods[p]}
               </button>
             ))}
           </div>
           {timePeriod === 'custom' && (
             <div className="flex items-center gap-2 ml-2">
-              <input type="date" value={dateFrom} onChange={e => { setDateFrom(e.target.value); setPage(1); }}
-                className={selectCls} />
-              <span className="text-gray-400 text-sm">至</span>
-              <input type="date" value={dateTo} onChange={e => { setDateTo(e.target.value); setPage(1); }}
-                className={selectCls} />
+              <input type="date" value={dateFrom} onChange={e => { setDateFrom(e.target.value); setPage(1); }} className={selectCls} />
+              <span className="text-gray-400 text-sm">—</span>
+              <input type="date" value={dateTo} onChange={e => { setDateTo(e.target.value); setPage(1); }} className={selectCls} />
             </div>
           )}
         </div>
@@ -158,42 +278,40 @@ export default function ProjectsPage() {
         {/* Other filters */}
         <form onSubmit={handleSearch} className="flex flex-wrap gap-3 items-end">
           <div className="flex-1 min-w-48">
-            <label className="text-xs font-medium text-gray-400 mb-1 block">搜索项目</label>
+            <label className="text-xs font-medium text-gray-400 mb-1 block">{tr.searchLabel}</label>
             <div className="relative">
               <Search className="absolute left-3 top-2.5 w-4 h-4 text-gray-400" />
               <input
                 type="text"
                 value={search}
                 onChange={e => setSearch(e.target.value)}
-                placeholder="项目名称或描述..."
+                placeholder={tr.searchPlaceholder}
                 className="w-full pl-9 pr-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-ks-green"
               />
             </div>
           </div>
 
           <div>
-            <label className="text-xs font-medium text-gray-400 mb-1 block">状态</label>
+            <label className="text-xs font-medium text-gray-400 mb-1 block">{tr.statusLabel}</label>
             <select value={state} onChange={e => { setState(e.target.value); setPage(1); }} className={selectCls}>
-              <option value="all">全部</option>
-              <option value="successful">成功</option>
-              <option value="failed">失败</option>
-              <option value="live">进行中</option>
-              <option value="canceled">已取消</option>
+              {(Object.keys(tr.states) as (keyof typeof tr.states)[]).map(k => (
+                <option key={k} value={k}>{tr.states[k]}</option>
+              ))}
             </select>
           </div>
 
           <div>
-            <label className="text-xs font-medium text-gray-400 mb-1 block">类目</label>
+            <label className="text-xs font-medium text-gray-400 mb-1 block">{tr.categoryLabel}</label>
             <select value={category} onChange={e => { setCategory(e.target.value); setPage(1); }} className={selectCls}>
-              <option value="">全部类目</option>
+              <option value="">{tr.allCategories}</option>
               {(data?.categories ?? []).map(c => <option key={c} value={c}>{c}</option>)}
             </select>
           </div>
 
           <div>
-            <label className="text-xs font-medium text-gray-400 mb-1 block">国家</label>
+            <label className="text-xs font-medium text-gray-400 mb-1 block">{tr.countryLabel}</label>
             <select value={country} onChange={e => { setCountry(e.target.value); setPage(1); }} className={selectCls}>
-              <option value="">全部国家</option>
+              <option value="">{tr.allCountries}</option>
               {(data?.countries ?? []).map(c => (
                 <option key={c.country} value={c.country}>{c.country_name || c.country}</option>
               ))}
@@ -201,18 +319,17 @@ export default function ProjectsPage() {
           </div>
 
           <div>
-            <label className="text-xs font-medium text-gray-400 mb-1 block">排序</label>
-            <select value={sort} onChange={e => { setSort(e.target.value); setPage(1); }} className={selectCls}>
-              <option value="usd_pledged">众筹金额</option>
-              <option value="backers">支持人数</option>
-              <option value="funding_rate">完成率</option>
-              <option value="launched">最新发起</option>
+            <label className="text-xs font-medium text-gray-400 mb-1 block">{tr.sortLabel}</label>
+            <select value={sort} onChange={e => { setSort(e.target.value); setSortDir('desc'); setPage(1); }} className={selectCls}>
+              {(Object.keys(tr.sorts) as (keyof typeof tr.sorts)[]).map(k => (
+                <option key={k} value={k}>{tr.sorts[k]}</option>
+              ))}
             </select>
           </div>
 
           <button type="submit"
             className="bg-ks-green hover:bg-ks-green-dark text-white px-4 py-2 rounded-lg text-sm font-semibold transition-colors shadow-sm">
-            搜索
+            {tr.searchBtn}
           </button>
         </form>
       </div>
@@ -220,40 +337,76 @@ export default function ProjectsPage() {
       {/* Table */}
       <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
         {loading ? (
-          <div className="flex items-center justify-center h-48 text-gray-400">加载中...</div>
+          <div className="flex items-center justify-center h-48 text-gray-400">
+            {lang === 'cn' ? '加载中...' : 'Loading...'}
+          </div>
         ) : (
           <>
             <div className="px-4 py-3 border-b border-gray-50 flex items-center justify-between">
               <span className="text-sm text-gray-500">
-                共 <span className="font-semibold text-gray-900">{data?.total?.toLocaleString()}</span> 个项目
+                {tr.total(data?.total?.toLocaleString() ?? '0')}
+                {selectedIds.size > 0 && (
+                  <span className="ml-2 text-ks-green font-medium">
+                    · {lang === 'cn' ? `已选 ${selectedIds.size} 项` : `${selectedIds.size} selected`}
+                  </span>
+                )}
               </span>
+              <button
+                onClick={handleExport}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-gray-100 hover:bg-gray-200 text-gray-700 transition-colors"
+              >
+                <Download className="w-3.5 h-3.5" />
+                {selectedIds.size > 0 ? tr.exportSelected(selectedIds.size) : tr.exportPage}
+              </button>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="bg-gray-50 text-left text-xs font-semibold text-gray-400 uppercase tracking-wide">
-                    <th className="px-4 py-3">项目名称</th>
-                    <th className="px-4 py-3">状态</th>
-                    <th className="px-4 py-3">类目</th>
-                    <th className="px-4 py-3 text-right">目标</th>
-                    <th className="px-4 py-3 text-right">实际金额</th>
-                    <th className="px-4 py-3 text-right">完成率</th>
-                    <th className="px-4 py-3 text-right">支持人数</th>
-                    <th className="px-4 py-3 text-right">时长(天)</th>
-                    <th className="px-4 py-3">国家</th>
-                    <th className="px-4 py-3">发起日期</th>
+                    <th className="px-4 py-3 w-10">#</th>
+                    <th className="px-4 py-3 w-8">
+                      <input
+                        type="checkbox"
+                        checked={allPageSelected}
+                        ref={el => { if (el) el.indeterminate = somePageSelected && !allPageSelected; }}
+                        onChange={handleSelectAll}
+                        className="rounded border-gray-300 accent-ks-green cursor-pointer"
+                      />
+                    </th>
+                    <th className="px-4 py-3">{tr.colName}</th>
+                    <th className="px-4 py-3">{tr.colStatus}</th>
+                    <th className="px-4 py-3">{tr.colCategory}</th>
+                    <SortableTh col={colSortKey['goal']} right>{tr.colGoal}</SortableTh>
+                    <SortableTh col={colSortKey['usd_pledged']} right>{tr.colPledged}</SortableTh>
+                    <SortableTh col={colSortKey['funding_rate']} right>{tr.colFunded}</SortableTh>
+                    <SortableTh col={colSortKey['backers']} right>{tr.colBackers}</SortableTh>
+                    <th className="px-4 py-3 text-right">{tr.colDays}</th>
+                    <th className="px-4 py-3">{tr.colCountry}</th>
+                    <SortableTh col={colSortKey['launched']}>{tr.colLaunch}</SortableTh>
                     <th className="px-4 py-3"></th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-50">
-                  {(data?.rows ?? []).map(p => {
+                  {currentRows.map((p, i) => {
+                    const rowNum = (page - 1) * 20 + i + 1;
                     const fundingRate = p.goal > 0 ? (p.usd_pledged / p.goal) * 100 : 0;
                     const days = calcDays(p);
                     const ksUrl = p.source_url?.startsWith('https://www.kickstarter.com/projects/')
-                      ? p.source_url
-                      : null;
+                      ? p.source_url : null;
+                    const selected = selectedIds.has(p.id);
                     return (
-                      <tr key={p.id} className="hover:bg-gray-50/80 transition-colors">
+                      <tr key={p.id} className={`transition-colors ${selected ? 'bg-ks-green-light/40' : 'hover:bg-gray-50/80'}`}>
+                        <td className="px-4 py-3">
+                          <RowBadge n={rowNum} />
+                        </td>
+                        <td className="px-4 py-3">
+                          <input
+                            type="checkbox"
+                            checked={selected}
+                            onChange={() => handleSelectRow(p)}
+                            className="rounded border-gray-300 accent-ks-green cursor-pointer"
+                          />
+                        </td>
                         <td className="px-4 py-3">
                           <Link href={`/projects/${p.id}`} className="group block">
                             <div className="font-medium text-gray-900 max-w-xs truncate group-hover:text-ks-green transition-colors">{p.name}</div>
@@ -262,10 +415,10 @@ export default function ProjectsPage() {
                         </td>
                         <td className="px-4 py-3">
                           <span className={`px-2 py-0.5 rounded-full text-xs ${STATE_BADGE[p.state] ?? 'bg-gray-100 text-gray-600'}`}>
-                            {STATE_LABELS[p.state] ?? p.state}
+                            {stateTr[p.state as keyof typeof stateTr] ?? p.state}
                           </span>
                           {p.staff_pick === 1 && (
-                            <span className="ml-1 px-2 py-0.5 rounded-full text-xs bg-yellow-50 text-yellow-600">精选</span>
+                            <span className="ml-1 px-2 py-0.5 rounded-full text-xs bg-yellow-50 text-yellow-600">{tr.staffPick}</span>
                           )}
                         </td>
                         <td className="px-4 py-3">
@@ -283,7 +436,7 @@ export default function ProjectsPage() {
                         <td className="px-4 py-3 text-right">
                           {days !== null ? (
                             <span className={`text-xs font-medium ${p.state === 'live' ? 'text-blue-600' : 'text-gray-500'}`}>
-                              {days}天{p.state === 'live' ? ' ↑' : ''}
+                              {days}{p.state === 'live' ? ' ↑' : ''}
                             </span>
                           ) : '—'}
                         </td>
@@ -306,7 +459,7 @@ export default function ProjectsPage() {
 
             {totalPages > 1 && (
               <div className="px-4 py-3 border-t border-gray-50 flex items-center justify-between">
-                <span className="text-sm text-gray-400">第 {page} 页 / 共 {totalPages} 页</span>
+                <span className="text-sm text-gray-400">{tr.pageOf(page, totalPages)}</span>
                 <div className="flex gap-2">
                   <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page <= 1}
                     className="p-1.5 rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed">

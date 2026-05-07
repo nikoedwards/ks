@@ -4,6 +4,8 @@ import { useEffect, useState } from 'react';
 import BarChart from '@/components/charts/BarChart';
 import EmptyState from '@/components/EmptyState';
 import DataSource from '@/components/DataSource';
+import { useLanguage } from '@/hooks/useLanguage';
+import { t } from '@/lib/i18n';
 
 interface CountryRow {
   country: string;
@@ -16,6 +18,9 @@ interface CountryRow {
 }
 
 export default function CountriesPage() {
+  const [lang] = useLanguage();
+  const tr = t[lang].countries;
+
   const [data, setData] = useState<CountryRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [empty, setEmpty] = useState(false);
@@ -31,7 +36,7 @@ export default function CountriesPage() {
       .catch(() => setLoading(false));
   }, []);
 
-  if (loading) return <div className="flex items-center justify-center h-full text-gray-400">加载中...</div>;
+  if (loading) return <div className="flex items-center justify-center h-full text-gray-400">{lang === 'cn' ? '加载中...' : 'Loading...'}</div>;
   if (empty) return <EmptyState />;
 
   const top10 = data.slice(0, 10);
@@ -39,8 +44,8 @@ export default function CountriesPage() {
   return (
     <div className="max-w-7xl mx-auto space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-gray-900">国家/地区分析</h1>
-        <p className="text-sm text-gray-500 mt-1">各国家和地区众筹表现对比（仅含已结束项目）</p>
+        <h1 className="text-2xl font-bold text-gray-900">{tr.title}</h1>
+        <p className="text-sm text-gray-500 mt-1">{tr.subtitle}</p>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
@@ -48,17 +53,17 @@ export default function CountriesPage() {
           data={top10}
           xKey="country"
           bars={[
-            { key: 'total', name: '总项目数', color: '#3B82F6' },
-            { key: 'successful', name: '成功项目数', color: '#05CE78' },
+            { key: 'total', name: tr.total, color: '#3B82F6' },
+            { key: 'successful', name: tr.successful, color: '#05CE78' },
           ]}
-          title="项目数量 Top 10 国家"
+          title={tr.chartCount}
           height={320}
         />
         <BarChart
           data={top10}
           xKey="country"
-          bars={[{ key: 'success_rate', name: '成功率 (%)', color: '#8B5CF6' }]}
-          title="成功率 Top 10 国家"
+          bars={[{ key: 'success_rate', name: tr.rate, color: '#8B5CF6' }]}
+          title={tr.chartRate}
           yFormatter={v => `${v}%`}
           height={320}
         />
@@ -67,27 +72,27 @@ export default function CountriesPage() {
       <BarChart
         data={top10}
         xKey="country"
-        bars={[{ key: 'total_pledged_m', name: '融资总额 (M USD)', color: '#F59E0B' }]}
-        title="融资总额 Top 10 国家"
+        bars={[{ key: 'total_pledged_m', name: tr.raised, color: '#F59E0B' }]}
+        title={tr.chartRaised}
         yFormatter={v => `$${v}M`}
         height={300}
       />
 
       <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
         <div className="px-5 py-4 border-b border-gray-50">
-          <h3 className="font-semibold text-gray-700">国家/地区详细数据</h3>
+          <h3 className="font-semibold text-gray-700">{tr.tableTitle}</h3>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-gray-50 text-left text-xs font-semibold text-gray-400 uppercase tracking-wide">
-                <th className="px-5 py-3">排名</th>
-                <th className="px-5 py-3">国家/地区</th>
-                <th className="px-5 py-3 text-right">总项目数</th>
-                <th className="px-5 py-3 text-right">成功项目</th>
-                <th className="px-5 py-3 text-right">成功率</th>
-                <th className="px-5 py-3 text-right">融资总额</th>
-                <th className="px-5 py-3 text-right">支持人数</th>
+                <th className="px-5 py-3">{tr.colRank}</th>
+                <th className="px-5 py-3">{tr.colCountry}</th>
+                <th className="px-5 py-3 text-right">{tr.colTotal}</th>
+                <th className="px-5 py-3 text-right">{tr.colSuccess}</th>
+                <th className="px-5 py-3 text-right">{tr.colRate}</th>
+                <th className="px-5 py-3 text-right">{tr.colRaised}</th>
+                <th className="px-5 py-3 text-right">{tr.colBackers}</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-50">

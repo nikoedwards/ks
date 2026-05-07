@@ -7,6 +7,8 @@ import BarChart from '@/components/charts/BarChart';
 import LineChart from '@/components/charts/LineChart';
 import EmptyState from '@/components/EmptyState';
 import DataSource from '@/components/DataSource';
+import { useLanguage } from '@/hooks/useLanguage';
+import { t } from '@/lib/i18n';
 
 const STATE_COLORS: Record<string, string> = {
   successful: '#05CE78',
@@ -16,15 +18,11 @@ const STATE_COLORS: Record<string, string> = {
   suspended: '#8B5CF6',
 };
 
-const STATE_LABELS: Record<string, string> = {
-  successful: '成功',
-  failed: '失败',
-  live: '进行中',
-  canceled: '已取消',
-  suspended: '已暂停',
-};
-
 export default function DashboardPage() {
+  const [lang] = useLanguage();
+  const tr = t[lang].dashboard;
+  const stateTr = t[lang].states;
+
   const [statsData, setStatsData] = useState<{ stats: Record<string, number>; stateDistribution: { state: string; count: number }[] } | null>(null);
   const [catData, setCatData] = useState<object[]>([]);
   const [trendData, setTrendData] = useState<object[]>([]);
@@ -36,23 +34,23 @@ export default function DashboardPage() {
       fetch('/api/stats').then(r => r.json()),
       fetch('/api/categories').then(r => r.json()),
       fetch('/api/trends').then(r => r.json()),
-    ]).then(([s, c, t]) => {
+    ]).then(([s, c, tnd]) => {
       if (s.empty) { setEmpty(true); setLoading(false); return; }
       setStatsData(s);
       setCatData((c.data ?? []).slice(0, 12));
-      setTrendData((t.data ?? []).slice(-24));
+      setTrendData((tnd.data ?? []).slice(-24));
       setLoading(false);
     }).catch(() => setLoading(false));
   }, []);
 
-  if (loading) return <div className="flex items-center justify-center h-full text-gray-400">加载中...</div>;
+  if (loading) return <div className="flex items-center justify-center h-full text-gray-400">{lang === 'cn' ? '加载中...' : 'Loading...'}</div>;
   if (empty) return <EmptyState />;
   if (!statsData) return null;
 
   const { stats, stateDistribution } = statsData;
 
   const pieData = stateDistribution.map(d => ({
-    name: STATE_LABELS[d.state] ?? d.state,
+    name: stateTr[d.state as keyof typeof stateTr] ?? d.state,
     value: d.count,
     color: STATE_COLORS[d.state],
   }));
@@ -60,24 +58,24 @@ export default function DashboardPage() {
   return (
     <div className="max-w-7xl mx-auto space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-gray-900">数据概览</h1>
-        <p className="text-sm text-gray-500 mt-1">Kickstarter 众筹平台全量数据分析</p>
+        <h1 className="text-2xl font-bold text-gray-900">{tr.title}</h1>
+        <p className="text-sm text-gray-500 mt-1">{tr.subtitle}</p>
       </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard title="总项目数" value={Number(stats.total).toLocaleString()} sub="全平台历史累计" />
-        <StatCard title="项目成功率" value={`${stats.success_rate ?? 0}%`} sub={`${Number(stats.successful).toLocaleString()} 个项目成功`} accent />
-        <StatCard title="总众筹金额" value={`$${stats.total_pledged_usd ?? 0}M`} sub="美元，历史累计" />
-        <StatCard title="平均支持人数" value={Number(stats.avg_backers ?? 0).toLocaleString()} sub="每个项目平均" />
+        <StatCard title={tr.totalProjects} value={Number(stats.total).toLocaleString()} sub={tr.totalProjectsSub} />
+        <StatCard title={tr.successRate} value={`${stats.success_rate ?? 0}%`} sub={tr.successRateSub(Number(stats.successful).toLocaleString())} accent />
+        <StatCard title={tr.totalRaised} value={`$${stats.total_pledged_usd ?? 0}M`} sub={tr.totalRaisedSub} />
+        <StatCard title={tr.avgBackers} value={Number(stats.avg_backers ?? 0).toLocaleString()} sub={tr.avgBackersSub} />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-        <PieChart data={pieData} title="项目状态分布" />
+        <PieChart data={pieData} title={tr.statusDist} />
         <BarChart
           data={catData}
           xKey="category"
-          bars={[{ key: 'success_rate', name: '成功率 (%)', color: '#05CE78' }]}
-          title="各类目成功率 Top 12"
+          bars={[{ key: 'success_rate', name: tr.successRatePct, color: '#05CE78' }]}
+          title={tr.categoryRate}
           yFormatter={v => `${v}%`}
           height={280}
         />
@@ -88,17 +86,17 @@ export default function DashboardPage() {
           data={trendData}
           xKey="month"
           lines={[
-            { key: 'total', name: '发起数量', color: '#3B82F6' },
-            { key: 'successful', name: '成功数量', color: '#05CE78' },
+            { key: 'total', name: tr.launches, color: '#3B82F6' },
+            { key: 'successful', name: tr.successes, color: '#05CE78' },
           ]}
-          title="近24个月项目发起趋势"
+          title={tr.trendTitle}
           height={280}
         />
         <LineChart
           data={trendData}
           xKey="month"
-          lines={[{ key: 'success_rate', name: '成功率 (%)', color: '#8B5CF6' }]}
-          title="近24个月成功率趋势"
+          lines={[{ key: 'success_rate', name: tr.successRatePct, color: '#8B5CF6' }]}
+          title={tr.trendSuccessTitle}
           yFormatter={v => `${v}%`}
           height={280}
         />
@@ -108,10 +106,10 @@ export default function DashboardPage() {
         data={catData}
         xKey="category"
         bars={[
-          { key: 'total', name: '总项目数', color: '#3B82F6' },
-          { key: 'successful', name: '成功项目数', color: '#05CE78' },
+          { key: 'total', name: tr.totalCount, color: '#3B82F6' },
+          { key: 'successful', name: tr.successCount, color: '#05CE78' },
         ]}
-        title="各类目项目数量 Top 12"
+        title={tr.categoryCount}
         height={300}
       />
 
