@@ -1,22 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { verifyUserByEmail, verifyUser, createSession, SESSION_COOKIE } from '@/lib/auth';
+import { verifyOtp, getUserByEmail, createSession, SESSION_COOKIE } from '@/lib/auth';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export async function POST(req: NextRequest) {
   try {
-    const { email, password, username } = await req.json();
-    if (!password) return NextResponse.json({ error: 'Password is required.' }, { status: 400 });
+    const { email, code } = await req.json();
+    if (!email || !code) return NextResponse.json({ error: 'Email and code are required.' }, { status: 400 });
 
-    // Support both email-based (new) and username-based (legacy) login
-    const user = email
-      ? verifyUserByEmail(email, password)
-      : username
-      ? verifyUser(username, password)
-      : null;
+    const valid = verifyOtp(email, code);
+    if (!valid) return NextResponse.json({ error: 'Invalid or expired code. Please try again.' }, { status: 401 });
 
-    if (!user) return NextResponse.json({ error: 'Invalid email or password.' }, { status: 401 });
+    const user = getUserByEmail(email);
+    if (!user) return NextResponse.json({ error: 'Account not found.' }, { status: 404 });
 
     const token = createSession(user.id);
     const res = NextResponse.json({ user: { id: user.id, username: user.username, email: user.email } });

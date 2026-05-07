@@ -23,14 +23,32 @@ function generateToken(): string {
   return randomBytes(32).toString('hex');
 }
 
+// ── User creation ──────────────────────────────────────────────────────────────
+
 export function createUser(username: string, password: string, email?: string): AuthUser {
   const db = getDB();
   const hash = hashPassword(password);
   const result = db.prepare(
-    `INSERT INTO users (username, email, password_hash) VALUES (?, ?, ?)`
-  ).run(username.trim(), email?.trim() ?? null, hash);
+    `INSERT INTO users (username, email, password_hash, email_verified) VALUES (?, ?, ?, 1)`
+  ).run(username.trim(), email?.trim()?.toLowerCase() ?? null, hash);
   return { id: Number(result.lastInsertRowid), username: username.trim(), email: email?.trim() ?? null };
 }
+
+export function createUserByEmail(email: string, password: string): AuthUser {
+  const db = getDB();
+  const hash = hashPassword(password);
+  const username = email.split('@')[0].replace(/[^a-zA-Z0-9_]/g, '');
+  const result = db.prepare(
+    `INSERT INTO users (username, email, password_hash, email_verified) VALUES (?, ?, ?, 0)`
+  ).run(username, email.trim().toLowerCase(), hash);
+  return { id: Number(result.lastInsertRowid), username, email: email.trim().toLowerCase() };
+}
+
+export function activateUser(email: string) {
+  getDB().prepare(`UPDATE users SET email_verified = 1 WHERE email = ?`).run(email.trim().toLowerCase());
+}
+
+// ── Lookup helpers ─────────────────────────────────────────────────────────────
 
 export function verifyUser(username: string, password: string): AuthUser | null {
   const db = getDB();
@@ -40,6 +58,46 @@ export function verifyUser(username: string, password: string): AuthUser | null 
   if (user.password_hash !== hashPassword(password)) return null;
   return { id: user.id, username: user.username, email: user.email };
 }
+
+export function verifyUserByEmail(email: string, password: string): AuthUser | null {
+  const db = getDB();
+  const user = db.prepare(`SELECT id, username, email, password_hash, email_verified FROM users WHERE email = ?`).get(email.trim().toLowerCase()) as
+    ({ id: number; username: string; email: string | null; password_hash: string; email_verified: number }) | undefined;
+  if (!user) return null;
+  if (user.password_hash !== hashPassword(password)) return null;
+  return { id: user.id, username: user.username, email: user.email };
+}
+
+export function usernameExists(username: string): boolean {
+  return !!getDB().prepare(`SELECT 1 FROM users WHERE username = ?`).get(username.trim());
+}
+
+export function emailExists(email: string): boolean {
+  return !!getDB().prepare(`SELECT 1 FROM users WHERE email = ?`).get(email.trim().toLowerCase());
+}
+
+// ── OTP ───────────────────────────────────────────────────────────────────────
+
+export function createOtp(email: string): string {
+  const db = getDB();
+  const code = Math.floor(100000 + Math.random() * 900000).toString();
+  db.prepare(`DELETE FROM email_otps WHERE email = ?`).run(email.toLowerCase());
+  const expiresAt = Math.floor(Date.now() / 1000) + 10 * 60; // 10 min
+  db.prepare(`INSERT INTO email_otps (email, code, expires_at) VALUES (?, ?, ?)`).run(email.toLowerCase(), code, expiresAt);
+  return code;
+}
+
+export function verifyOtp(email: string, code: string): boolean {
+  const db = getDB();
+  const now = Math.floor(Date.now() / 1000);
+  const row = db.prepare(`SELECT id FROM email_otps WHERE email = ? AND code = ? AND expires_at > ? AND used = 0`).get(email.toLowerCase(), code, now) as { id: number } | null;
+  if (!row) return false;
+  db.prepare(`UPDATE email_otps SET used = 1 WHERE id = ?`).run(row.id);
+  activateUser(email);
+  return true;
+}
+
+// ── Sessions ──────────────────────────────────────────────────────────────────
 
 export function createSession(userId: number): string {
   const db = getDB();
@@ -65,12 +123,7 @@ export function deleteSession(token: string): void {
   getDB().prepare(`DELETE FROM sessions WHERE token = ?`).run(token);
 }
 
-export function usernameExists(username: string): boolean {
-  const row = getDB().prepare(`SELECT 1 FROM users WHERE username = ?`).get(username.trim());
-  return !!row;
-}
-
-// ── Favorites ────────────────────────────────────────────────────────────────
+// ── Favorites ──────────────────────────────────────────────────────────────────
 
 export function addFavorite(userId: number, projectId: string): void {
   getDB().prepare(`INSERT OR IGNORE INTO favorites (user_id, project_id) VALUES (?, ?)`).run(userId, projectId);
@@ -83,6 +136,10 @@ export function removeFavorite(userId: number, projectId: string): void {
 export function getFavoriteIds(userId: number): string[] {
   const rows = getDB().prepare(`SELECT project_id FROM favorites WHERE user_id = ? ORDER BY created_at DESC`).all(userId) as { project_id: string }[];
   return rows.map(r => r.project_id);
+}
+
+export function getUserByEmail(email: string): AuthUser | null {
+  return getDB().prepare(`SELECT id, username, email FROM users WHERE email = ?`).get(email.toLowerCase()) as AuthUser | null;
 }
 
 export const SESSION_COOKIE = 'ks_session';

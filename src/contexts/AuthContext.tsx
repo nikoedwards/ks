@@ -2,13 +2,14 @@
 
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react';
 
-export interface AuthUser { id: number; username: string; }
+export interface AuthUser { id: number; username: string; email: string | null; }
 
 interface AuthCtx {
   user: AuthUser | null;
   isLoading: boolean;
-  login: (username: string, password: string) => Promise<{ ok: boolean; error?: string }>;
-  register: (username: string, password: string, email?: string) => Promise<{ ok: boolean; error?: string }>;
+  login: (email: string, password: string) => Promise<{ ok: boolean; error?: string }>;
+  register: (email: string, password: string) => Promise<{ ok: boolean; needsOtp?: boolean; error?: string }>;
+  verifyOtp: (email: string, code: string) => Promise<{ ok: boolean; error?: string }>;
   logout: () => Promise<void>;
   showLogin: (onSuccess?: () => void) => void;
   hideLogin: () => void;
@@ -30,11 +31,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }).catch(() => {}).finally(() => setIsLoading(false));
   }, []);
 
-  const login = useCallback(async (username: string, password: string) => {
+  const login = useCallback(async (email: string, password: string) => {
     const r = await fetch('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password }),
+      body: JSON.stringify({ email, password }),
     });
     const d = await r.json();
     if (!r.ok) return { ok: false, error: d.error };
@@ -42,11 +43,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return { ok: true };
   }, []);
 
-  const register = useCallback(async (username: string, password: string, email?: string) => {
+  const register = useCallback(async (email: string, password: string) => {
     const r = await fetch('/api/auth/register', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password, email }),
+      body: JSON.stringify({ email, password }),
+    });
+    const d = await r.json();
+    if (!r.ok) return { ok: false, error: d.error };
+    return { ok: true, needsOtp: d.needsOtp };
+  }, []);
+
+  const verifyOtp = useCallback(async (email: string, code: string) => {
+    const r = await fetch('/api/auth/verify-otp', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, code }),
     });
     const d = await r.json();
     if (!r.ok) return { ok: false, error: d.error };
@@ -70,7 +82,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <Ctx.Provider value={{ user, isLoading, login, register, logout, showLogin, hideLogin, loginVisible, onLoginSuccess }}>
+    <Ctx.Provider value={{ user, isLoading, login, register, verifyOtp, logout, showLogin, hideLogin, loginVisible, onLoginSuccess }}>
       {children}
     </Ctx.Provider>
   );

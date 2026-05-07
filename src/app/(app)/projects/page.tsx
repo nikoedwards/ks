@@ -128,6 +128,41 @@ export default function ProjectsPage() {
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
 
+  // URL state persistence — read on mount
+  const urlInitDone = useRef(false);
+  useEffect(() => {
+    const sp = new URLSearchParams(window.location.search);
+    if (sp.get('search')) setSearch(sp.get('search')!);
+    if (sp.get('state')) setState(sp.get('state')!);
+    if (sp.get('category')) setCategory(sp.get('category')!);
+    if (sp.get('country')) setCountry(sp.get('country')!);
+    if (sp.get('sort')) setSort(sp.get('sort')!);
+    if (sp.get('sortDir')) setSortDir(sp.get('sortDir') as SortDir);
+    if (sp.get('page')) setPage(Number(sp.get('page')));
+    if (sp.get('timePeriod')) setTimePeriod(sp.get('timePeriod') as TimePeriod);
+    if (sp.get('dateFrom')) setDateFrom(sp.get('dateFrom')!);
+    if (sp.get('dateTo')) setDateTo(sp.get('dateTo')!);
+    urlInitDone.current = true;
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // URL state persistence — write on change
+  useEffect(() => {
+    if (!urlInitDone.current) return;
+    const params = new URLSearchParams();
+    if (search) params.set('search', search);
+    if (state !== 'all') params.set('state', state);
+    if (category) params.set('category', category);
+    if (country) params.set('country', country);
+    if (sort !== 'usd_pledged') params.set('sort', sort);
+    if (sortDir !== 'desc') params.set('sortDir', sortDir);
+    if (page !== 1) params.set('page', String(page));
+    if (timePeriod !== 'all') params.set('timePeriod', timePeriod);
+    if (dateFrom) params.set('dateFrom', dateFrom);
+    if (dateTo) params.set('dateTo', dateTo);
+    const qs = params.toString();
+    window.history.replaceState(null, '', qs ? `?${qs}` : window.location.pathname);
+  }, [search, state, category, country, sort, sortDir, page, timePeriod, dateFrom, dateTo]);
+
   // Cross-page selection: Set for re-render, Map for data cache
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const selectedCache = useRef<Map<string, Project>>(new Map());

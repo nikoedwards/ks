@@ -72,6 +72,15 @@ function getDB(): Database {
     CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
     CREATE INDEX IF NOT EXISTS idx_favorites_user ON favorites(user_id);
 
+    CREATE TABLE IF NOT EXISTS email_otps (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      email TEXT NOT NULL,
+      code TEXT NOT NULL,
+      expires_at INTEGER NOT NULL,
+      used INTEGER DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_otps_email ON email_otps(email);
+
     CREATE TABLE IF NOT EXISTS tracking_settings (
       project_id TEXT PRIMARY KEY,
       is_tracking INTEGER DEFAULT 1,
@@ -147,6 +156,9 @@ function getDB(): Database {
       error_message TEXT
     );
   `);
+
+  // Add email_verified column to existing users table if absent
+  try { db.exec('ALTER TABLE users ADD COLUMN email_verified INTEGER DEFAULT 1'); } catch { /* already exists */ }
 
   globalThis.__ksDb = db;
   return db;
