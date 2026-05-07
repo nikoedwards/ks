@@ -257,7 +257,14 @@ export async function insertSyncLog(log: {
   const result = db.prepare(
     `INSERT INTO sync_logs (url, started_at, completed_at, records_imported, status, error_message)
      VALUES (@url, @started_at, @completed_at, @records_imported, @status, @error_message)`
-  ).run(log);
+  ).run({
+    url: log.url,
+    started_at: log.started_at,
+    completed_at: log.completed_at ?? null,
+    records_imported: log.records_imported ?? null,
+    status: log.status,
+    error_message: log.error_message ?? null,
+  });
   return Number(result.lastInsertRowid);
 }
 
