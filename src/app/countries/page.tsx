@@ -114,7 +114,7 @@ export default function CountriesPage() {
         </div>
       </div>
 
-      <DataSource note="仅统计已结束项目，Top 20 国家/地区" />
+      <DataSource />
     </div>
   );
 }

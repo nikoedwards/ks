@@ -117,7 +117,7 @@ export default function CategoriesPage() {
         </div>
       </div>
 
-      <DataSource note="仅统计已结束项目（成功 + 失败），Top 25 类目" />
+      <DataSource />
     </div>
   );
 }

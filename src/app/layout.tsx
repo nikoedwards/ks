@@ -3,8 +3,9 @@ import './globals.css';
 import Sidebar from '@/components/Sidebar';
 
 export const metadata: Metadata = {
-  title: 'KS Analytics — Kickstarter 数据分析平台',
-  description: '基于 webrobots.io 的 Kickstarter 众筹数据分析',
+  title: 'Kicksonar — Kickstarter 数据分析平台',
+  description: '基于 webrobots.io 开放数据集的 Kickstarter 众筹数据分析平台',
+  icons: { icon: '/favicon.svg' },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

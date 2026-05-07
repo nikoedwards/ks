@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import Image from 'next/image';
 import { usePathname } from 'next/navigation';
 import {
   LayoutDashboard,
@@ -9,6 +10,8 @@ import {
   TrendingUp,
   Globe,
   Settings,
+  Info,
+  Github,
 } from 'lucide-react';
 
 const nav = [
@@ -27,11 +30,9 @@ export default function Sidebar() {
     <aside className="w-56 bg-[#1a1a1a] text-white flex flex-col shrink-0">
       <div className="px-5 py-5 border-b border-white/10">
         <div className="flex items-center gap-2.5">
-          <div className="w-7 h-7 rounded-lg bg-ks-green flex items-center justify-center">
-            <span className="text-white font-black text-sm">K</span>
-          </div>
+          <Image src="/logo.svg" alt="Kicksonar" width={28} height={28} className="shrink-0" />
           <div>
-            <div className="font-bold text-base leading-tight">KS Analytics</div>
+            <div className="font-bold text-base leading-tight">Kicksonar</div>
             <div className="text-[10px] text-white/40 leading-tight">Kickstarter 数据平台</div>
           </div>
         </div>
@@ -57,11 +58,27 @@ export default function Sidebar() {
         })}
       </nav>
 
-      <div className="px-4 py-4 border-t border-white/10">
-        <p className="text-[10px] text-white/30 leading-relaxed">
-          数据来源: webrobots.io<br />
-          每月 15 日自动更新
-        </p>
+      <div className="px-2.5 py-3 border-t border-white/10 space-y-0.5">
+        <Link
+          href="/about"
+          className={`flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-medium transition-all ${
+            pathname === '/about'
+              ? 'bg-ks-green text-white'
+              : 'text-white/40 hover:bg-white/8 hover:text-white/70'
+          }`}
+        >
+          <Info className="w-3.5 h-3.5 shrink-0" />
+          关于 Kicksonar
+        </Link>
+        <a
+          href="https://github.com/nikoedwards/ks"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-medium text-white/40 hover:bg-white/8 hover:text-white/70 transition-all"
+        >
+          <Github className="w-3.5 h-3.5 shrink-0" />
+          GitHub
+        </a>
       </div>
     </aside>
   );

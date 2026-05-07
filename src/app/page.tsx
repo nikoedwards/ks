@@ -115,7 +115,7 @@ export default function DashboardPage() {
         height={300}
       />
 
-      <DataSource note="全量历史数据，已结束项目统计" />
+      <DataSource />
     </div>
   );
 }

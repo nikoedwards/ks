@@ -292,3 +292,40 @@ export async function getProjectCount(): Promise<number> {
   const row = getDB().prepare('SELECT COUNT(*) as c FROM projects').get() as { c: number };
   return row?.c ?? 0;
 }
+
+export async function getMeta(): Promise<{
+  earliestDate: string | null;
+  latestDate: string | null;
+  totalProjects: number;
+  lastSyncDate: string | null;
+}> {
+  const db = getDB();
+  const dateRow = db.prepare(`
+    SELECT
+      date(MIN(launched_at), 'unixepoch') as earliest,
+      date(MAX(launched_at), 'unixepoch') as latest,
+      COUNT(*) as total
+    FROM projects WHERE launched_at IS NOT NULL
+  `).get() as { earliest: string | null; latest: string | null; total: number };
+
+  const syncRow = db.prepare(
+    `SELECT completed_at FROM sync_logs WHERE status='completed' ORDER BY id DESC LIMIT 1`
+  ).get() as { completed_at: string } | undefined;
+
+  return {
+    earliestDate: dateRow?.earliest ?? null,
+    latestDate: dateRow?.latest ?? null,
+    totalProjects: dateRow?.total ?? 0,
+    lastSyncDate: syncRow?.completed_at ? syncRow.completed_at.slice(0, 10) : null,
+  };
+}
+
+export async function getProjectById(id: string) {
+  return getDB().prepare(
+    `SELECT id, name, blurb, state, country, country_name, currency,
+            category_id, category_parent, category_name, goal, pledged, usd_pledged,
+            backers_count, staff_pick, created_at, launched_at, deadline,
+            creator_name, source_url, slug
+     FROM projects WHERE id = ?`
+  ).get(id) ?? null;
+}

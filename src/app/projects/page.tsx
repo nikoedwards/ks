@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
+import Link from 'next/link';
 import { Search, ExternalLink, ChevronLeft, ChevronRight } from 'lucide-react';
 import EmptyState from '@/components/EmptyState';
 import DataSource from '@/components/DataSource';
@@ -248,14 +249,16 @@ export default function ProjectsPage() {
                   {(data?.rows ?? []).map(p => {
                     const fundingRate = p.goal > 0 ? (p.usd_pledged / p.goal) * 100 : 0;
                     const days = calcDays(p);
-                    const projectUrl = p.slug
-                      ? `https://www.kickstarter.com/projects/${p.slug}`
-                      : p.source_url;
+                    const ksUrl = p.source_url?.startsWith('https://www.kickstarter.com/projects/')
+                      ? p.source_url
+                      : null;
                     return (
                       <tr key={p.id} className="hover:bg-gray-50/80 transition-colors">
                         <td className="px-4 py-3">
-                          <div className="font-medium text-gray-900 max-w-xs truncate">{p.name}</div>
-                          <div className="text-xs text-gray-400 max-w-xs truncate mt-0.5">{p.blurb}</div>
+                          <Link href={`/projects/${p.id}`} className="group block">
+                            <div className="font-medium text-gray-900 max-w-xs truncate group-hover:text-ks-green transition-colors">{p.name}</div>
+                            <div className="text-xs text-gray-400 max-w-xs truncate mt-0.5">{p.blurb}</div>
+                          </Link>
                         </td>
                         <td className="px-4 py-3">
                           <span className={`px-2 py-0.5 rounded-full text-xs ${STATE_BADGE[p.state] ?? 'bg-gray-100 text-gray-600'}`}>
@@ -287,8 +290,8 @@ export default function ProjectsPage() {
                         <td className="px-4 py-3 text-gray-500 text-xs">{p.country}</td>
                         <td className="px-4 py-3 text-gray-400 whitespace-nowrap text-xs">{fmtDate(p.launched_at)}</td>
                         <td className="px-4 py-3">
-                          {projectUrl && (
-                            <a href={projectUrl} target="_blank" rel="noopener noreferrer"
+                          {ksUrl && (
+                            <a href={ksUrl} target="_blank" rel="noopener noreferrer"
                               className="text-ks-green hover:text-ks-green-dark transition-colors">
                               <ExternalLink className="w-4 h-4" />
                             </a>
@@ -320,7 +323,7 @@ export default function ProjectsPage() {
         )}
       </div>
 
-      <DataSource note="全量历史项目数据，按发起时间筛选" />
+      <DataSource />
     </div>
   );
 }

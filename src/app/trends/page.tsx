@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from 'react';
 import LineChart from '@/components/charts/LineChart';
-import BarChart from '@/components/charts/BarChart';
 import EmptyState from '@/components/EmptyState';
 import DataSource from '@/components/DataSource';
 
@@ -135,7 +134,7 @@ export default function TrendsPage() {
         </div>
       </div>
 
-      <DataSource note="近 36 个月月度数据，仅含已结束项目" />
+      <DataSource />
     </div>
   );
 }

@@ -40,6 +40,7 @@ interface RawRecord {
   creator?: string;
   category?: string;
   source_url?: string;
+  urls?: string;
 }
 
 function parseRecord(raw: RawRecord): Record<string, unknown> | null {
@@ -81,7 +82,12 @@ function parseRecord(raw: RawRecord): Record<string, unknown> | null {
     launched_at: raw.launched_at ? parseInt(raw.launched_at) || null : null,
     deadline: raw.deadline ? parseInt(raw.deadline) || null : null,
     creator_name,
-    source_url: raw.source_url ?? null,
+    source_url: (() => {
+      try {
+        const parsed = JSON.parse(raw.urls || '{}');
+        return parsed?.web?.project ?? raw.source_url ?? null;
+      } catch { return raw.source_url ?? null; }
+    })(),
     slug: raw.slug ?? null,
   };
 }
@@ -184,19 +190,19 @@ async function importCsvFromZip(
     throw new Error(`ZIP 中未找到 CSV 文件。ZIP 内容: ${fileList}`);
   }
 
-  console.log(`[KS Analytics] ZIP contents (${directory.files.length} entries):`);
+  console.log(`[Kicksonar] ZIP contents (${directory.files.length} entries):`);
   for (const f of directory.files.slice(0, 30)) {
     console.log(`  ${f.type} ${f.path} (compressed: ${fmtMB(f.compressedSize)}, uncompressed: ${fmtMB(f.uncompressedSize)})`);
   }
   if (directory.files.length > 30) console.log(`  ... and ${directory.files.length - 30} more`);
-  console.log(`[KS Analytics] Found ${csvEntries.length} CSV file(s) in ZIP`);
+  console.log(`[Kicksonar] Found ${csvEntries.length} CSV file(s) in ZIP`);
 
   let totalImported = 0;
   for (const entry of csvEntries) {
-    console.log(`[KS Analytics] Parsing CSV: ${entry.path} (${fmtMB(entry.uncompressedSize)})`);
+    console.log(`[Kicksonar] Parsing CSV: ${entry.path} (${fmtMB(entry.uncompressedSize)})`);
     const count = await parseCsvEntry(entry, db, totalImported, onProgress);
     totalImported += count;
-    console.log(`[KS Analytics] Finished ${entry.path}: ${count.toLocaleString()} records`);
+    console.log(`[Kicksonar] Finished ${entry.path}: ${count.toLocaleString()} records`);
     // Yield event loop between CSV files so HTTP requests can be served
     await new Promise(resolve => setImmediate(resolve));
   }
@@ -268,7 +274,7 @@ export async function runSync(): Promise<void> {
     if (logId) {
       await updateSyncLog(logId, { completed_at: completedAt, status: 'error', error_message: error });
     }
-    console.error('[KS Analytics] Sync failed:', err);
+    console.error('[Kicksonar] Sync failed:', err);
 
   } finally {
     // Always clean up temp file
