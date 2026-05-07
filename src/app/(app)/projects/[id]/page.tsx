@@ -65,15 +65,8 @@ const STATE_COLOR: Record<string, string> = {
   suspended: 'bg-purple-50 text-purple-600 border border-purple-100',
 };
 
-const TABS = [
-  { id: 'overview', label: 'Overview', icon: Activity },
-  { id: 'curve', label: 'Funding Curve', icon: TrendingUp },
-  { id: 'rewards', label: 'Rewards', icon: Gift },
-  { id: 'changes', label: 'Text Changes', icon: FileText },
-  { id: 'similar', label: 'Similar Projects', icon: Layers },
-] as const;
-
-type TabId = typeof TABS[number]['id'];
+const TAB_IDS = ['overview', 'curve', 'rewards', 'changes', 'similar'] as const;
+type TabId = typeof TAB_IDS[number];
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -142,6 +135,14 @@ export default function ProjectDetailPage() {
   const tr = t[lang].projectDetail;
   const stateTr = t[lang].states;
   const { user, showLogin } = useAuth();
+
+  const TABS = [
+    { id: 'overview' as TabId, label: tr.tabOverview, icon: Activity },
+    { id: 'curve' as TabId, label: tr.tabCurve, icon: TrendingUp },
+    { id: 'rewards' as TabId, label: tr.tabRewards, icon: Gift },
+    { id: 'changes' as TabId, label: tr.tabChanges, icon: FileText },
+    { id: 'similar' as TabId, label: tr.tabSimilar, icon: Layers },
+  ];
 
   const [project, setProject] = useState<Project | null>(null);
   const [loading, setLoading] = useState(true);
@@ -249,14 +250,20 @@ export default function ProjectDetailPage() {
     setScraping(false);
   };
 
+  const [ktError, setKtError] = useState('');
   const importKicktraq = async () => {
     if (!user) { showLogin(); return; }
     if (!id) return;
     setKtImporting(true);
-    const res = await fetch(`/api/kicktraq/${id}`, { method: 'POST' });
-    const data = await res.json() as { ok: boolean; days?: number; message?: string };
-    if (data.ok) { loadSnapshots(); }
-    else { alert(data.message ?? 'Kicktraq import failed'); }
+    setKtError('');
+    try {
+      const res = await fetch(`/api/kicktraq/${id}`, { method: 'POST' });
+      const data = await res.json() as { ok: boolean; days?: number; message?: string };
+      if (data.ok) { loadSnapshots(); }
+      else { setKtError(data.message ?? 'Import failed'); }
+    } catch {
+      setKtError('Network error — please try again.');
+    }
     setKtImporting(false);
   };
 
@@ -348,7 +355,7 @@ export default function ProjectDetailPage() {
               <span>{project.currency}</span>
               {tracking?.last_fetched && (
                 <span className="flex items-center gap-1 text-ks-green/80">
-                  <Radio className="w-3 h-3" /> Last synced {fmtDateTime(tracking.last_fetched)}
+                  <Radio className="w-3 h-3" /> {tr.lastSynced} {fmtDateTime(tracking.last_fetched)}
                 </span>
               )}
             </div>
@@ -362,7 +369,7 @@ export default function ProjectDetailPage() {
                   : 'bg-gray-800 text-gray-400 border-gray-700 hover:bg-red-900/30 hover:text-red-400'
               }`}>
               <Heart className={`w-3.5 h-3.5 ${isFavorited ? 'fill-current' : ''}`} />
-              {isFavorited ? 'Saved' : 'Save'}
+              {isFavorited ? tr.saved : tr.saveBtn}
             </button>
 
             <button onClick={toggleTracking} disabled={trackLoading}
@@ -372,14 +379,14 @@ export default function ProjectDetailPage() {
                   : 'bg-gray-800 text-gray-400 border-gray-700 hover:bg-ks-green/10 hover:text-ks-green'
               }`}>
               <Radio className={`w-3.5 h-3.5 ${tracking?.is_tracking ? 'animate-pulse' : ''}`} />
-              {tracking?.is_tracking ? 'Tracking' : 'Track'}
+              {tracking?.is_tracking ? tr.trackingBtn : tr.trackBtn}
             </button>
 
             <button onClick={triggerScrape} disabled={scraping}
-              title="Fetch latest data from Kickstarter now"
+              title={tr.syncNow}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-800 text-gray-400 border border-gray-700 hover:bg-gray-700 text-xs font-semibold transition-colors disabled:opacity-50">
               <RefreshCw className={`w-3.5 h-3.5 ${scraping ? 'animate-spin' : ''}`} />
-              {scraping ? 'Syncing…' : 'Sync Now'}
+              {scraping ? tr.syncingBtn : tr.syncNow}
             </button>
 
             {ksUrl && (
@@ -401,26 +408,26 @@ export default function ProjectDetailPage() {
         <div className="flex items-center gap-8 pb-0 overflow-x-auto">
           <div className="shrink-0">
             <p className="text-3xl font-black text-white">{fmtUsd(project.usd_pledged)}</p>
-            <p className="text-xs text-gray-500">pledged of {fmtUsd(project.goal)}</p>
+            <p className="text-xs text-gray-500">{tr.pledgedOf(fmtUsd(project.goal))}</p>
           </div>
           <div className="shrink-0">
             <p className="text-3xl font-black text-white">{fundingRate >= 10000 ? '>10K' : fundingRate.toFixed(0)}%</p>
-            <p className="text-xs text-gray-500">funded</p>
+            <p className="text-xs text-gray-500">{tr.fundedLabel}</p>
           </div>
           <div className="shrink-0">
             <p className="text-3xl font-black text-white">{project.backers_count.toLocaleString()}</p>
-            <p className="text-xs text-gray-500">backers</p>
+            <p className="text-xs text-gray-500">{tr.backersLabel}</p>
           </div>
           {duration && (
             <div className="shrink-0">
               <p className="text-3xl font-black text-white">{duration}</p>
-              <p className="text-xs text-gray-500">day campaign</p>
+              <p className="text-xs text-gray-500">{tr.dayCampaign}</p>
             </div>
           )}
           {avgDailyPledged && (
             <div className="shrink-0">
               <p className="text-3xl font-black text-white">{fmtUsd(avgDailyPledged)}</p>
-              <p className="text-xs text-gray-500">avg/day</p>
+              <p className="text-xs text-gray-500">{tr.avgPerDay}</p>
             </div>
           )}
         </div>
@@ -457,23 +464,23 @@ export default function ProjectDetailPage() {
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
               <div className={`${grade.color} rounded-xl p-4 text-white flex flex-col items-center justify-center`}>
                 <p className="text-4xl font-black">{grade.grade}</p>
-                <p className="text-xs font-semibold opacity-80 mt-1">Funding Grade</p>
+                <p className="text-xs font-semibold opacity-80 mt-1">{tr.fundingGrade}</p>
               </div>
-              <StatCard label="Funding Rate" value={`${fundingRate >= 10000 ? '>10,000' : fundingRate.toFixed(0)}%`}
-                sub={fundingRate >= 100 ? 'Goal exceeded' : 'Below goal'} />
-              <StatCard label="Backers" value={project.backers_count.toLocaleString()}
-                sub={avgDailyPledged ? `${(project.backers_count / (duration ?? 1)).toFixed(1)}/day avg` : undefined} />
-              <StatCard label="Total Raised" value={fmtUsd(project.usd_pledged)} sub={`Goal: ${fmtUsd(project.goal)}`} />
+              <StatCard label={tr.fundingRateLabel} value={`${fundingRate >= 10000 ? '>10,000' : fundingRate.toFixed(0)}%`}
+                sub={fundingRate >= 100 ? tr.exceeded : tr.belowGoal} />
+              <StatCard label={tr.backersLabel} value={project.backers_count.toLocaleString()}
+                sub={avgDailyPledged ? `${(project.backers_count / (duration ?? 1)).toFixed(1)}${tr.dayAvgSuffix}` : undefined} />
+              <StatCard label={tr.totalRaisedLabel} value={fmtUsd(project.usd_pledged)} sub={tr.goalPrefix(fmtUsd(project.goal))} />
             </div>
 
             {/* Timeline */}
             <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
-              <h3 className="font-semibold text-gray-700 mb-4 text-sm uppercase tracking-wide">Timeline</h3>
+              <h3 className="font-semibold text-gray-700 mb-4 text-sm uppercase tracking-wide">{tr.timeline}</h3>
               <div className="grid grid-cols-3 gap-6">
                 {[
-                  { label: 'Created', date: fmtDate(project.created_at, lang) },
-                  { label: 'Launched', date: fmtDate(project.launched_at, lang) },
-                  { label: 'Deadline', date: fmtDate(project.deadline, lang) },
+                  { label: tr.timelineCreated, date: fmtDate(project.created_at, lang) },
+                  { label: tr.timelineLaunched, date: fmtDate(project.launched_at, lang) },
+                  { label: tr.timelineDeadline, date: fmtDate(project.deadline, lang) },
                 ].map(({ label, date }) => (
                   <div key={label}>
                     <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">{label}</p>
@@ -487,22 +494,22 @@ export default function ProjectDetailPage() {
             {hasRealData ? (
               <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
                 <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
-                  <h3 className="font-semibold text-gray-700 text-sm">Daily Snapshot History</h3>
-                  <span className="text-xs text-gray-400">{snapshots.length} records</span>
+                  <h3 className="font-semibold text-gray-700 text-sm">{tr.snapshotTitle}</h3>
+                  <span className="text-xs text-gray-400">{tr.snapshotRecords(snapshots.length)}</span>
                 </div>
                 <div className="overflow-x-auto">
                   <table className="w-full text-xs">
                     <thead>
                       <tr className="bg-gray-50 text-gray-500 font-semibold uppercase tracking-wide">
-                        <th className="text-left px-4 py-3">Date</th>
-                        <th className="text-right px-4 py-3">Pledged</th>
-                        <th className="text-right px-4 py-3">Change</th>
-                        <th className="text-right px-4 py-3">Backers</th>
-                        <th className="text-right px-4 py-3">+/-</th>
-                        <th className="text-right px-4 py-3">Days Left</th>
-                        <th className="text-right px-4 py-3">Comments</th>
-                        <th className="text-right px-4 py-3">Updates</th>
-                        <th className="text-center px-4 py-3">Source</th>
+                        <th className="text-left px-4 py-3">{tr.colDate}</th>
+                        <th className="text-right px-4 py-3">{tr.colPledged}</th>
+                        <th className="text-right px-4 py-3">{tr.colChange}</th>
+                        <th className="text-right px-4 py-3">{tr.colBackers}</th>
+                        <th className="text-right px-4 py-3">{tr.colDelta}</th>
+                        <th className="text-right px-4 py-3">{tr.colDaysLeft}</th>
+                        <th className="text-right px-4 py-3">{tr.colComments}</th>
+                        <th className="text-right px-4 py-3">{tr.colUpdates}</th>
+                        <th className="text-center px-4 py-3">{tr.colSource}</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -533,33 +540,36 @@ export default function ProjectDetailPage() {
               </div>
             ) : (
               <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6 text-center space-y-4">
-                <p className="text-gray-500 text-sm">No historical data yet for this project.</p>
+                <p className="text-gray-500 text-sm">{tr.noHistoricalData}</p>
                 <div className="flex justify-center gap-3">
                   <button onClick={triggerScrape} disabled={scraping}
                     className="flex items-center gap-2 px-4 py-2 bg-ks-green text-white rounded-lg text-sm font-semibold hover:bg-ks-green-dark disabled:opacity-50">
                     <RefreshCw className={`w-4 h-4 ${scraping ? 'animate-spin' : ''}`} />
-                    {scraping ? 'Fetching from Kickstarter…' : 'Fetch from Kickstarter'}
+                    {scraping ? tr.fetchingFromKS : tr.fetchFromKS}
                   </button>
                   <button onClick={importKicktraq} disabled={ktImporting}
                     className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700 disabled:opacity-50">
                     <TrendingUp className={`w-4 h-4 ${ktImporting ? 'animate-pulse' : ''}`} />
-                    {ktImporting ? 'Importing from Kicktraq…' : 'Import from Kicktraq'}
+                    {ktImporting ? tr.importingFromKT : tr.importFromKT}
                   </button>
                 </div>
-                <p className="text-xs text-gray-400">Kicktraq has historical data for past campaigns.</p>
+                {ktError && (
+                  <p className="text-xs text-red-500 bg-red-50 rounded-lg px-3 py-2 max-w-md mx-auto">{ktError}</p>
+                )}
+                <p className="text-xs text-gray-400">{tr.kicktraqHint}</p>
               </div>
             )}
 
             {/* Tracking settings panel */}
             {tracking?.is_tracking ? (
               <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
-                <h3 className="font-semibold text-gray-700 text-sm mb-4">Tracking Settings</h3>
+                <h3 className="font-semibold text-gray-700 text-sm mb-4">{tr.trackingSettings}</h3>
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
                   {[
-                    { key: 'track_rewards', label: 'Rewards' },
-                    { key: 'track_text_diff', label: 'Text Changes' },
-                    { key: 'track_comments', label: 'Comment Count' },
-                    { key: 'analyze_comments', label: 'AI Analysis' },
+                    { key: 'track_rewards', label: tr.trackRewardsLabel },
+                    { key: 'track_text_diff', label: tr.trackTextDiffLabel },
+                    { key: 'track_comments', label: tr.trackCommentsLabel },
+                    { key: 'analyze_comments', label: tr.trackAILabel },
                   ].map(({ key, label }) => (
                     <label key={key} className="flex items-center gap-2 cursor-pointer select-none">
                       <div className="relative">
@@ -575,8 +585,8 @@ export default function ProjectDetailPage() {
                   ))}
                 </div>
                 <div className="mt-4 flex items-center gap-4">
-                  <span className="text-sm text-gray-600">Update frequency:</span>
-                  {[{ v: 1, label: 'Every 4h' }, { v: 2, label: 'Every 1h' }].map(({ v, label }) => (
+                  <span className="text-sm text-gray-600">{tr.updateFreq}</span>
+                  {[{ v: 1, label: tr.every4h }, { v: 2, label: tr.every1h }].map(({ v, label }) => (
                     <button key={v} onClick={() => updateTrackSetting('priority', v)}
                       className={`px-3 py-1 rounded-lg text-xs font-semibold border ${tracking.priority === v ? 'bg-ks-green text-white border-ks-green' : 'bg-white text-gray-600 border-gray-200'}`}>
                       {label}
@@ -595,15 +605,15 @@ export default function ProjectDetailPage() {
           <div className="space-y-4">
             <div className="flex items-center justify-between">
               <h3 className="font-semibold text-gray-700">
-                {hasRealData ? 'Live Funding Curve' : 'Simulated Funding Curve'}
-                {!hasRealData && <span className="ml-2 text-xs font-normal text-amber-600">(no real data yet)</span>}
+                {hasRealData ? tr.liveCurve : tr.simulatedCurve}
+                {!hasRealData && <span className="ml-2 text-xs font-normal text-amber-600">{tr.noRealDataYet}</span>}
               </h3>
               {hasRealData && (
                 <div className="flex gap-2">
                   {(['all', '30d', '14d'] as const).map(r => (
                     <button key={r} onClick={() => setChartRange(r)}
                       className={`px-3 py-1 rounded text-xs font-semibold ${chartRange === r ? 'bg-ks-green text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
-                      {r === 'all' ? 'All' : r.toUpperCase()}
+                      {r === 'all' ? tr.chartAll : r.toUpperCase()}
                     </button>
                   ))}
                 </div>
@@ -614,7 +624,7 @@ export default function ProjectDetailPage() {
               <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5 space-y-6">
                 {/* Pledged chart */}
                 <div>
-                  <p className="text-xs text-gray-400 font-semibold uppercase tracking-wide mb-3">Amount Pledged (USD)</p>
+                  <p className="text-xs text-gray-400 font-semibold uppercase tracking-wide mb-3">{tr.amountPledgedLabel}</p>
                   <ResponsiveContainer width="100%" height={220}>
                     <AreaChart data={chartData} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
                       <defs>
@@ -634,7 +644,7 @@ export default function ProjectDetailPage() {
 
                 {/* Backers + engagement chart */}
                 <div>
-                  <p className="text-xs text-gray-400 font-semibold uppercase tracking-wide mb-3">Backers & Engagement</p>
+                  <p className="text-xs text-gray-400 font-semibold uppercase tracking-wide mb-3">{tr.backersEngagement}</p>
                   <ResponsiveContainer width="100%" height={200}>
                     <LineChart data={chartData} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
@@ -652,12 +662,12 @@ export default function ProjectDetailPage() {
             ) : (
               <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6 text-center">
                 <p className="text-gray-400 text-sm mb-4">
-                  {hasRealData ? 'Not enough data points for a chart yet.' : 'Sync data to see the real funding curve.'}
+                  {hasRealData ? tr.notEnoughDataChart : tr.syncToSeeCurve}
                 </p>
                 <button onClick={triggerScrape} disabled={scraping}
                   className="inline-flex items-center gap-2 px-4 py-2 bg-ks-green text-white rounded-lg text-sm font-semibold hover:bg-ks-green-dark disabled:opacity-50">
                   <RefreshCw className={`w-4 h-4 ${scraping ? 'animate-spin' : ''}`} />
-                  {scraping ? 'Syncing…' : 'Sync Now'}
+                  {scraping ? tr.syncingBtn : tr.syncNow}
                 </button>
               </div>
             )}
@@ -667,7 +677,7 @@ export default function ProjectDetailPage() {
         {/* ── REWARDS ── */}
         {activeTab === 'rewards' && (
           <div className="space-y-4">
-            <h3 className="font-semibold text-gray-700">Reward Tiers</h3>
+            <h3 className="font-semibold text-gray-700">{tr.rewardTiersLabel}</h3>
             {rewards.length ? (
               <div className="space-y-3">
                 {rewards.map(r => {
@@ -680,16 +690,16 @@ export default function ProjectDetailPage() {
                             <span className="text-lg font-black text-ks-green">${r.amount_usd}</span>
                             {r.title && <span className="font-semibold text-gray-800">{r.title}</span>}
                             {r.is_limited ? (
-                              <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-amber-50 text-amber-600 border border-amber-100">Limited</span>
+                              <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-amber-50 text-amber-600 border border-amber-100">{tr.limitedLabel}</span>
                             ) : null}
                           </div>
                           {r.description && <p className="text-sm text-gray-500 leading-relaxed">{r.description}</p>}
                         </div>
                         <div className="text-right shrink-0">
                           <p className="text-xl font-black text-gray-900">{r.backers_count.toLocaleString()}</p>
-                          <p className="text-xs text-gray-400">backers</p>
+                          <p className="text-xs text-gray-400">{tr.backersUnit2}</p>
                           {r.limit_count && (
-                            <p className="text-xs text-gray-400">{r.limit_count - r.backers_count} left of {r.limit_count}</p>
+                            <p className="text-xs text-gray-400">{tr.leftOf(r.limit_count - r.backers_count, r.limit_count)}</p>
                           )}
                         </div>
                       </div>
@@ -698,7 +708,7 @@ export default function ProjectDetailPage() {
                           <div className="w-full bg-gray-100 rounded-full h-1.5">
                             <div className="h-1.5 rounded-full bg-amber-400 transition-all" style={{ width: `${fillPct}%` }} />
                           </div>
-                          <p className="text-xs text-gray-400 mt-1">{fillPct.toFixed(0)}% claimed</p>
+                          <p className="text-xs text-gray-400 mt-1">{tr.claimedPct(fillPct.toFixed(0))}</p>
                         </div>
                       )}
                     </div>
@@ -707,11 +717,11 @@ export default function ProjectDetailPage() {
               </div>
             ) : (
               <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6 text-center">
-                <p className="text-gray-400 text-sm mb-4">No reward data yet. Sync from Kickstarter to fetch rewards.</p>
+                <p className="text-gray-400 text-sm mb-4">{tr.noRewardData}</p>
                 <button onClick={triggerScrape} disabled={scraping}
                   className="inline-flex items-center gap-2 px-4 py-2 bg-ks-green text-white rounded-lg text-sm font-semibold hover:bg-ks-green-dark disabled:opacity-50">
                   <RefreshCw className={`w-4 h-4 ${scraping ? 'animate-spin' : ''}`} />
-                  {scraping ? 'Syncing…' : 'Sync Now'}
+                  {scraping ? tr.syncingBtn : tr.syncNow}
                 </button>
               </div>
             )}
@@ -721,7 +731,7 @@ export default function ProjectDetailPage() {
         {/* ── TEXT CHANGES ── */}
         {activeTab === 'changes' && (
           <div className="space-y-4">
-            <h3 className="font-semibold text-gray-700">Text Change History</h3>
+            <h3 className="font-semibold text-gray-700">{tr.textChangeHistoryLabel}</h3>
             {Object.keys(textByField).length ? (
               <div className="space-y-6">
                 {Object.entries(textByField).map(([field, changes]) => (
@@ -749,8 +759,8 @@ export default function ProjectDetailPage() {
               </div>
             ) : (
               <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6 text-center">
-                <p className="text-gray-400 text-sm mb-2">No text history yet.</p>
-                <p className="text-xs text-gray-400">Enable &ldquo;Text Changes&rdquo; tracking and sync periodically to detect changes to the project&apos;s title and description.</p>
+                <p className="text-gray-400 text-sm mb-2">{tr.noTextHistory}</p>
+                <p className="text-xs text-gray-400">{tr.enableTrackingHint}</p>
               </div>
             )}
           </div>
@@ -760,8 +770,8 @@ export default function ProjectDetailPage() {
         {activeTab === 'similar' && (
           <div className="space-y-4">
             <div>
-              <h3 className="font-semibold text-gray-700">Similar Projects</h3>
-              <p className="text-xs text-gray-400 mt-0.5">Matched by category, goal size, and backer count</p>
+              <h3 className="font-semibold text-gray-700">{tr.similarProjectsLabel}</h3>
+              <p className="text-xs text-gray-400 mt-0.5">{tr.similarDesc}</p>
             </div>
             {project.similar?.length ? (
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -788,7 +798,7 @@ export default function ProjectDetailPage() {
                       </div>
                       <div className="mt-3 flex items-center justify-between text-xs">
                         <span className={`font-bold ${sRate >= 100 ? 'text-ks-green' : 'text-gray-600'}`}>
-                          {sRate.toFixed(0)}% funded
+                          {tr.fundedPct(sRate.toFixed(0))}
                         </span>
                         <span className="text-gray-400">{fmtUsd(s.usd_pledged)}</span>
                       </div>
@@ -801,7 +811,7 @@ export default function ProjectDetailPage() {
               </div>
             ) : (
               <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6 text-center">
-                <p className="text-gray-400 text-sm">No similar projects found in the current dataset.</p>
+                <p className="text-gray-400 text-sm">{tr.noSimilarFound}</p>
               </div>
             )}
           </div>

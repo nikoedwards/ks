@@ -41,7 +41,12 @@ interface KSProject {
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 export function extractCreatorSlug(sourceUrl: string): string | null {
-  const m = sourceUrl.match(/kickstarter\.com\/projects\/([^/]+)\//);
+  const m = sourceUrl.match(/kickstarter\.com\/projects\/([^/?#]+)/);
+  return m ? m[1] : null;
+}
+
+export function extractProjectSlug(sourceUrl: string): string | null {
+  const m = sourceUrl.match(/kickstarter\.com\/projects\/[^/?#]+\/([^/?#]+)/);
   return m ? m[1] : null;
 }
 

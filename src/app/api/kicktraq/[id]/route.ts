@@ -1,31 +1,44 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSessionUser, SESSION_COOKIE } from '@/lib/auth';
 import { getProjectById } from '@/lib/db';
-import { extractCreatorSlug, scrapeKicktraq, storeKicktraqDays } from '@/lib/scraper';
+import { extractCreatorSlug, extractProjectSlug, scrapeKicktraq, storeKicktraqDays } from '@/lib/scraper';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const { id } = await params;
-  const token = req.cookies.get(SESSION_COOKIE)?.value;
-  const user = token ? getSessionUser(token) : null;
-  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  try {
+    const { id } = await params;
+    const token = req.cookies.get(SESSION_COOKIE)?.value;
+    const user = token ? getSessionUser(token) : null;
+    if (!user) return NextResponse.json({ ok: false, message: 'Please sign in to import data.' }, { status: 401 });
 
-  const project = await getProjectById(id) as { source_url?: string; slug?: string } | null;
-  if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 });
+    const project = await getProjectById(id) as { source_url?: string; slug?: string } | null;
+    if (!project) return NextResponse.json({ ok: false, message: 'Project not found.' }, { status: 404 });
 
-  const creatorSlug = extractCreatorSlug(project.source_url ?? '');
-  const projectSlug = project.slug;
-  if (!creatorSlug || !projectSlug) {
-    return NextResponse.json({ error: 'Cannot derive Kicktraq URL from this project' }, { status: 422 });
+    const sourceUrl = project.source_url ?? '';
+    const creatorSlug = extractCreatorSlug(sourceUrl);
+    // Prefer DB slug, fall back to extracting from URL
+    const projectSlug = project.slug || extractProjectSlug(sourceUrl);
+
+    if (!creatorSlug || !projectSlug) {
+      return NextResponse.json({
+        ok: false,
+        message: `Cannot derive Kicktraq URL. Source URL: "${sourceUrl || '(empty)'}"`
+      }, { status: 422 });
+    }
+
+    const days = await scrapeKicktraq(creatorSlug, projectSlug);
+    if (!days.length) {
+      return NextResponse.json({
+        ok: false,
+        message: `No data found on Kicktraq for ${creatorSlug}/${projectSlug}. The project may not be listed there, or Kicktraq's format may have changed.`
+      });
+    }
+
+    storeKicktraqDays(id, days);
+    return NextResponse.json({ ok: true, days: days.length });
+  } catch (err) {
+    return NextResponse.json({ ok: false, message: String(err) }, { status: 500 });
   }
-
-  const days = await scrapeKicktraq(creatorSlug, projectSlug);
-  if (!days.length) {
-    return NextResponse.json({ ok: false, message: 'No data found on Kicktraq for this project' });
-  }
-
-  storeKicktraqDays(id, days);
-  return NextResponse.json({ ok: true, days: days.length });
 }
