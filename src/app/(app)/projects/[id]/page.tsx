@@ -1,36 +1,61 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { ArrowLeft, ExternalLink, Users, Target, TrendingUp, Calendar, Award, Heart } from 'lucide-react';
+import {
+  ArrowLeft, ExternalLink, TrendingUp, Calendar, Award, Heart,
+  Activity, Gift, FileText, Layers, RefreshCw, Radio,
+} from 'lucide-react';
+import {
+  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
+  ResponsiveContainer, LineChart, Line, Legend,
+} from 'recharts';
 import DataSource from '@/components/DataSource';
 import { useLanguage } from '@/hooks/useLanguage';
 import { t } from '@/lib/i18n';
 import { useAuth } from '@/contexts/AuthContext';
 
+// ─── Types ────────────────────────────────────────────────────────────────────
+
 interface Project {
-  id: string;
-  name: string;
-  blurb: string;
-  state: string;
-  country: string;
-  country_name: string;
-  currency: string;
-  category_parent: string;
-  category_name: string;
-  category_id: number;
-  goal: number;
-  pledged: number;
-  usd_pledged: number;
-  backers_count: number;
-  staff_pick: number;
-  created_at: number;
-  launched_at: number;
-  deadline: number;
-  creator_name: string;
-  source_url: string;
-  slug: string;
+  id: string; name: string; blurb: string; state: string;
+  country: string; country_name: string; currency: string;
+  category_parent: string; category_name: string; category_id: number;
+  goal: number; pledged: number; usd_pledged: number; backers_count: number;
+  staff_pick: number; created_at: number; launched_at: number; deadline: number;
+  creator_name: string; source_url: string; slug: string;
+  similar?: SimilarProject[];
 }
+
+interface SimilarProject {
+  id: string; name: string; blurb: string; state: string;
+  category_parent: string; category_name: string;
+  usd_pledged: number; goal: number; backers_count: number;
+  launched_at: number; source_url: string; slug: string;
+}
+
+interface Snapshot {
+  captured_at: number; pledged_usd: number; backers_count: number;
+  days_to_go: number; comments_count: number; updates_count: number;
+  state: string; source: string;
+}
+
+interface Reward {
+  reward_id: string; title: string; description: string;
+  amount_usd: number; backers_count: number; limit_count: number | null; is_limited: number;
+}
+
+interface TextChange {
+  field: string; captured_at: number; content: string;
+}
+
+interface TrackingSettings {
+  is_tracking: number; track_rewards: number; track_comments: number;
+  analyze_comments: number; track_text_diff: number; priority: number;
+  last_fetched: number | null;
+}
+
+// ─── Constants ───────────────────────────────────────────────────────────────
 
 const STATE_COLOR: Record<string, string> = {
   successful: 'bg-ks-green-light text-ks-green-dark border border-ks-green/20',
@@ -39,6 +64,18 @@ const STATE_COLOR: Record<string, string> = {
   canceled: 'bg-amber-50 text-amber-600 border border-amber-100',
   suspended: 'bg-purple-50 text-purple-600 border border-purple-100',
 };
+
+const TABS = [
+  { id: 'overview', label: 'Overview', icon: Activity },
+  { id: 'curve', label: 'Funding Curve', icon: TrendingUp },
+  { id: 'rewards', label: 'Rewards', icon: Gift },
+  { id: 'changes', label: 'Text Changes', icon: FileText },
+  { id: 'similar', label: 'Similar Projects', icon: Layers },
+] as const;
+
+type TabId = typeof TABS[number]['id'];
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function fmtUsd(v: number) {
   if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(2)}M`;
@@ -49,7 +86,13 @@ function fmtUsd(v: number) {
 function fmtDate(ts: number | null, lang: string) {
   if (!ts) return '—';
   return new Date(ts * 1000).toLocaleDateString(lang === 'cn' ? 'zh-CN' : 'en-US', {
-    year: 'numeric', month: 'long', day: 'numeric',
+    year: 'numeric', month: 'short', day: 'numeric',
+  });
+}
+
+function fmtDateTime(ts: number) {
+  return new Date(ts * 1000).toLocaleString('en-US', {
+    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
   });
 }
 
@@ -58,25 +101,39 @@ function calcDuration(p: Project): number | null {
   return Math.round((p.deadline - p.launched_at) / 86400);
 }
 
-function buildFundingCurve(p: Project): { day: number; pct: number; pledged: number }[] {
-  const duration = calcDuration(p);
-  if (!duration || duration <= 0) return [];
-  const points = Math.min(duration, 60);
-  const finalRate = p.goal > 0 ? (p.usd_pledged / p.goal) * 100 : 0;
-  const curve: { day: number; pct: number; pledged: number }[] = [];
-  for (let i = 0; i <= points; i++) {
-    const tFrac = i / points;
-    const sigmoid = 1 / (1 + Math.exp(-8 * (tFrac - 0.5)));
-    const blended = 0.4 * (tFrac < 0.1 ? tFrac * 3 : 0.3 + (tFrac - 0.1) * (0.7 / 0.9)) + 0.6 * sigmoid;
-    const cappedV = Math.min(1, Math.max(0, blended));
-    curve.push({
-      day: Math.round(tFrac * duration),
-      pct: Math.round(cappedV * finalRate * 10) / 10,
-      pledged: Math.round(cappedV * p.usd_pledged),
-    });
-  }
-  return curve;
+function fundingGrade(rate: number): { grade: string; color: string } {
+  if (rate >= 1000) return { grade: 'A++', color: 'bg-emerald-600' };
+  if (rate >= 500) return { grade: 'A+', color: 'bg-emerald-500' };
+  if (rate >= 200) return { grade: 'A', color: 'bg-green-500' };
+  if (rate >= 100) return { grade: 'B+', color: 'bg-lime-500' };
+  if (rate >= 75) return { grade: 'B', color: 'bg-yellow-400' };
+  if (rate >= 50) return { grade: 'C', color: 'bg-orange-400' };
+  return { grade: 'D', color: 'bg-red-500' };
 }
+
+// ─── Sub-components ───────────────────────────────────────────────────────────
+
+function StatCard({ label, value, sub }: { label: string; value: string; sub?: string }) {
+  return (
+    <div className="bg-white rounded-xl border border-gray-100 p-5 shadow-sm">
+      <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">{label}</p>
+      <p className="text-2xl font-black text-gray-900">{value}</p>
+      {sub && <p className="text-xs text-gray-400 mt-0.5">{sub}</p>}
+    </div>
+  );
+}
+
+function DiffBlock({ before, after }: { before: string; after: string }) {
+  if (before === after) return <span className="text-gray-600 text-sm">{after}</span>;
+  return (
+    <div className="space-y-1 text-sm">
+      <p className="text-red-500 line-through opacity-70">{before}</p>
+      <p className="text-gray-800">{after}</p>
+    </div>
+  );
+}
+
+// ─── Main page ────────────────────────────────────────────────────────────────
 
 export default function ProjectDetailPage() {
   const params = useParams<{ id: string }>();
@@ -91,20 +148,62 @@ export default function ProjectDetailPage() {
   const [notFound, setNotFound] = useState(false);
   const [isFavorited, setIsFavorited] = useState(false);
 
+  const [activeTab, setActiveTab] = useState<TabId>('overview');
+
+  // Tracking
+  const [tracking, setTracking] = useState<TrackingSettings | null>(null);
+  const [trackLoading, setTrackLoading] = useState(false);
+  const [scraping, setScraping] = useState(false);
+  const [ktImporting, setKtImporting] = useState(false);
+
+  // Snapshot data
+  const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
+  const [rewards, setRewards] = useState<Reward[]>([]);
+  const [textHistory, setTextHistory] = useState<TextChange[]>([]);
+
+  // Chart range
+  const [chartRange, setChartRange] = useState<'all' | '30d' | '14d'>('all');
+
+  const id = params?.id;
+
+  // ── Fetch project ──────────────────────────────────────────────────────────
   useEffect(() => {
-    if (!params?.id) return;
-    fetch(`/api/projects/${params.id}`)
+    if (!id) return;
+    fetch(`/api/projects/${id}`)
       .then(r => { if (r.status === 404) { setNotFound(true); setLoading(false); return null; } return r.json(); })
       .then(d => { if (d) setProject(d); setLoading(false); })
       .catch(() => setLoading(false));
-  }, [params?.id]);
+  }, [id]);
 
+  // ── Fetch favorites ────────────────────────────────────────────────────────
   useEffect(() => {
-    if (!user || !params?.id) return;
+    if (!user || !id) return;
     fetch('/api/favorites').then(r => r.json()).then(d => {
-      setIsFavorited(((d.ids ?? []) as string[]).includes(params.id));
+      setIsFavorited(((d.ids ?? []) as string[]).includes(id));
     }).catch(() => {});
-  }, [user, params?.id]);
+  }, [user, id]);
+
+  // ── Fetch tracking settings ────────────────────────────────────────────────
+  useEffect(() => {
+    if (!id) return;
+    fetch(`/api/track/${id}`).then(r => r.json()).then(d => {
+      setTracking(d.settings);
+    }).catch(() => {});
+  }, [id]);
+
+  // ── Fetch snapshot data ────────────────────────────────────────────────────
+  const loadSnapshots = useCallback(() => {
+    if (!id) return;
+    fetch(`/api/snapshots/${id}`).then(r => r.json()).then(d => {
+      setSnapshots(d.snapshots ?? []);
+      setRewards(d.rewards ?? []);
+      setTextHistory(d.textHistory ?? []);
+    }).catch(() => {});
+  }, [id]);
+
+  useEffect(() => { loadSnapshots(); }, [loadSnapshots]);
+
+  // ── Actions ────────────────────────────────────────────────────────────────
 
   const toggleFavorite = async () => {
     if (!user) { showLogin(); return; }
@@ -118,6 +217,81 @@ export default function ProjectDetailPage() {
     }
   };
 
+  const toggleTracking = async () => {
+    if (!user) { showLogin(); return; }
+    if (!id) return;
+    setTrackLoading(true);
+    if (tracking?.is_tracking) {
+      await fetch(`/api/track/${id}`, { method: 'DELETE' });
+      setTracking(prev => prev ? { ...prev, is_tracking: 0 } : null);
+    } else {
+      await fetch('/api/track', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ projectId: id }) });
+      setTracking(prev => prev ? { ...prev, is_tracking: 1 } : { is_tracking: 1, track_rewards: 1, track_comments: 0, analyze_comments: 0, track_text_diff: 1, priority: 1, last_fetched: null });
+    }
+    setTrackLoading(false);
+  };
+
+  const updateTrackSetting = async (key: string, value: number) => {
+    if (!id) return;
+    await fetch(`/api/track/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ [key]: value }) });
+    setTracking(prev => prev ? { ...prev, [key]: value } : null);
+  };
+
+  const triggerScrape = async () => {
+    if (!user) { showLogin(); return; }
+    if (!id) return;
+    setScraping(true);
+    await fetch(`/api/track/${id}`, { method: 'POST' });
+    await new Promise(r => setTimeout(r, 1500));
+    loadSnapshots();
+    const d = await fetch(`/api/track/${id}`).then(r => r.json());
+    setTracking(d.settings);
+    setScraping(false);
+  };
+
+  const importKicktraq = async () => {
+    if (!user) { showLogin(); return; }
+    if (!id) return;
+    setKtImporting(true);
+    const res = await fetch(`/api/kicktraq/${id}`, { method: 'POST' });
+    const data = await res.json() as { ok: boolean; days?: number; message?: string };
+    if (data.ok) { loadSnapshots(); }
+    else { alert(data.message ?? 'Kicktraq import failed'); }
+    setKtImporting(false);
+  };
+
+  // ── Chart data ─────────────────────────────────────────────────────────────
+
+  const filteredSnapshots = (() => {
+    if (!snapshots.length) return [];
+    const cutoff = chartRange === '30d' ? Date.now() / 1000 - 30 * 86400
+      : chartRange === '14d' ? Date.now() / 1000 - 14 * 86400
+      : 0;
+    return snapshots.filter(s => s.captured_at >= cutoff);
+  })();
+
+  const chartData = filteredSnapshots.map(s => ({
+    date: fmtDate(s.captured_at, lang),
+    ts: s.captured_at,
+    pledged: Math.round(s.pledged_usd),
+    backers: s.backers_count,
+    comments: s.comments_count,
+    updates: s.updates_count,
+    source: s.source,
+  }));
+
+  // Table data: most recent first, delta columns
+  const tableData = [...filteredSnapshots].reverse().map((s, i, arr) => {
+    const prev = arr[i + 1];
+    return {
+      ...s,
+      delta_pledged: prev ? s.pledged_usd - prev.pledged_usd : null,
+      delta_backers: prev ? s.backers_count - prev.backers_count : null,
+    };
+  });
+
+  // ── Loading / not found ────────────────────────────────────────────────────
+
   if (loading) return <div className="flex items-center justify-center h-full text-gray-400">{tr.loading}</div>;
   if (notFound) return (
     <div className="max-w-2xl mx-auto mt-20 text-center space-y-4">
@@ -130,177 +304,509 @@ export default function ProjectDetailPage() {
   const fundingRate = project.goal > 0 ? (project.usd_pledged / project.goal) * 100 : 0;
   const duration = calcDuration(project);
   const avgDailyPledged = duration && duration > 0 ? project.usd_pledged / duration : null;
-  const curve = buildFundingCurve(project);
-  const ksUrl = project.source_url?.startsWith('https://www.kickstarter.com/projects/')
-    ? project.source_url : null;
+  const grade = fundingGrade(fundingRate);
+  const ksUrl = project.source_url?.startsWith('https://www.kickstarter.com/projects/') ? project.source_url : null;
   const kicktraqUrl = project.slug ? `https://www.kicktraq.com/projects/${project.slug}/` : null;
-  const barMax = curve.length > 0 ? Math.max(...curve.map(c => c.pct)) : 100;
+  const hasRealData = snapshots.length > 0;
+
+  // Text diff: group by field, pair consecutive entries
+  const textByField: Record<string, TextChange[]> = {};
+  for (const tc of textHistory) {
+    if (!textByField[tc.field]) textByField[tc.field] = [];
+    textByField[tc.field].push(tc);
+  }
 
   return (
-    <div className="max-w-5xl mx-auto space-y-6">
+    <div className="max-w-6xl mx-auto space-y-0">
+      {/* Back */}
       <button onClick={() => router.back()}
-        className="flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-800 transition-colors">
-        <ArrowLeft className="w-4 h-4" />
-        {tr.back}
+        className="flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-800 transition-colors mb-4">
+        <ArrowLeft className="w-4 h-4" />{tr.back}
       </button>
 
-      {/* Header */}
-      <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6">
-        <div className="flex items-start justify-between gap-4">
+      {/* ── Hero header (Social Blade style) ───────────────────────────────── */}
+      <div className="bg-gray-900 rounded-t-2xl px-6 pt-6 pb-0">
+        {/* Top row */}
+        <div className="flex items-start justify-between gap-4 mb-4">
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 flex-wrap mb-2">
-              <span className={`px-2.5 py-1 rounded-full text-xs font-semibold ${STATE_COLOR[project.state] ?? 'bg-gray-100 text-gray-600'}`}>
+              <span className={`px-2.5 py-1 rounded-full text-xs font-semibold ${STATE_COLOR[project.state] ?? 'bg-gray-700 text-gray-300'}`}>
                 {stateTr[project.state as keyof typeof stateTr] ?? project.state}
               </span>
               {project.staff_pick === 1 && (
-                <span className="flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold bg-yellow-50 text-yellow-600 border border-yellow-100">
+                <span className="flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold bg-yellow-900/40 text-yellow-400 border border-yellow-800/40">
                   <Award className="w-3 h-3" /> {tr.staffPick}
                 </span>
               )}
-              <span className="text-xs text-gray-400">{project.category_parent} · {project.category_name}</span>
+              <span className="text-xs text-gray-500">{project.category_parent} · {project.category_name}</span>
             </div>
-            <h1 className="text-2xl font-bold text-gray-900 leading-snug">{project.name}</h1>
-            {project.blurb && <p className="text-gray-500 mt-2 text-sm leading-relaxed">{project.blurb}</p>}
-            <div className="flex items-center gap-3 mt-3 text-xs text-gray-400">
-              {project.creator_name && (
-                <span>
-                  {lang === 'cn'
-                    ? tr.createdBy(project.creator_name)
-                    : <><span className="text-gray-600 font-medium">{project.creator_name}</span> {tr.createdBy('')}</>}
-                </span>
-              )}
+            <h1 className="text-2xl font-bold text-white leading-snug">{project.name}</h1>
+            {project.blurb && <p className="text-gray-400 mt-1 text-sm leading-relaxed">{project.blurb}</p>}
+            <div className="flex items-center gap-3 mt-2 text-xs text-gray-500">
+              {project.creator_name && <span className="text-gray-300 font-medium">{project.creator_name}</span>}
               <span>{project.country_name || project.country}</span>
               <span>{project.currency}</span>
+              {tracking?.last_fetched && (
+                <span className="flex items-center gap-1 text-ks-green/80">
+                  <Radio className="w-3 h-3" /> Last synced {fmtDateTime(tracking.last_fetched)}
+                </span>
+              )}
             </div>
           </div>
-          <div className="flex gap-2 shrink-0 items-start">
-            {/* Favorite button */}
-            <button
-              onClick={toggleFavorite}
+
+          {/* Action buttons */}
+          <div className="flex gap-2 shrink-0 flex-wrap justify-end">
+            <button onClick={toggleFavorite}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
-                isFavorited
-                  ? 'bg-red-50 text-red-500 border-red-100 hover:bg-red-100'
-                  : 'bg-gray-50 text-gray-500 border-gray-200 hover:bg-red-50 hover:text-red-500 hover:border-red-100'
-              }`}
-            >
+                isFavorited ? 'bg-red-900/40 text-red-400 border-red-800/40 hover:bg-red-900/60'
+                  : 'bg-gray-800 text-gray-400 border-gray-700 hover:bg-red-900/30 hover:text-red-400'
+              }`}>
               <Heart className={`w-3.5 h-3.5 ${isFavorited ? 'fill-current' : ''}`} />
-              {isFavorited
-                ? (lang === 'cn' ? '已收藏' : 'Saved')
-                : (lang === 'cn' ? '收藏' : 'Save')}
+              {isFavorited ? 'Saved' : 'Save'}
             </button>
+
+            <button onClick={toggleTracking} disabled={trackLoading}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
+                tracking?.is_tracking
+                  ? 'bg-ks-green/20 text-ks-green border-ks-green/30 hover:bg-ks-green/30'
+                  : 'bg-gray-800 text-gray-400 border-gray-700 hover:bg-ks-green/10 hover:text-ks-green'
+              }`}>
+              <Radio className={`w-3.5 h-3.5 ${tracking?.is_tracking ? 'animate-pulse' : ''}`} />
+              {tracking?.is_tracking ? 'Tracking' : 'Track'}
+            </button>
+
+            <button onClick={triggerScrape} disabled={scraping}
+              title="Fetch latest data from Kickstarter now"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-800 text-gray-400 border border-gray-700 hover:bg-gray-700 text-xs font-semibold transition-colors disabled:opacity-50">
+              <RefreshCw className={`w-3.5 h-3.5 ${scraping ? 'animate-spin' : ''}`} />
+              {scraping ? 'Syncing…' : 'Sync Now'}
+            </button>
+
             {ksUrl && (
               <a href={ksUrl} target="_blank" rel="noopener noreferrer"
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-ks-green text-white text-xs font-semibold hover:bg-ks-green-dark transition-colors">
-                <ExternalLink className="w-3.5 h-3.5" />
-                Kickstarter
+                <ExternalLink className="w-3.5 h-3.5" /> Kickstarter
               </a>
             )}
             {kicktraqUrl && (
               <a href={kicktraqUrl} target="_blank" rel="noopener noreferrer"
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-100 text-gray-700 text-xs font-semibold hover:bg-gray-200 transition-colors">
-                <TrendingUp className="w-3.5 h-3.5" />
-                Kicktraq
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-800 text-gray-300 text-xs font-semibold hover:bg-gray-700 transition-colors border border-gray-700">
+                <TrendingUp className="w-3.5 h-3.5" /> Kicktraq
               </a>
             )}
           </div>
         </div>
 
-        {/* Funding progress */}
-        <div className="mt-6">
-          <div className="flex items-end justify-between mb-2">
-            <div>
-              <span className="text-3xl font-black text-gray-900">{fmtUsd(project.usd_pledged)}</span>
-              <span className="text-gray-400 text-sm ml-2">{tr.fundingOf(fmtUsd(project.goal))}</span>
+        {/* Stats bar */}
+        <div className="flex items-center gap-8 pb-0 overflow-x-auto">
+          <div className="shrink-0">
+            <p className="text-3xl font-black text-white">{fmtUsd(project.usd_pledged)}</p>
+            <p className="text-xs text-gray-500">pledged of {fmtUsd(project.goal)}</p>
+          </div>
+          <div className="shrink-0">
+            <p className="text-3xl font-black text-white">{fundingRate >= 10000 ? '>10K' : fundingRate.toFixed(0)}%</p>
+            <p className="text-xs text-gray-500">funded</p>
+          </div>
+          <div className="shrink-0">
+            <p className="text-3xl font-black text-white">{project.backers_count.toLocaleString()}</p>
+            <p className="text-xs text-gray-500">backers</p>
+          </div>
+          {duration && (
+            <div className="shrink-0">
+              <p className="text-3xl font-black text-white">{duration}</p>
+              <p className="text-xs text-gray-500">day campaign</p>
             </div>
-            <span className={`text-2xl font-black ${fundingRate >= 100 ? 'text-ks-green' : 'text-gray-500'}`}>
-              {fundingRate >= 10000 ? '>10,000' : fundingRate.toFixed(0)}%
-            </span>
-          </div>
-          <div className="w-full bg-gray-100 rounded-full h-3 overflow-hidden">
-            <div className="h-3 rounded-full bg-ks-green transition-all" style={{ width: `${Math.min(100, fundingRate)}%` }} />
-          </div>
-          <div className="flex items-center justify-between mt-2 text-xs text-gray-400">
-            <span>{tr.goalLabel(fmtUsd(project.goal))}</span>
-            <span>{fundingRate >= 100 ? tr.exceeded : tr.belowGoal}</span>
+          )}
+          {avgDailyPledged && (
+            <div className="shrink-0">
+              <p className="text-3xl font-black text-white">{fmtUsd(avgDailyPledged)}</p>
+              <p className="text-xs text-gray-500">avg/day</p>
+            </div>
+          )}
+        </div>
+
+        {/* Funding progress bar */}
+        <div className="mt-4 mb-0">
+          <div className="w-full bg-gray-800 rounded-full h-2 overflow-hidden">
+            <div className="h-2 rounded-full bg-ks-green transition-all" style={{ width: `${Math.min(100, fundingRate)}%` }} />
           </div>
         </div>
-      </div>
 
-      {/* Stats grid */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        {[
-          { icon: Users, label: tr.backers, value: tr.backersUnit(project.backers_count.toLocaleString()) },
-          { icon: Target, label: tr.goal, value: fmtUsd(project.goal) },
-          { icon: Calendar, label: tr.duration, value: duration ? tr.daysUnit(duration) : '—' },
-          { icon: TrendingUp, label: tr.dailyAvg, value: avgDailyPledged ? fmtUsd(avgDailyPledged) : '—' },
-        ].map(({ icon: Icon, label, value }) => (
-          <div key={label} className="bg-white rounded-xl border border-gray-100 p-4 shadow-sm">
-            <div className="flex items-center gap-2 mb-2">
-              <div className="w-7 h-7 bg-ks-green-light rounded-lg flex items-center justify-center">
-                <Icon className="w-3.5 h-3.5 text-ks-green" />
-              </div>
-              <span className="text-xs font-semibold text-gray-400 uppercase tracking-wide">{label}</span>
-            </div>
-            <p className="text-lg font-bold text-gray-900">{value}</p>
-          </div>
-        ))}
-      </div>
-
-      {/* Timeline */}
-      <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6">
-        <h3 className="font-semibold text-gray-700 mb-4">{tr.timeline}</h3>
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          {[
-            { label: tr.timelineCreated, date: fmtDate(project.created_at, lang) },
-            { label: tr.timelineLaunched, date: fmtDate(project.launched_at, lang) },
-            { label: tr.timelineDeadline, date: fmtDate(project.deadline, lang) },
-          ].map(({ label, date }) => (
-            <div key={label} className="flex flex-col gap-0.5">
-              <span className="text-xs font-semibold text-gray-400 uppercase tracking-wide">{label}</span>
-              <span className="text-sm font-medium text-gray-800">{date}</span>
-            </div>
+        {/* Tab navigation */}
+        <div className="flex items-center gap-0 mt-4 overflow-x-auto">
+          {TABS.map(({ id: tabId, label, icon: Icon }) => (
+            <button key={tabId} onClick={() => setActiveTab(tabId)}
+              className={`flex items-center gap-1.5 px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition-colors ${
+                activeTab === tabId
+                  ? 'text-ks-green border-ks-green'
+                  : 'text-gray-500 border-transparent hover:text-gray-300'
+              }`}>
+              <Icon className="w-3.5 h-3.5" />{label}
+            </button>
           ))}
         </div>
       </div>
 
-      {/* Simulated funding curve */}
-      {curve.length > 1 && (
-        <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6">
-          <h3 className="font-semibold text-gray-700 mb-1">{tr.curveName}</h3>
-          <p className="text-xs text-gray-400 mb-4">{tr.curveNote}</p>
-          <div className="flex items-end gap-0.5 h-40 overflow-hidden">
-            {curve.map((c, i) => (
-              <div key={i} className="flex-1 min-w-0 rounded-t-sm transition-all"
-                style={{ height: `${barMax > 0 ? (c.pct / barMax) * 100 : 0}%`, backgroundColor: c.pct >= 100 ? '#05CE78' : '#d1fae5', minHeight: '2px' }}
-                title={`${lang === 'cn' ? '第' : 'Day'} ${c.day}: ${c.pct.toFixed(1)}% · ${fmtUsd(c.pledged)}`}
-              />
-            ))}
-          </div>
-          <div className="flex justify-between text-xs text-gray-400 mt-1">
-            <span>{tr.dayFirst}</span>
-            <span>{tr.dayMid(Math.round((duration ?? 0) / 2))}</span>
-            <span>{tr.dayLast(duration ?? 0)}</span>
-          </div>
-          <div className="flex items-center gap-3 mt-3 text-xs text-gray-400">
-            <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded-sm bg-ks-green" /> {tr.legendMet}</span>
-            <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded-sm bg-emerald-100" /> {tr.legendBelow}</span>
-          </div>
-        </div>
-      )}
+      {/* ── Tab content ────────────────────────────────────────────────────── */}
+      <div className="bg-gray-50 rounded-b-2xl border-x border-b border-gray-200 p-6 space-y-6">
 
-      {/* Note */}
-      <div className="bg-amber-50 border border-amber-100 rounded-xl p-4">
-        <p className="text-xs text-amber-700 leading-relaxed">
-          <span className="font-semibold">{tr.dataTitle}</span>
-          {tr.dataBody}{' '}
-          {kicktraqUrl ? (
-            <a href={kicktraqUrl} target="_blank" rel="noopener noreferrer" className="underline font-medium">Kicktraq</a>
-          ) : 'Kicktraq'}
-          {tr.dataBody2}
-        </p>
+        {/* ── OVERVIEW ── */}
+        {activeTab === 'overview' && (
+          <div className="space-y-6">
+            {/* Grade + rank cards */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+              <div className={`${grade.color} rounded-xl p-4 text-white flex flex-col items-center justify-center`}>
+                <p className="text-4xl font-black">{grade.grade}</p>
+                <p className="text-xs font-semibold opacity-80 mt-1">Funding Grade</p>
+              </div>
+              <StatCard label="Funding Rate" value={`${fundingRate >= 10000 ? '>10,000' : fundingRate.toFixed(0)}%`}
+                sub={fundingRate >= 100 ? 'Goal exceeded' : 'Below goal'} />
+              <StatCard label="Backers" value={project.backers_count.toLocaleString()}
+                sub={avgDailyPledged ? `${(project.backers_count / (duration ?? 1)).toFixed(1)}/day avg` : undefined} />
+              <StatCard label="Total Raised" value={fmtUsd(project.usd_pledged)} sub={`Goal: ${fmtUsd(project.goal)}`} />
+            </div>
+
+            {/* Timeline */}
+            <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
+              <h3 className="font-semibold text-gray-700 mb-4 text-sm uppercase tracking-wide">Timeline</h3>
+              <div className="grid grid-cols-3 gap-6">
+                {[
+                  { label: 'Created', date: fmtDate(project.created_at, lang) },
+                  { label: 'Launched', date: fmtDate(project.launched_at, lang) },
+                  { label: 'Deadline', date: fmtDate(project.deadline, lang) },
+                ].map(({ label, date }) => (
+                  <div key={label}>
+                    <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">{label}</p>
+                    <p className="text-sm font-semibold text-gray-800 mt-0.5">{date}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Daily metrics table (real data) or Kicktraq import prompt */}
+            {hasRealData ? (
+              <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
+                <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
+                  <h3 className="font-semibold text-gray-700 text-sm">Daily Snapshot History</h3>
+                  <span className="text-xs text-gray-400">{snapshots.length} records</span>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="bg-gray-50 text-gray-500 font-semibold uppercase tracking-wide">
+                        <th className="text-left px-4 py-3">Date</th>
+                        <th className="text-right px-4 py-3">Pledged</th>
+                        <th className="text-right px-4 py-3">Change</th>
+                        <th className="text-right px-4 py-3">Backers</th>
+                        <th className="text-right px-4 py-3">+/-</th>
+                        <th className="text-right px-4 py-3">Days Left</th>
+                        <th className="text-right px-4 py-3">Comments</th>
+                        <th className="text-right px-4 py-3">Updates</th>
+                        <th className="text-center px-4 py-3">Source</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {tableData.slice(0, 30).map((s, i) => (
+                        <tr key={s.captured_at} className={i % 2 === 0 ? 'bg-white' : 'bg-gray-50/50'}>
+                          <td className="px-4 py-2.5 text-gray-600">{fmtDateTime(s.captured_at)}</td>
+                          <td className="px-4 py-2.5 text-right font-semibold text-gray-800">{fmtUsd(s.pledged_usd)}</td>
+                          <td className={`px-4 py-2.5 text-right font-semibold ${s.delta_pledged == null ? 'text-gray-400' : s.delta_pledged >= 0 ? 'text-ks-green' : 'text-red-500'}`}>
+                            {s.delta_pledged == null ? '—' : `${s.delta_pledged >= 0 ? '+' : ''}${fmtUsd(s.delta_pledged)}`}
+                          </td>
+                          <td className="px-4 py-2.5 text-right text-gray-700">{s.backers_count.toLocaleString()}</td>
+                          <td className={`px-4 py-2.5 text-right font-semibold ${s.delta_backers == null ? 'text-gray-400' : s.delta_backers >= 0 ? 'text-ks-green' : 'text-red-500'}`}>
+                            {s.delta_backers == null ? '—' : `${s.delta_backers >= 0 ? '+' : ''}${s.delta_backers.toLocaleString()}`}
+                          </td>
+                          <td className="px-4 py-2.5 text-right text-gray-500">{s.days_to_go}</td>
+                          <td className="px-4 py-2.5 text-right text-gray-500">{s.comments_count}</td>
+                          <td className="px-4 py-2.5 text-right text-gray-500">{s.updates_count}</td>
+                          <td className="px-4 py-2.5 text-center">
+                            <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${s.source === 'kicktraq' ? 'bg-blue-50 text-blue-600' : 'bg-ks-green-light text-ks-green-dark'}`}>
+                              {s.source === 'kicktraq' ? 'KT' : 'KS'}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            ) : (
+              <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6 text-center space-y-4">
+                <p className="text-gray-500 text-sm">No historical data yet for this project.</p>
+                <div className="flex justify-center gap-3">
+                  <button onClick={triggerScrape} disabled={scraping}
+                    className="flex items-center gap-2 px-4 py-2 bg-ks-green text-white rounded-lg text-sm font-semibold hover:bg-ks-green-dark disabled:opacity-50">
+                    <RefreshCw className={`w-4 h-4 ${scraping ? 'animate-spin' : ''}`} />
+                    {scraping ? 'Fetching from Kickstarter…' : 'Fetch from Kickstarter'}
+                  </button>
+                  <button onClick={importKicktraq} disabled={ktImporting}
+                    className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700 disabled:opacity-50">
+                    <TrendingUp className={`w-4 h-4 ${ktImporting ? 'animate-pulse' : ''}`} />
+                    {ktImporting ? 'Importing from Kicktraq…' : 'Import from Kicktraq'}
+                  </button>
+                </div>
+                <p className="text-xs text-gray-400">Kicktraq has historical data for past campaigns.</p>
+              </div>
+            )}
+
+            {/* Tracking settings panel */}
+            {tracking?.is_tracking ? (
+              <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
+                <h3 className="font-semibold text-gray-700 text-sm mb-4">Tracking Settings</h3>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                  {[
+                    { key: 'track_rewards', label: 'Rewards' },
+                    { key: 'track_text_diff', label: 'Text Changes' },
+                    { key: 'track_comments', label: 'Comment Count' },
+                    { key: 'analyze_comments', label: 'AI Analysis' },
+                  ].map(({ key, label }) => (
+                    <label key={key} className="flex items-center gap-2 cursor-pointer select-none">
+                      <div className="relative">
+                        <input type="checkbox"
+                          checked={!!(tracking[key as keyof TrackingSettings])}
+                          onChange={e => updateTrackSetting(key, e.target.checked ? 1 : 0)}
+                          className="sr-only peer" />
+                        <div className="w-9 h-5 bg-gray-200 rounded-full peer-checked:bg-ks-green transition-colors" />
+                        <div className="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow peer-checked:translate-x-4 transition-transform" />
+                      </div>
+                      <span className="text-sm text-gray-700">{label}</span>
+                    </label>
+                  ))}
+                </div>
+                <div className="mt-4 flex items-center gap-4">
+                  <span className="text-sm text-gray-600">Update frequency:</span>
+                  {[{ v: 1, label: 'Every 4h' }, { v: 2, label: 'Every 1h' }].map(({ v, label }) => (
+                    <button key={v} onClick={() => updateTrackSetting('priority', v)}
+                      className={`px-3 py-1 rounded-lg text-xs font-semibold border ${tracking.priority === v ? 'bg-ks-green text-white border-ks-green' : 'bg-white text-gray-600 border-gray-200'}`}>
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
+            <DataSource />
+          </div>
+        )}
+
+        {/* ── FUNDING CURVE ── */}
+        {activeTab === 'curve' && (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="font-semibold text-gray-700">
+                {hasRealData ? 'Live Funding Curve' : 'Simulated Funding Curve'}
+                {!hasRealData && <span className="ml-2 text-xs font-normal text-amber-600">(no real data yet)</span>}
+              </h3>
+              {hasRealData && (
+                <div className="flex gap-2">
+                  {(['all', '30d', '14d'] as const).map(r => (
+                    <button key={r} onClick={() => setChartRange(r)}
+                      className={`px-3 py-1 rounded text-xs font-semibold ${chartRange === r ? 'bg-ks-green text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
+                      {r === 'all' ? 'All' : r.toUpperCase()}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {hasRealData && chartData.length > 1 ? (
+              <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5 space-y-6">
+                {/* Pledged chart */}
+                <div>
+                  <p className="text-xs text-gray-400 font-semibold uppercase tracking-wide mb-3">Amount Pledged (USD)</p>
+                  <ResponsiveContainer width="100%" height={220}>
+                    <AreaChart data={chartData} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
+                      <defs>
+                        <linearGradient id="gPledged" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor="#05CE78" stopOpacity={0.3} />
+                          <stop offset="95%" stopColor="#05CE78" stopOpacity={0} />
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                      <XAxis dataKey="date" tick={{ fontSize: 10 }} interval="preserveStartEnd" />
+                      <YAxis tick={{ fontSize: 10 }} tickFormatter={v => fmtUsd(v as number)} width={65} />
+                      <Tooltip formatter={(v: number) => [fmtUsd(v), 'Pledged']} />
+                      <Area type="monotone" dataKey="pledged" stroke="#05CE78" strokeWidth={2} fill="url(#gPledged)" />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                </div>
+
+                {/* Backers + engagement chart */}
+                <div>
+                  <p className="text-xs text-gray-400 font-semibold uppercase tracking-wide mb-3">Backers & Engagement</p>
+                  <ResponsiveContainer width="100%" height={200}>
+                    <LineChart data={chartData} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                      <XAxis dataKey="date" tick={{ fontSize: 10 }} interval="preserveStartEnd" />
+                      <YAxis tick={{ fontSize: 10 }} width={45} />
+                      <Tooltip />
+                      <Legend wrapperStyle={{ fontSize: 11 }} />
+                      <Line type="monotone" dataKey="backers" stroke="#6366f1" strokeWidth={2} dot={false} name="Backers" />
+                      <Line type="monotone" dataKey="comments" stroke="#f59e0b" strokeWidth={1.5} dot={false} name="Comments" />
+                      <Line type="monotone" dataKey="updates" stroke="#3b82f6" strokeWidth={1.5} dot={false} name="Updates" />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+            ) : (
+              <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6 text-center">
+                <p className="text-gray-400 text-sm mb-4">
+                  {hasRealData ? 'Not enough data points for a chart yet.' : 'Sync data to see the real funding curve.'}
+                </p>
+                <button onClick={triggerScrape} disabled={scraping}
+                  className="inline-flex items-center gap-2 px-4 py-2 bg-ks-green text-white rounded-lg text-sm font-semibold hover:bg-ks-green-dark disabled:opacity-50">
+                  <RefreshCw className={`w-4 h-4 ${scraping ? 'animate-spin' : ''}`} />
+                  {scraping ? 'Syncing…' : 'Sync Now'}
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── REWARDS ── */}
+        {activeTab === 'rewards' && (
+          <div className="space-y-4">
+            <h3 className="font-semibold text-gray-700">Reward Tiers</h3>
+            {rewards.length ? (
+              <div className="space-y-3">
+                {rewards.map(r => {
+                  const fillPct = r.limit_count ? Math.min(100, (r.backers_count / r.limit_count) * 100) : null;
+                  return (
+                    <div key={r.reward_id} className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="flex-1">
+                          <div className="flex items-center gap-2 mb-1">
+                            <span className="text-lg font-black text-ks-green">${r.amount_usd}</span>
+                            {r.title && <span className="font-semibold text-gray-800">{r.title}</span>}
+                            {r.is_limited ? (
+                              <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-amber-50 text-amber-600 border border-amber-100">Limited</span>
+                            ) : null}
+                          </div>
+                          {r.description && <p className="text-sm text-gray-500 leading-relaxed">{r.description}</p>}
+                        </div>
+                        <div className="text-right shrink-0">
+                          <p className="text-xl font-black text-gray-900">{r.backers_count.toLocaleString()}</p>
+                          <p className="text-xs text-gray-400">backers</p>
+                          {r.limit_count && (
+                            <p className="text-xs text-gray-400">{r.limit_count - r.backers_count} left of {r.limit_count}</p>
+                          )}
+                        </div>
+                      </div>
+                      {fillPct !== null && (
+                        <div className="mt-3">
+                          <div className="w-full bg-gray-100 rounded-full h-1.5">
+                            <div className="h-1.5 rounded-full bg-amber-400 transition-all" style={{ width: `${fillPct}%` }} />
+                          </div>
+                          <p className="text-xs text-gray-400 mt-1">{fillPct.toFixed(0)}% claimed</p>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6 text-center">
+                <p className="text-gray-400 text-sm mb-4">No reward data yet. Sync from Kickstarter to fetch rewards.</p>
+                <button onClick={triggerScrape} disabled={scraping}
+                  className="inline-flex items-center gap-2 px-4 py-2 bg-ks-green text-white rounded-lg text-sm font-semibold hover:bg-ks-green-dark disabled:opacity-50">
+                  <RefreshCw className={`w-4 h-4 ${scraping ? 'animate-spin' : ''}`} />
+                  {scraping ? 'Syncing…' : 'Sync Now'}
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── TEXT CHANGES ── */}
+        {activeTab === 'changes' && (
+          <div className="space-y-4">
+            <h3 className="font-semibold text-gray-700">Text Change History</h3>
+            {Object.keys(textByField).length ? (
+              <div className="space-y-6">
+                {Object.entries(textByField).map(([field, changes]) => (
+                  <div key={field} className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
+                    <div className="px-5 py-3 border-b border-gray-100 bg-gray-50">
+                      <h4 className="font-semibold text-gray-700 capitalize text-sm">{field}</h4>
+                    </div>
+                    <div className="divide-y divide-gray-50">
+                      {changes.map((change, i) => {
+                        const prev = changes[i - 1];
+                        return (
+                          <div key={change.captured_at} className="px-5 py-4">
+                            <p className="text-xs text-gray-400 mb-2">{fmtDateTime(change.captured_at)}</p>
+                            {prev ? (
+                              <DiffBlock before={prev.content} after={change.content} />
+                            ) : (
+                              <p className="text-sm text-gray-600">{change.content}</p>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6 text-center">
+                <p className="text-gray-400 text-sm mb-2">No text history yet.</p>
+                <p className="text-xs text-gray-400">Enable &ldquo;Text Changes&rdquo; tracking and sync periodically to detect changes to the project&apos;s title and description.</p>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── SIMILAR PROJECTS ── */}
+        {activeTab === 'similar' && (
+          <div className="space-y-4">
+            <div>
+              <h3 className="font-semibold text-gray-700">Similar Projects</h3>
+              <p className="text-xs text-gray-400 mt-0.5">Matched by category, goal size, and backer count</p>
+            </div>
+            {project.similar?.length ? (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                {project.similar.map(s => {
+                  const sRate = s.goal > 0 ? (s.usd_pledged / s.goal) * 100 : 0;
+                  const sg = fundingGrade(sRate);
+                  return (
+                    <button key={s.id} onClick={() => router.push(`/projects/${s.id}`)}
+                      className="bg-white rounded-xl border border-gray-100 shadow-sm p-4 text-left hover:shadow-md hover:border-ks-green/30 transition-all">
+                      <div className="flex items-start gap-3">
+                        <div className={`${sg.color} w-10 h-10 rounded-lg flex items-center justify-center shrink-0`}>
+                          <span className="text-white text-xs font-black">{sg.grade}</span>
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-1.5 mb-1">
+                            <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-semibold ${STATE_COLOR[s.state] ?? 'bg-gray-100 text-gray-500'}`}>
+                              {s.state}
+                            </span>
+                            <span className="text-[10px] text-gray-400">{s.category_name}</span>
+                          </div>
+                          <p className="text-sm font-semibold text-gray-800 leading-snug line-clamp-2">{s.name}</p>
+                          <p className="text-xs text-gray-400 mt-1 line-clamp-1">{s.blurb}</p>
+                        </div>
+                      </div>
+                      <div className="mt-3 flex items-center justify-between text-xs">
+                        <span className={`font-bold ${sRate >= 100 ? 'text-ks-green' : 'text-gray-600'}`}>
+                          {sRate.toFixed(0)}% funded
+                        </span>
+                        <span className="text-gray-400">{fmtUsd(s.usd_pledged)}</span>
+                      </div>
+                      <div className="mt-1.5 w-full bg-gray-100 rounded-full h-1">
+                        <div className="h-1 rounded-full bg-ks-green" style={{ width: `${Math.min(100, sRate)}%` }} />
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6 text-center">
+                <p className="text-gray-400 text-sm">No similar projects found in the current dataset.</p>
+              </div>
+            )}
+          </div>
+        )}
       </div>
-
-      <DataSource />
     </div>
   );
 }

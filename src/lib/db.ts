@@ -71,6 +71,72 @@ function getDB(): Database {
     );
     CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
     CREATE INDEX IF NOT EXISTS idx_favorites_user ON favorites(user_id);
+
+    CREATE TABLE IF NOT EXISTS tracking_settings (
+      project_id TEXT PRIMARY KEY,
+      is_tracking INTEGER DEFAULT 1,
+      track_rewards INTEGER DEFAULT 1,
+      track_comments INTEGER DEFAULT 0,
+      analyze_comments INTEGER DEFAULT 0,
+      track_text_diff INTEGER DEFAULT 1,
+      priority INTEGER DEFAULT 1,
+      last_fetched INTEGER,
+      next_fetch INTEGER,
+      created_at INTEGER DEFAULT (unixepoch())
+    );
+
+    CREATE TABLE IF NOT EXISTS project_snapshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      project_id TEXT NOT NULL,
+      captured_at INTEGER NOT NULL,
+      pledged_usd REAL,
+      backers_count INTEGER,
+      days_to_go INTEGER,
+      comments_count INTEGER,
+      updates_count INTEGER,
+      state TEXT,
+      source TEXT DEFAULT 'ks',
+      UNIQUE(project_id, captured_at, source)
+    );
+
+    CREATE TABLE IF NOT EXISTS reward_snapshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      project_id TEXT NOT NULL,
+      captured_at INTEGER NOT NULL,
+      reward_id TEXT NOT NULL,
+      title TEXT,
+      description TEXT,
+      amount_usd REAL,
+      backers_count INTEGER,
+      limit_count INTEGER,
+      is_limited INTEGER DEFAULT 0
+    );
+
+    CREATE TABLE IF NOT EXISTS project_text_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      project_id TEXT NOT NULL,
+      captured_at INTEGER NOT NULL,
+      field TEXT NOT NULL,
+      content TEXT NOT NULL,
+      UNIQUE(project_id, captured_at, field)
+    );
+
+    CREATE TABLE IF NOT EXISTS project_comments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      project_id TEXT NOT NULL,
+      comment_id TEXT NOT NULL UNIQUE,
+      author TEXT,
+      content TEXT NOT NULL,
+      posted_at INTEGER,
+      fetched_at INTEGER DEFAULT (unixepoch())
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_snapshots_project ON project_snapshots(project_id, captured_at);
+    CREATE INDEX IF NOT EXISTS idx_rewards_project ON reward_snapshots(project_id, captured_at);
+    CREATE INDEX IF NOT EXISTS idx_text_project ON project_text_history(project_id, captured_at);
+    CREATE INDEX IF NOT EXISTS idx_comments_project ON project_comments(project_id, posted_at);
+    CREATE INDEX IF NOT EXISTS idx_tracking_next ON tracking_settings(next_fetch);
+
     CREATE TABLE IF NOT EXISTS sync_logs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       url TEXT,
@@ -370,4 +436,197 @@ export async function getProjectById(id: string) {
             creator_name, source_url, slug
      FROM projects WHERE id = ?`
   ).get(id) ?? null;
+}
+
+// ─── Tracking ────────────────────────────────────────────────────────────────
+
+export interface TrackingSettings {
+  project_id: string;
+  is_tracking: number;
+  track_rewards: number;
+  track_comments: number;
+  analyze_comments: number;
+  track_text_diff: number;
+  priority: number;
+  last_fetched: number | null;
+  next_fetch: number | null;
+  created_at: number;
+}
+
+export function getTrackingSettings(projectId: string): TrackingSettings | null {
+  return getDB().prepare('SELECT * FROM tracking_settings WHERE project_id = ?').get(projectId) as TrackingSettings | null;
+}
+
+export function upsertTrackingSettings(settings: Partial<TrackingSettings> & { project_id: string }) {
+  const db = getDB();
+  const existing = db.prepare('SELECT project_id, priority FROM tracking_settings WHERE project_id = ?').get(settings.project_id) as { project_id: string; priority: number } | null;
+  if (!existing) {
+    const priority = settings.priority ?? 1;
+    const nextFetch = Math.floor(Date.now() / 1000);
+    db.prepare(`
+      INSERT INTO tracking_settings
+        (project_id, is_tracking, track_rewards, track_comments, analyze_comments, track_text_diff, priority, next_fetch)
+      VALUES (@project_id, @is_tracking, @track_rewards, @track_comments, @analyze_comments, @track_text_diff, @priority, @next_fetch)
+    `).run({
+      project_id: settings.project_id,
+      is_tracking: settings.is_tracking ?? 1,
+      track_rewards: settings.track_rewards ?? 1,
+      track_comments: settings.track_comments ?? 0,
+      analyze_comments: settings.analyze_comments ?? 0,
+      track_text_diff: settings.track_text_diff ?? 1,
+      priority: priority,
+      next_fetch: nextFetch,
+    });
+  } else {
+    const updates: string[] = [];
+    const params: Record<string, unknown> = { project_id: settings.project_id };
+    for (const [k, v] of Object.entries(settings)) {
+      if (k !== 'project_id' && v !== undefined) {
+        updates.push(`${k} = @${k}`);
+        params[k] = v;
+      }
+    }
+    if (updates.length) {
+      db.prepare(`UPDATE tracking_settings SET ${updates.join(', ')} WHERE project_id = @project_id`).run(params);
+    }
+  }
+}
+
+export function markFetched(projectId: string) {
+  const now = Math.floor(Date.now() / 1000);
+  const s = getDB().prepare('SELECT priority FROM tracking_settings WHERE project_id = ?').get(projectId) as { priority: number } | null;
+  const interval = s?.priority === 2 ? 3600 : 4 * 3600;
+  getDB().prepare('UPDATE tracking_settings SET last_fetched = ?, next_fetch = ? WHERE project_id = ?').run(now, now + interval, projectId);
+}
+
+export function getDueProjects(): { project_id: string; priority: number; track_rewards: number; track_comments: number; track_text_diff: number }[] {
+  const now = Math.floor(Date.now() / 1000);
+  return getDB().prepare(`
+    SELECT project_id, priority, track_rewards, track_comments, track_text_diff
+    FROM tracking_settings WHERE is_tracking = 1 AND (next_fetch IS NULL OR next_fetch <= ?)
+  `).all(now) as { project_id: string; priority: number; track_rewards: number; track_comments: number; track_text_diff: number }[];
+}
+
+export function getTrackingList(): (TrackingSettings & { name: string | null })[] {
+  return getDB().prepare(`
+    SELECT t.*, p.name FROM tracking_settings t
+    LEFT JOIN projects p ON p.id = t.project_id
+    WHERE t.is_tracking = 1 ORDER BY t.created_at DESC
+  `).all() as (TrackingSettings & { name: string | null })[];
+}
+
+// ─── Snapshots ────────────────────────────────────────────────────────────────
+
+export interface Snapshot {
+  captured_at: number;
+  pledged_usd: number;
+  backers_count: number;
+  days_to_go: number;
+  comments_count: number;
+  updates_count: number;
+  state: string;
+  source: string;
+}
+
+export function insertSnapshot(snap: Omit<Snapshot, 'source'> & { project_id: string; source?: string }) {
+  getDB().prepare(`
+    INSERT OR IGNORE INTO project_snapshots
+      (project_id, captured_at, pledged_usd, backers_count, days_to_go, comments_count, updates_count, state, source)
+    VALUES (@project_id, @captured_at, @pledged_usd, @backers_count, @days_to_go, @comments_count, @updates_count, @state, @source)
+  `).run({ source: 'ks', ...snap });
+}
+
+export function getSnapshots(projectId: string, limitRows = 500): Snapshot[] {
+  return getDB().prepare(`
+    SELECT captured_at, pledged_usd, backers_count, days_to_go, comments_count, updates_count, state, source
+    FROM project_snapshots WHERE project_id = ? ORDER BY captured_at ASC LIMIT ?
+  `).all(projectId, limitRows) as Snapshot[];
+}
+
+// ─── Rewards ─────────────────────────────────────────────────────────────────
+
+export interface RewardSnapshot {
+  reward_id: string;
+  title: string;
+  description: string;
+  amount_usd: number;
+  backers_count: number;
+  limit_count: number | null;
+  is_limited: number;
+}
+
+export function insertRewardSnapshots(projectId: string, capturedAt: number, rewards: RewardSnapshot[]) {
+  const stmt = getDB().prepare(`
+    INSERT INTO reward_snapshots
+      (project_id, captured_at, reward_id, title, description, amount_usd, backers_count, limit_count, is_limited)
+    VALUES (@project_id, @captured_at, @reward_id, @title, @description, @amount_usd, @backers_count, @limit_count, @is_limited)
+  `);
+  const tx = getDB().transaction(() => {
+    for (const r of rewards) stmt.run({ project_id: projectId, captured_at: capturedAt, ...r });
+  });
+  tx();
+}
+
+export function getLatestRewards(projectId: string): RewardSnapshot[] {
+  const db = getDB();
+  const latest = db.prepare('SELECT MAX(captured_at) as ts FROM reward_snapshots WHERE project_id = ?').get(projectId) as { ts: number | null };
+  if (!latest?.ts) return [];
+  return db.prepare(`
+    SELECT reward_id, title, description, amount_usd, backers_count, limit_count, is_limited
+    FROM reward_snapshots WHERE project_id = ? AND captured_at = ? ORDER BY amount_usd ASC
+  `).all(projectId, latest.ts) as RewardSnapshot[];
+}
+
+// ─── Text history ─────────────────────────────────────────────────────────────
+
+export function insertTextIfChanged(projectId: string, capturedAt: number, field: string, content: string) {
+  const db = getDB();
+  const last = db.prepare(
+    'SELECT content FROM project_text_history WHERE project_id = ? AND field = ? ORDER BY captured_at DESC LIMIT 1'
+  ).get(projectId, field) as { content: string } | null;
+  if (!last || last.content !== content) {
+    db.prepare('INSERT OR IGNORE INTO project_text_history (project_id, captured_at, field, content) VALUES (?, ?, ?, ?)').run(projectId, capturedAt, field, content);
+  }
+}
+
+export function getTextHistory(projectId: string): { field: string; captured_at: number; content: string }[] {
+  return getDB().prepare(
+    'SELECT field, captured_at, content FROM project_text_history WHERE project_id = ? ORDER BY field, captured_at ASC'
+  ).all(projectId) as { field: string; captured_at: number; content: string }[];
+}
+
+// ─── Comments ─────────────────────────────────────────────────────────────────
+
+export function insertComment(c: { project_id: string; comment_id: string; author: string; content: string; posted_at: number }) {
+  getDB().prepare(`
+    INSERT OR IGNORE INTO project_comments (project_id, comment_id, author, content, posted_at)
+    VALUES (@project_id, @comment_id, @author, @content, @posted_at)
+  `).run(c);
+}
+
+export function getComments(projectId: string, limitRows = 100): { comment_id: string; author: string; content: string; posted_at: number }[] {
+  return getDB().prepare(
+    'SELECT comment_id, author, content, posted_at FROM project_comments WHERE project_id = ? ORDER BY posted_at DESC LIMIT ?'
+  ).all(projectId, limitRows) as { comment_id: string; author: string; content: string; posted_at: number }[];
+}
+
+// ─── Similar projects ─────────────────────────────────────────────────────────
+
+export function getSimilarProjects(projectId: string, category: string, goalUsd: number, backers: number, limit = 6): Record<string, unknown>[] {
+  const low = goalUsd * 0.2;
+  const high = goalUsd * 5;
+  return getDB().prepare(`
+    SELECT id, name, blurb, state, category_parent, category_name, usd_pledged, goal, backers_count,
+           launched_at, source_url, slug,
+           (
+             CASE WHEN category_parent = @category THEN 40 ELSE 0 END +
+             CASE WHEN usd_pledged BETWEEN @low AND @high THEN 30 ELSE 0 END +
+             CASE WHEN ABS(backers_count - @backers) < @backers * 0.5 THEN 20 ELSE 0 END +
+             CASE WHEN state = 'successful' THEN 10 ELSE 0 END
+           ) as score
+    FROM projects
+    WHERE id != @id AND goal > 0 AND usd_pledged > 0
+    ORDER BY score DESC, usd_pledged DESC
+    LIMIT @limit
+  `).all({ id: projectId, category, low, high, backers, limit }) as Record<string, unknown>[];
 }

@@ -11,7 +11,7 @@ export async function GET(req: NextRequest) {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
   const ids = getFavoriteIds(user.id);
-  const projects = ids.map(id => getProjectById(id)).filter(Boolean);
+  const projects = (await Promise.all(ids.map(id => getProjectById(id)))).filter(Boolean);
   return NextResponse.json({ data: projects, ids });
 }
 
