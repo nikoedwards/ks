@@ -1,6 +1,6 @@
 # Kicksonar — Session Context
 
-Last updated: 2026-05-07 (commit e17ce8d)
+Last updated: 2026-05-08 (commit f2441b3)
 
 ## Project
 
@@ -24,6 +24,10 @@ Last updated: 2026-05-07 (commit e17ce8d)
 - /api/meta: returns earliestDate, latestDate, lastSyncDate
 - /api/projects/[id]: single project by ID
 - Bilingual README.md
+- **i18n (CN/EN)**: full-site language switch via src/lib/i18n.ts + src/hooks/useLanguage.ts; all pages translated; inline pill switcher in Sidebar footer
+- **Column sort**: click goal/pledged/funding rate/backers/launched headers to toggle ASC/DESC; arrow indicators; sortDir passed to db.ts
+- **CSV export with cross-page checkbox selection**: per-row checkboxes, select-all on page, selections/data cached across pages via useRef<Map>, UTF-8 BOM for Excel
+- **Row number badges**: gold (1-3), silver (4-10), plain gray (11+)
 
 ## Known issues / pending
 
@@ -33,12 +37,15 @@ Last updated: 2026-05-07 (commit e17ce8d)
 
 ## Key files
 
-- src/lib/db.ts — all DB queries, getMeta(), getProjectById()
+- src/lib/db.ts — all DB queries, getMeta(), getProjectById(), sortDir support
 - src/lib/sync.ts — CSV sync, parses urls.web.project for source_url
+- src/lib/i18n.ts — full CN/EN translation dictionary (as const)
+- src/hooks/useLanguage.ts — localStorage + CustomEvent language hook
+- src/app/projects/page.tsx — sort, checkboxes, CSV export, row badges, i18n
 - src/app/projects/[id]/page.tsx — project detail page
 - src/app/about/page.tsx — about page
 - src/app/api/meta/route.ts — meta endpoint
-- src/components/Sidebar.tsx — navigation with Kicksonar branding
+- src/components/Sidebar.tsx — navigation with Kicksonar branding + CN/EN switcher
 - src/components/DataSource.tsx — dynamic data source footer
 - public/logo.svg — sonar SVG logo
 - public/favicon.svg — SVG favicon
