@@ -1,6 +1,6 @@
 # Kicksonar — Session Context
 
-Last updated: 2026-05-08 (commit f2441b3)
+Last updated: 2026-05-08 (commit 533da7d)
 
 ## Project
 
@@ -24,10 +24,12 @@ Last updated: 2026-05-08 (commit f2441b3)
 - /api/meta: returns earliestDate, latestDate, lastSyncDate
 - /api/projects/[id]: single project by ID
 - Bilingual README.md
-- **i18n (CN/EN)**: full-site language switch via src/lib/i18n.ts + src/hooks/useLanguage.ts; all pages translated; inline pill switcher in Sidebar footer
+- **i18n (CN/EN)**: full-site language switch via src/lib/i18n.ts + src/hooks/useLanguage.ts; all pages translated including project detail; inline pill switcher in Sidebar footer
 - **Column sort**: click goal/pledged/funding rate/backers/launched headers to toggle ASC/DESC; arrow indicators; sortDir passed to db.ts
 - **CSV export with cross-page checkbox selection**: per-row checkboxes, select-all on page, selections/data cached across pages via useRef<Map>, UTF-8 BOM for Excel
-- **Row number badges**: gold (1-3), silver (4-10), plain gray (11+)
+- **Row number badges**: gold (1-3), silver (4-10), plain gray (11+); checkbox column is leftmost
+- **Table layout fix**: whitespace-nowrap on status cell fixes badge wrap bug; overflow-x-auto working
+- **/predict page**: paste Kickstarter URL → SSE stream → 5 dimension AI scoring → final score + verdict; requires ANTHROPIC_API_KEY in .env.local
 
 ## Known issues / pending
 
