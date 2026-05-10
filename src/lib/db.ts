@@ -43,7 +43,12 @@ function getDB(): Database {
       creator_name TEXT,
       creator_slug TEXT,
       source_url TEXT,
-      slug TEXT
+      slug TEXT,
+      data_source TEXT DEFAULT 'webrobots',
+      first_seen_at INTEGER,
+      last_seen_at INTEGER,
+      webrobots_synced_at INTEGER,
+      ks_live_synced_at INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_state ON projects(state);
     CREATE INDEX IF NOT EXISTS idx_category ON projects(category_parent);
@@ -90,9 +95,26 @@ function getDB(): Database {
       analyze_comments INTEGER DEFAULT 0,
       track_text_diff INTEGER DEFAULT 1,
       priority INTEGER DEFAULT 1,
+      subscriber_count INTEGER DEFAULT 0,
+      priority_score INTEGER DEFAULT 0,
       last_fetched INTEGER,
       next_fetch INTEGER,
       created_at INTEGER DEFAULT (unixepoch())
+    );
+
+    CREATE TABLE IF NOT EXISTS user_project_subscriptions (
+      user_id INTEGER NOT NULL,
+      project_id TEXT NOT NULL,
+      is_tracking INTEGER DEFAULT 1,
+      track_rewards INTEGER DEFAULT 1,
+      track_comments INTEGER DEFAULT 0,
+      analyze_comments INTEGER DEFAULT 0,
+      track_text_diff INTEGER DEFAULT 1,
+      priority INTEGER DEFAULT 1,
+      created_at INTEGER DEFAULT (unixepoch()),
+      updated_at INTEGER DEFAULT (unixepoch()),
+      PRIMARY KEY (user_id, project_id),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
 
     CREATE TABLE IF NOT EXISTS project_snapshots (
@@ -146,6 +168,8 @@ function getDB(): Database {
     CREATE INDEX IF NOT EXISTS idx_text_project ON project_text_history(project_id, captured_at);
     CREATE INDEX IF NOT EXISTS idx_comments_project ON project_comments(project_id, posted_at);
     CREATE INDEX IF NOT EXISTS idx_tracking_next ON tracking_settings(next_fetch);
+    CREATE INDEX IF NOT EXISTS idx_subscriptions_project ON user_project_subscriptions(project_id, is_tracking);
+    CREATE INDEX IF NOT EXISTS idx_subscriptions_user ON user_project_subscriptions(user_id, is_tracking);
 
     CREATE TABLE IF NOT EXISTS sync_logs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -162,6 +186,13 @@ function getDB(): Database {
   try { db.exec('ALTER TABLE users ADD COLUMN email_verified INTEGER DEFAULT 1'); } catch { /* already exists */ }
   // Add creator_slug column to existing projects table if absent
   try { db.exec('ALTER TABLE projects ADD COLUMN creator_slug TEXT'); } catch { /* already exists */ }
+  try { db.exec("ALTER TABLE projects ADD COLUMN data_source TEXT DEFAULT 'webrobots'"); } catch { /* already exists */ }
+  try { db.exec('ALTER TABLE projects ADD COLUMN first_seen_at INTEGER'); } catch { /* already exists */ }
+  try { db.exec('ALTER TABLE projects ADD COLUMN last_seen_at INTEGER'); } catch { /* already exists */ }
+  try { db.exec('ALTER TABLE projects ADD COLUMN webrobots_synced_at INTEGER'); } catch { /* already exists */ }
+  try { db.exec('ALTER TABLE projects ADD COLUMN ks_live_synced_at INTEGER'); } catch { /* already exists */ }
+  try { db.exec('ALTER TABLE tracking_settings ADD COLUMN subscriber_count INTEGER DEFAULT 0'); } catch { /* already exists */ }
+  try { db.exec('ALTER TABLE tracking_settings ADD COLUMN priority_score INTEGER DEFAULT 0'); } catch { /* already exists */ }
 
   globalThis.__ksDb = db;
   return db;
@@ -229,34 +260,54 @@ export async function getProjects(filter: ProjectFilter = {}) {
   const conditions: string[] = [];
   const params: Record<string, unknown> = {};
 
-  if (state && state !== 'all') { conditions.push('state = @state'); params.state = state; }
-  if (category) { conditions.push('category_parent = @category'); params.category = category; }
-  if (country) { conditions.push('country = @country'); params.country = country; }
-  if (search) { conditions.push('(name LIKE @search OR blurb LIKE @search)'); params.search = `%${search}%`; }
-  if (dateFrom) { conditions.push('launched_at >= @dateFrom'); params.dateFrom = dateFrom; }
-  if (dateTo) { conditions.push('launched_at <= @dateTo'); params.dateTo = dateTo; }
+  if (state && state !== 'all') { conditions.push('p.state = @state'); params.state = state; }
+  if (category) { conditions.push('p.category_parent = @category'); params.category = category; }
+  if (country) { conditions.push('p.country = @country'); params.country = country; }
+  if (search) { conditions.push('(p.name LIKE @search OR p.blurb LIKE @search)'); params.search = `%${search}%`; }
+  if (dateFrom) { conditions.push('p.launched_at >= @dateFrom'); params.dateFrom = dateFrom; }
+  if (dateTo) { conditions.push('p.launched_at <= @dateTo'); params.dateTo = dateTo; }
 
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
 
   const dir = sortDir === 'asc' ? 'ASC' : 'DESC';
   const sortMap: Record<string, string> = {
-    usd_pledged: `usd_pledged ${dir}`,
-    backers: `backers_count ${dir}`,
-    goal: `goal ${dir}`,
-    launched: `launched_at ${dir}`,
-    funding_rate: `(CASE WHEN goal>0 THEN usd_pledged/goal ELSE 0 END) ${dir}`,
+    usd_pledged: `p.usd_pledged ${dir}`,
+    backers: `p.backers_count ${dir}`,
+    goal: `p.goal ${dir}`,
+    launched: `p.launched_at ${dir}`,
+    funding_rate: `(CASE WHEN p.goal>0 THEN p.usd_pledged/p.goal ELSE 0 END) ${dir}`,
   };
-  const orderBy = sortMap[sort] || `usd_pledged ${dir}`;
+  const orderBy = sortMap[sort] || `p.usd_pledged ${dir}`;
   const offset = (page - 1) * limit;
 
-  const countRow = db.prepare(`SELECT COUNT(*) as c FROM projects ${where}`).get(params) as { c: number };
+  const countRow = db.prepare(`SELECT COUNT(*) as c FROM projects p ${where}`).get(params) as { c: number };
   const total = countRow?.c ?? 0;
 
   const rows = db.prepare(
-    `SELECT id, name, blurb, state, country, country_name, currency,
-            category_parent, category_name, goal, pledged, usd_pledged,
-            backers_count, staff_pick, launched_at, deadline, source_url, slug
-     FROM projects ${where} ORDER BY ${orderBy} LIMIT @limit OFFSET @offset`
+    `SELECT p.id, p.name, p.blurb,
+            COALESCE(s.state, p.state) as state,
+            p.country, p.country_name, p.currency,
+            p.category_parent, p.category_name, p.goal,
+            p.pledged, p.usd_pledged,
+            COALESCE(s.snap_backers, p.backers_count) as backers_count,
+            p.staff_pick, p.launched_at, p.deadline, p.source_url, p.slug,
+            p.data_source,
+            s.pledged_usd as live_pledged_usd,
+            s.snap_backers as live_backers_count,
+            s.captured_at as live_captured_at,
+            s.days_to_go as live_days_to_go
+     FROM projects p
+     LEFT JOIN (
+       SELECT project_id,
+              MAX(captured_at) as captured_at,
+              pledged_usd,
+              backers_count as snap_backers,
+              days_to_go,
+              state
+       FROM project_snapshots
+       GROUP BY project_id
+     ) s ON s.project_id = p.id
+     ${where} ORDER BY ${orderBy} LIMIT @limit OFFSET @offset`
   ).all({ ...params, limit, offset });
 
   return { total, rows, page, limit };
@@ -352,17 +403,63 @@ export async function getDBInstance(): Promise<Database> {
 // Synchronous batch upsert using better-sqlite3 transactions
 export function upsertBatch(db: Database, rows: Record<string, unknown>[]): void {
   const insert = db.prepare(`
-    INSERT OR REPLACE INTO projects
+    INSERT INTO projects
       (id, name, blurb, goal, pledged, usd_pledged, state, country, country_name,
        currency, category_id, category_name, category_parent, backers_count,
-       staff_pick, created_at, launched_at, deadline, creator_name, creator_slug, source_url, slug)
+       staff_pick, created_at, launched_at, deadline, creator_name, creator_slug, source_url, slug,
+       data_source, first_seen_at, last_seen_at, webrobots_synced_at, ks_live_synced_at)
     VALUES
       (@id, @name, @blurb, @goal, @pledged, @usd_pledged, @state, @country, @country_name,
        @currency, @category_id, @category_name, @category_parent, @backers_count,
-       @staff_pick, @created_at, @launched_at, @deadline, @creator_name, @creator_slug, @source_url, @slug)
+       @staff_pick, @created_at, @launched_at, @deadline, @creator_name, @creator_slug, @source_url, @slug,
+       @data_source, @first_seen_at, @last_seen_at, @webrobots_synced_at, @ks_live_synced_at)
+    ON CONFLICT(id) DO UPDATE SET
+      name = excluded.name,
+      blurb = excluded.blurb,
+      goal = excluded.goal,
+      pledged = excluded.pledged,
+      usd_pledged = excluded.usd_pledged,
+      state = excluded.state,
+      country = COALESCE(excluded.country, projects.country),
+      country_name = COALESCE(excluded.country_name, projects.country_name),
+      currency = COALESCE(excluded.currency, projects.currency),
+      category_id = COALESCE(excluded.category_id, projects.category_id),
+      category_name = COALESCE(excluded.category_name, projects.category_name),
+      category_parent = COALESCE(excluded.category_parent, projects.category_parent),
+      backers_count = excluded.backers_count,
+      staff_pick = excluded.staff_pick,
+      created_at = COALESCE(excluded.created_at, projects.created_at),
+      launched_at = COALESCE(excluded.launched_at, projects.launched_at),
+      deadline = COALESCE(excluded.deadline, projects.deadline),
+      creator_name = COALESCE(excluded.creator_name, projects.creator_name),
+      creator_slug = COALESCE(excluded.creator_slug, projects.creator_slug),
+      source_url = COALESCE(excluded.source_url, projects.source_url),
+      slug = COALESCE(excluded.slug, projects.slug),
+      data_source = CASE
+        WHEN projects.data_source = excluded.data_source THEN projects.data_source
+        WHEN projects.data_source IS NULL THEN excluded.data_source
+        WHEN excluded.data_source IS NULL THEN projects.data_source
+        WHEN instr(projects.data_source, excluded.data_source) > 0 THEN projects.data_source
+        ELSE projects.data_source || ',' || excluded.data_source
+      END,
+      first_seen_at = COALESCE(MIN(projects.first_seen_at, excluded.first_seen_at), projects.first_seen_at, excluded.first_seen_at),
+      last_seen_at = COALESCE(MAX(projects.last_seen_at, excluded.last_seen_at), projects.last_seen_at, excluded.last_seen_at),
+      webrobots_synced_at = COALESCE(excluded.webrobots_synced_at, projects.webrobots_synced_at),
+      ks_live_synced_at = COALESCE(excluded.ks_live_synced_at, projects.ks_live_synced_at)
   `);
   const insertMany = db.transaction((items: Record<string, unknown>[]) => {
-    for (const row of items) insert.run(row);
+    const now = Math.floor(Date.now() / 1000);
+    for (const row of items) {
+      const dataSource = row.data_source ?? 'webrobots';
+      insert.run({
+        ...row,
+        data_source: dataSource,
+        first_seen_at: row.first_seen_at ?? now,
+        last_seen_at: row.last_seen_at ?? now,
+        webrobots_synced_at: row.webrobots_synced_at ?? (dataSource === 'webrobots' ? now : null),
+        ks_live_synced_at: row.ks_live_synced_at ?? (dataSource === 'ks_live' ? now : null),
+      });
+    }
   });
   insertMany(rows);
 }
@@ -453,7 +550,60 @@ export async function getProjectById(id: string) {
   ).get(id) ?? null;
 }
 
-// ─── Tracking ────────────────────────────────────────────────────────────────
+/**
+ * Look up a project by creator_slug + project_slug.
+ * Used to deduplicate Kicktraq-sourced projects against webrobots/KS-live records.
+ * Returns the canonical numeric KS id if found, null otherwise.
+ */
+export function getProjectIdBySlug(creatorSlug: string, projectSlug: string): string | null {
+  const row = getDB().prepare(
+    `SELECT id FROM projects
+     WHERE creator_slug = ? AND slug = ?
+       AND id NOT LIKE 'kt:%'
+     LIMIT 1`
+  ).get(creatorSlug, projectSlug) as { id: string } | null;
+  return row?.id ?? null;
+}
+
+/**
+ * Merge a Kicktraq-sourced project into an existing canonical project.
+ * Updates fields that webrobots/KS-live may have left null, and marks data_source.
+ */
+export function mergeKicktraqIntoProject(canonicalId: string, ktData: {
+  backers_count?: number;
+  pledged?: number;
+  launched_at?: number | null;
+  deadline?: number | null;
+  category_parent?: string | null;
+  category_name?: string | null;
+}) {
+  const db = getDB();
+  const now = Math.floor(Date.now() / 1000);
+  db.prepare(`
+    UPDATE projects SET
+      backers_count = MAX(backers_count, @backers_count),
+      usd_pledged   = CASE WHEN @pledged > usd_pledged THEN @pledged ELSE usd_pledged END,
+      launched_at   = COALESCE(launched_at, @launched_at),
+      deadline      = COALESCE(deadline, @deadline),
+      category_parent = COALESCE(category_parent, @category_parent),
+      category_name   = COALESCE(category_name, @category_name),
+      last_seen_at  = @now,
+      data_source   = CASE
+        WHEN instr(data_source, 'kicktraq') > 0 THEN data_source
+        ELSE data_source || ',kicktraq'
+      END
+    WHERE id = @id
+  `).run({
+    id: canonicalId,
+    backers_count: ktData.backers_count ?? 0,
+    pledged: ktData.pledged ?? 0,
+    launched_at: ktData.launched_at ?? null,
+    deadline: ktData.deadline ?? null,
+    category_parent: ktData.category_parent ?? null,
+    category_name: ktData.category_name ?? null,
+    now,
+  });
+}
 
 export interface TrackingSettings {
   project_id: string;
@@ -463,13 +613,34 @@ export interface TrackingSettings {
   analyze_comments: number;
   track_text_diff: number;
   priority: number;
+  subscriber_count: number;
+  priority_score: number;
   last_fetched: number | null;
   next_fetch: number | null;
   created_at: number;
 }
 
+export interface UserProjectSubscription {
+  user_id: number;
+  project_id: string;
+  is_tracking: number;
+  track_rewards: number;
+  track_comments: number;
+  analyze_comments: number;
+  track_text_diff: number;
+  priority: number;
+  created_at: number;
+  updated_at: number;
+}
+
 export function getTrackingSettings(projectId: string): TrackingSettings | null {
   return getDB().prepare('SELECT * FROM tracking_settings WHERE project_id = ?').get(projectId) as TrackingSettings | null;
+}
+
+export function getUserProjectSubscription(userId: number, projectId: string): UserProjectSubscription | null {
+  return getDB().prepare(
+    'SELECT * FROM user_project_subscriptions WHERE user_id = ? AND project_id = ?'
+  ).get(userId, projectId) as UserProjectSubscription | null;
 }
 
 export function upsertTrackingSettings(settings: Partial<TrackingSettings> & { project_id: string }) {
@@ -480,8 +651,8 @@ export function upsertTrackingSettings(settings: Partial<TrackingSettings> & { p
     const nextFetch = Math.floor(Date.now() / 1000);
     db.prepare(`
       INSERT INTO tracking_settings
-        (project_id, is_tracking, track_rewards, track_comments, analyze_comments, track_text_diff, priority, next_fetch)
-      VALUES (@project_id, @is_tracking, @track_rewards, @track_comments, @analyze_comments, @track_text_diff, @priority, @next_fetch)
+        (project_id, is_tracking, track_rewards, track_comments, analyze_comments, track_text_diff, priority, subscriber_count, priority_score, next_fetch)
+      VALUES (@project_id, @is_tracking, @track_rewards, @track_comments, @analyze_comments, @track_text_diff, @priority, @subscriber_count, @priority_score, @next_fetch)
     `).run({
       project_id: settings.project_id,
       is_tracking: settings.is_tracking ?? 1,
@@ -490,6 +661,8 @@ export function upsertTrackingSettings(settings: Partial<TrackingSettings> & { p
       analyze_comments: settings.analyze_comments ?? 0,
       track_text_diff: settings.track_text_diff ?? 1,
       priority: priority,
+      subscriber_count: settings.subscriber_count ?? 0,
+      priority_score: settings.priority_score ?? 0,
       next_fetch: nextFetch,
     });
   } else {
@@ -507,10 +680,108 @@ export function upsertTrackingSettings(settings: Partial<TrackingSettings> & { p
   }
 }
 
+export function upsertUserProjectSubscription(
+  userId: number,
+  projectId: string,
+  settings: Partial<Omit<UserProjectSubscription, 'user_id' | 'project_id' | 'created_at' | 'updated_at'>> = {}
+) {
+  const db = getDB();
+  const existing = getUserProjectSubscription(userId, projectId);
+  const now = Math.floor(Date.now() / 1000);
+
+  const next = {
+    user_id: userId,
+    project_id: projectId,
+    is_tracking: settings.is_tracking ?? existing?.is_tracking ?? 1,
+    track_rewards: settings.track_rewards ?? existing?.track_rewards ?? 1,
+    track_comments: settings.track_comments ?? existing?.track_comments ?? 0,
+    analyze_comments: settings.analyze_comments ?? existing?.analyze_comments ?? 0,
+    track_text_diff: settings.track_text_diff ?? existing?.track_text_diff ?? 1,
+    priority: settings.priority ?? existing?.priority ?? 1,
+    updated_at: now,
+  };
+
+  db.prepare(`
+    INSERT INTO user_project_subscriptions
+      (user_id, project_id, is_tracking, track_rewards, track_comments, analyze_comments, track_text_diff, priority, updated_at)
+    VALUES
+      (@user_id, @project_id, @is_tracking, @track_rewards, @track_comments, @analyze_comments, @track_text_diff, @priority, @updated_at)
+    ON CONFLICT(user_id, project_id) DO UPDATE SET
+      is_tracking = excluded.is_tracking,
+      track_rewards = excluded.track_rewards,
+      track_comments = excluded.track_comments,
+      analyze_comments = excluded.analyze_comments,
+      track_text_diff = excluded.track_text_diff,
+      priority = excluded.priority,
+      updated_at = excluded.updated_at
+  `).run(next);
+
+  syncTrackingSettingsFromSubscriptions(projectId);
+}
+
+export function removeUserProjectSubscription(userId: number, projectId: string) {
+  getDB().prepare(`
+    UPDATE user_project_subscriptions
+    SET is_tracking = 0, updated_at = unixepoch()
+    WHERE user_id = ? AND project_id = ?
+  `).run(userId, projectId);
+  syncTrackingSettingsFromSubscriptions(projectId);
+}
+
+export function syncTrackingSettingsFromSubscriptions(projectId: string) {
+  const db = getDB();
+  const aggregate = db.prepare(`
+    SELECT
+      COUNT(*) as subscriber_count,
+      MAX(track_rewards) as track_rewards,
+      MAX(track_comments) as track_comments,
+      MAX(analyze_comments) as analyze_comments,
+      MAX(track_text_diff) as track_text_diff,
+      MAX(priority) as priority,
+      SUM(CASE WHEN priority = 2 THEN 10 ELSE 4 END) as priority_score
+    FROM user_project_subscriptions
+    WHERE project_id = ? AND is_tracking = 1
+  `).get(projectId) as {
+    subscriber_count: number;
+    track_rewards: number | null;
+    track_comments: number | null;
+    analyze_comments: number | null;
+    track_text_diff: number | null;
+    priority: number | null;
+    priority_score: number | null;
+  };
+
+  if (!aggregate.subscriber_count) {
+    const existing = getTrackingSettings(projectId);
+    if (existing) upsertTrackingSettings({ project_id: projectId, is_tracking: 0, subscriber_count: 0, priority_score: 0 });
+    return;
+  }
+
+  upsertTrackingSettings({
+    project_id: projectId,
+    is_tracking: 1,
+    track_rewards: aggregate.track_rewards ?? 1,
+    track_comments: aggregate.track_comments ?? 0,
+    analyze_comments: aggregate.analyze_comments ?? 0,
+    track_text_diff: aggregate.track_text_diff ?? 1,
+    priority: aggregate.priority ?? 1,
+    subscriber_count: aggregate.subscriber_count,
+    priority_score: aggregate.priority_score ?? 0,
+    next_fetch: Math.floor(Date.now() / 1000),
+  });
+}
+
 export function markFetched(projectId: string) {
   const now = Math.floor(Date.now() / 1000);
-  const s = getDB().prepare('SELECT priority FROM tracking_settings WHERE project_id = ?').get(projectId) as { priority: number } | null;
-  const interval = s?.priority === 2 ? 3600 : 4 * 3600;
+  const s = getDB().prepare(
+    'SELECT priority, subscriber_count, priority_score FROM tracking_settings WHERE project_id = ?'
+  ).get(projectId) as { priority: number; subscriber_count: number; priority_score: number } | null;
+  const score = s?.priority_score ?? 0;
+  const interval = s?.priority === 2 || score >= 20
+    ? 3600
+    : score >= 8 || (s?.subscriber_count ?? 0) >= 2
+      ? 2 * 3600
+      : 4 * 3600;
   getDB().prepare('UPDATE tracking_settings SET last_fetched = ?, next_fetch = ? WHERE project_id = ?').run(now, now + interval, projectId);
 }
 

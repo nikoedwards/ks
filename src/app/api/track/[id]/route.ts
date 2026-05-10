@@ -1,6 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSessionUser, SESSION_COOKIE } from '@/lib/auth';
-import { getTrackingSettings, upsertTrackingSettings, getProjectById } from '@/lib/db';
+import {
+  getProjectById,
+  getTrackingSettings,
+  getUserProjectSubscription,
+  removeUserProjectSubscription,
+  upsertUserProjectSubscription,
+} from '@/lib/db';
 import { buildKSJsonUrl, scrapeAndStore } from '@/lib/scraper';
 import { initTracker } from '@/lib/tracker';
 
@@ -11,8 +17,16 @@ initTracker();
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const settings = getTrackingSettings(id);
-  return NextResponse.json({ settings: settings ?? null });
+  const token = req.cookies.get(SESSION_COOKIE)?.value;
+  const user = token ? getSessionUser(token) : null;
+  const platformSettings = getTrackingSettings(id);
+  const userSubscription = user ? getUserProjectSubscription(user.id, id) : null;
+  const settings = userSubscription
+    ? { ...(platformSettings ?? {}), ...userSubscription }
+    : user && platformSettings
+      ? { ...platformSettings, is_tracking: 0 }
+      : platformSettings;
+  return NextResponse.json({ settings: settings ?? null, platformSettings, userSubscription });
 }
 
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -22,8 +36,19 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
   const body = await req.json() as Record<string, unknown>;
-  upsertTrackingSettings({ project_id: id, ...body });
-  return NextResponse.json({ ok: true, settings: getTrackingSettings(id) });
+  upsertUserProjectSubscription(user.id, id, {
+    is_tracking: typeof body.is_tracking === 'number' ? body.is_tracking : 1,
+    track_rewards: typeof body.track_rewards === 'number' ? body.track_rewards : undefined,
+    track_comments: typeof body.track_comments === 'number' ? body.track_comments : undefined,
+    analyze_comments: typeof body.analyze_comments === 'number' ? body.analyze_comments : undefined,
+    track_text_diff: typeof body.track_text_diff === 'number' ? body.track_text_diff : undefined,
+    priority: typeof body.priority === 'number' ? body.priority : undefined,
+  });
+  return NextResponse.json({
+    ok: true,
+    settings: getUserProjectSubscription(user.id, id),
+    platformSettings: getTrackingSettings(id),
+  });
 }
 
 export async function DELETE(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -32,7 +57,7 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
   const user = token ? getSessionUser(token) : null;
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-  upsertTrackingSettings({ project_id: id, is_tracking: 0 });
+  removeUserProjectSubscription(user.id, id);
   return NextResponse.json({ ok: true });
 }
 

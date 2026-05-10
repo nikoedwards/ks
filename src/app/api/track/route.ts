@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSessionUser, SESSION_COOKIE } from '@/lib/auth';
-import { getTrackingList, upsertTrackingSettings } from '@/lib/db';
+import { getTrackingList, upsertUserProjectSubscription } from '@/lib/db';
 import { initTracker } from '@/lib/tracker';
 
 export const runtime = 'nodejs';
@@ -20,9 +20,23 @@ export async function POST(req: NextRequest) {
   const user = token ? getSessionUser(token) : null;
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-  const body = await req.json() as { projectId?: string; priority?: number };
+  const body = await req.json() as {
+    projectId?: string;
+    priority?: number;
+    track_rewards?: number;
+    track_comments?: number;
+    analyze_comments?: number;
+    track_text_diff?: number;
+  };
   if (!body.projectId) return NextResponse.json({ error: 'projectId required' }, { status: 400 });
 
-  upsertTrackingSettings({ project_id: body.projectId, is_tracking: 1, priority: body.priority ?? 1 });
+  upsertUserProjectSubscription(user.id, body.projectId, {
+    is_tracking: 1,
+    priority: body.priority ?? 1,
+    track_rewards: body.track_rewards,
+    track_comments: body.track_comments,
+    analyze_comments: body.analyze_comments,
+    track_text_diff: body.track_text_diff,
+  });
   return NextResponse.json({ ok: true });
 }

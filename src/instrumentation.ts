@@ -1,22 +1,50 @@
 export async function register() {
   if (process.env.NEXT_RUNTIME === 'nodejs') {
     const cron = await import('node-cron');
-    const { runSync } = await import('./lib/sync');
+    const { runSync, getLatestDatasetUrl } = await import('./lib/sync');
     const { getSyncState } = await import('./lib/syncState');
+    const { getLastSync } = await import('./lib/db');
+    const { initTracker } = await import('./lib/tracker');
 
-    // Run on the 15th of each month at 3:00 AM
+    // ── Start background tracker immediately on server boot ──────────────────
+    initTracker();
+    console.log('[Kicksonar] Background tracker initialized');
+
+    // ── Monthly webrobots sync: 15th of each month at 3:00 AM ───────────────
     cron.default.schedule('0 3 15 * *', async () => {
       const state = getSyncState();
       if (state.status === 'running') return;
-      console.log('[KS Analytics] Running scheduled monthly sync...');
+      console.log('[Kicksonar] Running scheduled monthly webrobots sync...');
       try {
         await runSync();
-        console.log('[KS Analytics] Scheduled sync completed.');
+        console.log('[Kicksonar] Scheduled sync completed.');
       } catch (e) {
-        console.error('[KS Analytics] Scheduled sync failed:', e);
+        console.error('[Kicksonar] Scheduled sync failed:', e);
       }
     });
 
-    console.log('[KS Analytics] Cron job registered (15th of each month, 3:00 AM)');
+    // ── On startup: check if a newer webrobots dataset is available ──────────
+    // Runs 30s after boot to avoid blocking startup
+    setTimeout(async () => {
+      try {
+        const lastSync = await getLastSync() as { url?: string; status?: string } | null;
+        const latestUrl = await getLatestDatasetUrl();
+
+        const alreadySynced = lastSync?.status === 'completed' && lastSync?.url === latestUrl;
+        if (!alreadySynced) {
+          const state = getSyncState();
+          if (state.status !== 'running') {
+            console.log(`[Kicksonar] New webrobots dataset detected: ${latestUrl.split('/').pop()}, starting sync...`);
+            runSync().catch(e => console.error('[Kicksonar] Auto-sync on startup failed:', e));
+          }
+        } else {
+          console.log('[Kicksonar] webrobots dataset is up to date, skipping auto-sync.');
+        }
+      } catch (e) {
+        console.error('[Kicksonar] Startup dataset check failed:', e);
+      }
+    }, 30_000);
+
+    console.log('[Kicksonar] Cron jobs registered (monthly sync on 15th at 3:00 AM)');
   }
 }

@@ -52,6 +52,7 @@ interface TextChange {
 interface TrackingSettings {
   is_tracking: number; track_rewards: number; track_comments: number;
   analyze_comments: number; track_text_diff: number; priority: number;
+  subscriber_count?: number; priority_score?: number;
   last_fetched: number | null;
 }
 
@@ -153,6 +154,7 @@ export default function ProjectDetailPage() {
 
   // Tracking
   const [tracking, setTracking] = useState<TrackingSettings | null>(null);
+  const [platformTracking, setPlatformTracking] = useState<TrackingSettings | null>(null);
   const [trackLoading, setTrackLoading] = useState(false);
   const [scraping, setScraping] = useState(false);
   const [ktImporting, setKtImporting] = useState(false);
@@ -166,6 +168,25 @@ export default function ProjectDetailPage() {
   const [chartRange, setChartRange] = useState<'all' | '30d' | '14d'>('all');
 
   const id = params?.id;
+  const detailCopy = lang === 'cn' ? {
+    sharedTitle: '平台共享追踪',
+    sharedActive: '该项目已经进入共享追踪队列',
+    sharedInactive: '该项目尚未进入共享追踪队列',
+    subscribers: (n: number) => `${n} 人正在追踪`,
+    sharedHint: '同步、奖励、文案等数据会全平台共享，后续用户无需重复抓取。',
+    joinTracking: '点击 Track 后，你的监控偏好会合并到平台抓取策略里。',
+    personalTitle: '我的追踪设置',
+    nextCadence: (label: string) => `当前建议频率：${label}`,
+  } : {
+    sharedTitle: 'Shared tracking',
+    sharedActive: 'This project is already in the shared tracking queue',
+    sharedInactive: 'This project is not in the shared tracking queue yet',
+    subscribers: (n: number) => `${n} tracker${n === 1 ? '' : 's'}`,
+    sharedHint: 'Sync, reward, and text-change data is shared platform-wide so future users do not repeat the same crawl.',
+    joinTracking: 'Click Track to merge your monitoring preferences into the platform crawl strategy.',
+    personalTitle: 'My tracking settings',
+    nextCadence: (label: string) => `Current suggested cadence: ${label}`,
+  };
 
   // ── Fetch project ──────────────────────────────────────────────────────────
   useEffect(() => {
@@ -185,12 +206,17 @@ export default function ProjectDetailPage() {
   }, [user, id]);
 
   // ── Fetch tracking settings ────────────────────────────────────────────────
-  useEffect(() => {
+  const loadTracking = useCallback(() => {
     if (!id) return;
     fetch(`/api/track/${id}`).then(r => r.json()).then(d => {
       setTracking(d.settings);
+      setPlatformTracking(d.platformSettings);
     }).catch(() => {});
   }, [id]);
+
+  useEffect(() => {
+    loadTracking();
+  }, [loadTracking]);
 
   // ── Fetch snapshot data ────────────────────────────────────────────────────
   const loadSnapshots = useCallback(() => {
@@ -229,6 +255,7 @@ export default function ProjectDetailPage() {
       await fetch('/api/track', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ projectId: id }) });
       setTracking(prev => prev ? { ...prev, is_tracking: 1 } : { is_tracking: 1, track_rewards: 1, track_comments: 0, analyze_comments: 0, track_text_diff: 1, priority: 1, last_fetched: null });
     }
+    await loadTracking();
     setTrackLoading(false);
   };
 
@@ -236,6 +263,7 @@ export default function ProjectDetailPage() {
     if (!id) return;
     await fetch(`/api/track/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ [key]: value }) });
     setTracking(prev => prev ? { ...prev, [key]: value } : null);
+    await loadTracking();
   };
 
   const triggerScrape = async () => {
@@ -245,8 +273,7 @@ export default function ProjectDetailPage() {
     await fetch(`/api/track/${id}`, { method: 'POST' });
     await new Promise(r => setTimeout(r, 1500));
     loadSnapshots();
-    const d = await fetch(`/api/track/${id}`).then(r => r.json());
-    setTracking(d.settings);
+    await loadTracking();
     setScraping(false);
   };
 
@@ -315,6 +342,14 @@ export default function ProjectDetailPage() {
   const ksUrl = project.source_url?.startsWith('https://www.kickstarter.com/projects/') ? project.source_url : null;
   const kicktraqUrl = project.slug ? `https://www.kicktraq.com/projects/${project.slug}/` : null;
   const hasRealData = snapshots.length > 0;
+  const sharedTrackingActive = !!platformTracking?.is_tracking;
+  const subscriberCount = platformTracking?.subscriber_count ?? 0;
+  const sharedLastFetched = platformTracking?.last_fetched ?? tracking?.last_fetched ?? null;
+  const cadenceLabel = (platformTracking?.priority === 2 || (platformTracking?.priority_score ?? 0) >= 20)
+    ? tr.every1h
+    : (subscriberCount >= 2 || (platformTracking?.priority_score ?? 0) >= 8)
+      ? (lang === 'cn' ? '每 2 小时' : 'Every 2h')
+      : tr.every4h;
 
   // Text diff: group by field, pair consecutive entries
   const textByField: Record<string, TextChange[]> = {};
@@ -353,9 +388,9 @@ export default function ProjectDetailPage() {
               {project.creator_name && <span className="text-gray-300 font-medium">{project.creator_name}</span>}
               <span>{project.country_name || project.country}</span>
               <span>{project.currency}</span>
-              {tracking?.last_fetched && (
+              {sharedLastFetched && (
                 <span className="flex items-center gap-1 text-ks-green/80">
-                  <Radio className="w-3 h-3" /> {tr.lastSynced} {fmtDateTime(tracking.last_fetched)}
+                  <Radio className="w-3 h-3" /> {tr.lastSynced} {fmtDateTime(sharedLastFetched)}
                 </span>
               )}
             </div>
@@ -561,40 +596,75 @@ export default function ProjectDetailPage() {
             )}
 
             {/* Tracking settings panel */}
-            {tracking?.is_tracking ? (
-              <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
-                <h3 className="font-semibold text-gray-700 text-sm mb-4">{tr.trackingSettings}</h3>
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-                  {[
-                    { key: 'track_rewards', label: tr.trackRewardsLabel },
-                    { key: 'track_text_diff', label: tr.trackTextDiffLabel },
-                    { key: 'track_comments', label: tr.trackCommentsLabel },
-                    { key: 'analyze_comments', label: tr.trackAILabel },
-                  ].map(({ key, label }) => (
-                    <label key={key} className="flex items-center gap-2 cursor-pointer select-none">
-                      <div className="relative">
-                        <input type="checkbox"
-                          checked={!!(tracking[key as keyof TrackingSettings])}
-                          onChange={e => updateTrackSetting(key, e.target.checked ? 1 : 0)}
-                          className="sr-only peer" />
-                        <div className="w-9 h-5 bg-gray-200 rounded-full peer-checked:bg-ks-green transition-colors" />
-                        <div className="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow peer-checked:translate-x-4 transition-transform" />
-                      </div>
-                      <span className="text-sm text-gray-700">{label}</span>
-                    </label>
-                  ))}
+            <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5 space-y-5">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <Radio className={`w-4 h-4 ${sharedTrackingActive ? 'text-ks-green animate-pulse' : 'text-gray-300'}`} />
+                    <h3 className="font-semibold text-gray-800 text-sm">{detailCopy.sharedTitle}</h3>
+                  </div>
+                  <p className="text-sm text-gray-600 mt-2">
+                    {sharedTrackingActive ? detailCopy.sharedActive : detailCopy.sharedInactive}
+                  </p>
+                  <p className="text-xs text-gray-400 mt-1">{detailCopy.sharedHint}</p>
                 </div>
-                <div className="mt-4 flex items-center gap-4">
-                  <span className="text-sm text-gray-600">{tr.updateFreq}</span>
-                  {[{ v: 1, label: tr.every4h }, { v: 2, label: tr.every1h }].map(({ v, label }) => (
-                    <button key={v} onClick={() => updateTrackSetting('priority', v)}
-                      className={`px-3 py-1 rounded-lg text-xs font-semibold border ${tracking.priority === v ? 'bg-ks-green text-white border-ks-green' : 'bg-white text-gray-600 border-gray-200'}`}>
-                      {label}
-                    </button>
-                  ))}
+                <div className="flex flex-wrap gap-2">
+                  <span className={`px-2.5 py-1 rounded-full text-xs font-semibold ${sharedTrackingActive ? 'bg-ks-green-light text-ks-green-dark' : 'bg-gray-100 text-gray-500'}`}>
+                    {detailCopy.subscribers(subscriberCount)}
+                  </span>
+                  {sharedTrackingActive && (
+                    <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-blue-50 text-blue-600">
+                      {cadenceLabel}
+                    </span>
+                  )}
                 </div>
               </div>
-            ) : null}
+
+              {tracking?.is_tracking ? (
+                <div className="border-t border-gray-100 pt-5">
+                  <h4 className="font-semibold text-gray-700 text-sm mb-4">{detailCopy.personalTitle}</h4>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                    {[
+                      { key: 'track_rewards', label: tr.trackRewardsLabel },
+                      { key: 'track_text_diff', label: tr.trackTextDiffLabel },
+                      { key: 'track_comments', label: tr.trackCommentsLabel },
+                      { key: 'analyze_comments', label: tr.trackAILabel },
+                    ].map(({ key, label }) => (
+                      <label key={key} className="flex items-center gap-2 cursor-pointer select-none">
+                        <div className="relative">
+                          <input type="checkbox"
+                            checked={!!(tracking[key as keyof TrackingSettings])}
+                            onChange={e => updateTrackSetting(key, e.target.checked ? 1 : 0)}
+                            className="sr-only peer" />
+                          <div className="w-9 h-5 bg-gray-200 rounded-full peer-checked:bg-ks-green transition-colors" />
+                          <div className="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow peer-checked:translate-x-4 transition-transform" />
+                        </div>
+                        <span className="text-sm text-gray-700">{label}</span>
+                      </label>
+                    ))}
+                  </div>
+                  <div className="mt-4 flex flex-wrap items-center gap-3">
+                    <span className="text-sm text-gray-600">{tr.updateFreq}</span>
+                    {[{ v: 1, label: tr.every4h }, { v: 2, label: tr.every1h }].map(({ v, label }) => (
+                      <button key={v} onClick={() => updateTrackSetting('priority', v)}
+                        className={`px-3 py-1 rounded-lg text-xs font-semibold border ${tracking.priority === v ? 'bg-ks-green text-white border-ks-green' : 'bg-white text-gray-600 border-gray-200'}`}>
+                        {label}
+                      </button>
+                    ))}
+                    <span className="text-xs text-gray-400">{detailCopy.nextCadence(cadenceLabel)}</span>
+                  </div>
+                </div>
+              ) : (
+                <div className="border-t border-gray-100 pt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <p className="text-sm text-gray-500">{detailCopy.joinTracking}</p>
+                  <button onClick={toggleTracking} disabled={trackLoading}
+                    className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-ks-green text-white text-sm font-semibold hover:bg-ks-green-dark disabled:opacity-50">
+                    <Radio className="w-4 h-4" />
+                    {tr.trackBtn}
+                  </button>
+                </div>
+              )}
+            </div>
 
             <DataSource />
           </div>

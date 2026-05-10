@@ -27,6 +27,12 @@ interface Project {
   deadline: number;
   source_url: string;
   slug: string;
+  data_source?: string;
+  // Live snapshot fields
+  live_pledged_usd?: number | null;
+  live_backers_count?: number | null;
+  live_captured_at?: number | null;
+  live_days_to_go?: number | null;
 }
 
 type TimePeriod = 'all' | 'week' | 'month' | 'year' | 'custom';
@@ -452,7 +458,6 @@ export default function ProjectsPage() {
                 <tbody className="divide-y divide-gray-50">
                   {currentRows.map((p, i) => {
                     const rowNum = (page - 1) * 20 + i + 1;
-                    const fundingRate = p.goal > 0 ? (p.usd_pledged / p.goal) * 100 : 0;
                     const days = calcDays(p);
                     const ksUrl = p.source_url?.startsWith('https://www.kickstarter.com/projects/')
                       ? p.source_url : null;
@@ -489,13 +494,31 @@ export default function ProjectsPage() {
                           <div className="text-xs text-gray-400">{p.category_name}</div>
                         </td>
                         <td className="px-4 py-3 text-right font-mono text-gray-500 text-xs">{fmtUsd(p.goal)}</td>
-                        <td className="px-4 py-3 text-right font-mono text-gray-900 font-semibold">{fmtUsd(p.usd_pledged)}</td>
                         <td className="px-4 py-3 text-right">
-                          <span className={`font-semibold text-xs ${fundingRate >= 100 ? 'text-ks-green' : 'text-gray-500'}`}>
-                            {fundingRate >= 1000 ? '>1000' : fundingRate.toFixed(0)}%
-                          </span>
+                          <div className="font-mono text-gray-900 font-semibold">
+                            {fmtUsd(p.live_pledged_usd ?? p.usd_pledged)}
+                          </div>
+                          {p.live_pledged_usd != null && p.live_captured_at && (
+                            <div className="text-xs text-blue-500 mt-0.5 flex items-center justify-end gap-1">
+                              <span className="inline-block w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
+                              {lang === 'cn' ? '实时' : 'live'}
+                            </div>
+                          )}
                         </td>
-                        <td className="px-4 py-3 text-right text-gray-600">{p.backers_count.toLocaleString()}</td>
+                        <td className="px-4 py-3 text-right">
+                          {(() => {
+                            const pledged = p.live_pledged_usd ?? p.usd_pledged;
+                            const fundingRate = p.goal > 0 ? (pledged / p.goal) * 100 : 0;
+                            return (
+                              <span className={`font-semibold text-xs ${fundingRate >= 100 ? 'text-ks-green' : 'text-gray-500'}`}>
+                                {fundingRate >= 1000 ? '>1000' : fundingRate.toFixed(0)}%
+                              </span>
+                            );
+                          })()}
+                        </td>
+                        <td className="px-4 py-3 text-right text-gray-600">
+                          {(p.live_backers_count ?? p.backers_count).toLocaleString()}
+                        </td>
                         <td className="px-4 py-3 text-right">
                           {days !== null ? (
                             <span className={`text-xs font-medium ${p.state === 'live' ? 'text-blue-600' : 'text-gray-500'}`}>
