@@ -136,41 +136,10 @@ export async function scrapeAndStore(projectId: string, jsonUrl: string, opts: S
 // ─── Kicktraq HTML scraper ────────────────────────────────────────────────────
 
 export interface KicktraqDay {
-  date: string;        // e.g. "2023-01-15"
-  pledged_usd: number; // cumulative
-  backers: number;     // cumulative
-  comments?: number;   // daily comment count (from dailychart.json)
-}
-
-// Try the AJAX endpoint first — it returns structured JSON with all chart series
-async function fetchDailyChartJson(creatorSlug: string, projectSlug: string): Promise<KicktraqDay[] | null> {
-  const pageUrl = `https://www.kicktraq.com/projects/${creatorSlug}/${projectSlug}/`;
-  const jsonUrl = `${pageUrl}dailychart.json`;
-  try {
-    const res = await fetch(jsonUrl, {
-      headers: {
-        'Referer': pageUrl,
-        'Origin': 'https://www.kicktraq.com',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        'Accept': 'application/json, text/javascript, */*; q=0.01',
-        'X-Requested-With': 'XMLHttpRequest',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Sec-Fetch-Dest': 'empty',
-        'Sec-Fetch-Mode': 'cors',
-        'Sec-Fetch-Site': 'same-origin',
-      },
-      signal: AbortSignal.timeout(15_000),
-    });
-    if (!res.ok) return null;
-    const text = await res.text();
-    if (!text || text.trim().startsWith('<') || text.includes('invalid request')) return null;
-
-    // Parse the JSON — Kicktraq returns various shapes, handle all of them
-    const json = JSON.parse(text);
-    return parseDailyChartJson(json);
-  } catch {
-    return null;
-  }
+  date: string;
+  pledged_usd: number;
+  backers: number;
+  comments?: number;
 }
 
 interface DailyChartJson {
@@ -255,14 +224,13 @@ function parseDailyChartJson(json: DailyChartJson): KicktraqDay[] | null {
 }
 
 export async function scrapeKicktraq(creatorSlug: string, projectSlug: string): Promise<KicktraqDay[]> {
-  // Try the JSON endpoint first (has comments data)
-  const jsonDays = await fetchDailyChartJson(creatorSlug, projectSlug);
-  if (jsonDays?.length) return jsonDays;
+  const pageUrl = `https://www.kicktraq.com/projects/${creatorSlug}/${projectSlug}/`;
 
-  // Fall back to HTML parsing
-  const url = `https://www.kicktraq.com/projects/${creatorSlug}/${projectSlug}/`;
+  // Fetch the main page first (needed for session cookie + HTML fallback)
+  let html = '';
+  let cookieStr = '';
   try {
-    const res = await fetch(url, {
+    const pageRes = await fetch(pageUrl, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml',
@@ -270,17 +238,45 @@ export async function scrapeKicktraq(creatorSlug: string, projectSlug: string): 
       },
       signal: AbortSignal.timeout(20_000),
     });
-    // 404 = project not on Kicktraq at all
-    if (res.status === 404) return [];
-    // 5xx = Kicktraq server error, treat as no data (not a hard failure)
-    if (!res.ok) return [];
-    const html = await res.text();
-    // Kicktraq sometimes returns a page with no chart data for projects
-    // that were added late or have no tracking history — that's OK, return empty
-    return parseKicktraqHtml(html);
+    if (pageRes.status === 404) return [];
+    if (!pageRes.ok) return [];
+    html = await pageRes.text();
+    const setCookie = pageRes.headers.getSetCookie?.() ?? [];
+    cookieStr = setCookie.map(c => c.split(';')[0]).join('; ');
   } catch {
     return [];
   }
+
+  // Try dailychart.json with the session cookie we just got
+  const jsonUrl = `${pageUrl}dailychart.json`;
+  try {
+    const jsonRes = await fetch(jsonUrl, {
+      headers: {
+        'Referer': pageUrl,
+        'Origin': 'https://www.kicktraq.com',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Accept': 'application/json, text/javascript, */*; q=0.01',
+        'X-Requested-With': 'XMLHttpRequest',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Sec-Fetch-Dest': 'empty',
+        'Sec-Fetch-Mode': 'cors',
+        'Sec-Fetch-Site': 'same-origin',
+        ...(cookieStr ? { 'Cookie': cookieStr } : {}),
+      },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (jsonRes.ok) {
+      const text = await jsonRes.text();
+      if (text && !text.trim().startsWith('<') && !text.includes('invalid request')) {
+        const json = JSON.parse(text);
+        const days = parseDailyChartJson(json);
+        if (days?.length) return days;
+      }
+    }
+  } catch { /* fall through to HTML parsing */ }
+
+  // Fall back to parsing chart data embedded in the HTML
+  return parseKicktraqHtml(html);
 }
 
 function parseKicktraqHtml(html: string): KicktraqDay[] {
