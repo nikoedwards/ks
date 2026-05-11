@@ -32,7 +32,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     if (!days.length) {
       return NextResponse.json({
         ok: false,
-        message: `No data found on Kicktraq for ${creatorSlug}/${projectSlug}. The project may not be listed there, or Kicktraq's format may have changed.`
+        noData: true,
+        message: `No daily chart data found on Kicktraq for this project. It may not have been tracked from day one, or Kicktraq may not have historical data for it.`,
       });
     }
 

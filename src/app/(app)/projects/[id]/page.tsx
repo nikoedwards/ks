@@ -278,16 +278,23 @@ export default function ProjectDetailPage() {
   };
 
   const [ktError, setKtError] = useState('');
+  const [ktNoData, setKtNoData] = useState(false);
   const importKicktraq = async () => {
     if (!user) { showLogin(); return; }
     if (!id) return;
     setKtImporting(true);
     setKtError('');
+    setKtNoData(false);
     try {
       const res = await fetch(`/api/kicktraq/${id}`, { method: 'POST' });
-      const data = await res.json() as { ok: boolean; days?: number; message?: string };
-      if (data.ok) { loadSnapshots(); }
-      else { setKtError(data.message ?? 'Import failed'); }
+      const data = await res.json() as { ok: boolean; noData?: boolean; days?: number; message?: string };
+      if (data.ok) {
+        loadSnapshots();
+      } else if (data.noData) {
+        setKtNoData(true);
+      } else {
+        setKtError(data.message ?? 'Import failed');
+      }
     } catch {
       setKtError('Network error — please try again.');
     }
@@ -590,6 +597,13 @@ export default function ProjectDetailPage() {
                 </div>
                 {ktError && (
                   <p className="text-xs text-red-500 bg-red-50 rounded-lg px-3 py-2 max-w-md mx-auto">{ktError}</p>
+                )}
+                {ktNoData && (
+                  <p className="text-xs text-gray-400 bg-gray-50 rounded-lg px-3 py-2 max-w-md mx-auto">
+                    {lang === 'cn'
+                      ? 'Kicktraq 上暂无该项目的逐日数据，可能未被从第一天起追踪。'
+                      : 'Kicktraq has no daily chart data for this project — it may not have been tracked from day one.'}
+                  </p>
                 )}
                 <p className="text-xs text-gray-400">{tr.kicktraqHint}</p>
               </div>

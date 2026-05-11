@@ -270,8 +270,13 @@ export async function scrapeKicktraq(creatorSlug: string, projectSlug: string): 
       },
       signal: AbortSignal.timeout(20_000),
     });
+    // 404 = project not on Kicktraq at all
+    if (res.status === 404) return [];
+    // 5xx = Kicktraq server error, treat as no data (not a hard failure)
     if (!res.ok) return [];
     const html = await res.text();
+    // Kicktraq sometimes returns a page with no chart data for projects
+    // that were added late or have no tracking history — that's OK, return empty
     return parseKicktraqHtml(html);
   } catch {
     return [];
