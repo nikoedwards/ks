@@ -692,6 +692,20 @@ export function getDataQualityReport() {
       AND (s.last_snapshot_at IS NULL OR s.last_snapshot_at < @sixHoursAgo)
   `).get({ sixHoursAgo }) as { c: number };
 
+  const liveTracking = db.prepare(`
+    SELECT
+      COUNT(*) as live_trackable,
+      SUM(CASE WHEN t.project_id IS NOT NULL AND t.is_tracking = 1 THEN 1 ELSE 0 END) as auto_tracked_live,
+      SUM(CASE WHEN (t.project_id IS NULL OR t.is_tracking = 0) THEN 1 ELSE 0 END) as untracked_live
+    FROM projects p
+    LEFT JOIN tracking_settings t ON t.project_id = p.id
+    WHERE p.state = 'live'
+      AND (
+        p.source_url LIKE 'https://www.kickstarter.com/projects/%'
+        OR (p.creator_slug IS NOT NULL AND p.slug IS NOT NULL)
+      )
+  `).get() as Record<string, number | null>;
+
   const tracking = db.prepare(`
     SELECT
       COUNT(*) as tracked_projects,
@@ -773,6 +787,9 @@ export function getDataQualityReport() {
     tracking: {
       trackedProjects: Number(tracking.tracked_projects ?? 0),
       dueProjects: Number(tracking.due_projects ?? 0),
+      liveTrackable: Number(liveTracking.live_trackable ?? 0),
+      autoTrackedLive: Number(liveTracking.auto_tracked_live ?? 0),
+      untrackedLive: Number(liveTracking.untracked_live ?? 0),
     },
     sourceHealth,
     syncSources,
@@ -1053,12 +1070,97 @@ export function markFetched(projectId: string) {
   getDB().prepare('UPDATE tracking_settings SET last_fetched = ?, next_fetch = ? WHERE project_id = ?').run(now, now + interval, projectId);
 }
 
-export function getDueProjects(): { project_id: string; priority: number; track_rewards: number; track_comments: number; track_text_diff: number }[] {
+export function getDueProjects(limit = 25): { project_id: string; priority: number; track_rewards: number; track_comments: number; track_text_diff: number }[] {
   const now = Math.floor(Date.now() / 1000);
   return getDB().prepare(`
     SELECT project_id, priority, track_rewards, track_comments, track_text_diff
     FROM tracking_settings WHERE is_tracking = 1 AND (next_fetch IS NULL OR next_fetch <= ?)
-  `).all(now) as { project_id: string; priority: number; track_rewards: number; track_comments: number; track_text_diff: number }[];
+    ORDER BY priority DESC, priority_score DESC, COALESCE(next_fetch, 0) ASC, last_fetched ASC
+    LIMIT ?
+  `).all(now, limit) as { project_id: string; priority: number; track_rewards: number; track_comments: number; track_text_diff: number }[];
+}
+
+export function autoTrackLiveProjects(limit = 250): { inserted: number; reactivated: number; totalTrackable: number; remaining: number } {
+  const db = getDB();
+  const now = Math.floor(Date.now() / 1000);
+  const jitterWindow = 2 * 3600;
+
+  const totalRow = db.prepare(`
+    SELECT COUNT(*) as c
+    FROM projects p
+    WHERE p.state = 'live'
+      AND (
+        p.source_url LIKE 'https://www.kickstarter.com/projects/%'
+        OR (p.creator_slug IS NOT NULL AND p.slug IS NOT NULL)
+      )
+  `).get() as { c: number };
+
+  const candidates = db.prepare(`
+    SELECT p.id, t.project_id as tracked, t.is_tracking
+    FROM projects p
+    LEFT JOIN tracking_settings t ON t.project_id = p.id
+    WHERE p.state = 'live'
+      AND (
+        p.source_url LIKE 'https://www.kickstarter.com/projects/%'
+        OR (p.creator_slug IS NOT NULL AND p.slug IS NOT NULL)
+      )
+      AND (t.project_id IS NULL OR t.is_tracking = 0)
+    ORDER BY COALESCE(p.deadline, 0) ASC, COALESCE(p.last_seen_at, 0) DESC
+    LIMIT ?
+  `).all(limit) as { id: string; tracked: string | null; is_tracking: number | null }[];
+
+  const insert = db.prepare(`
+    INSERT OR IGNORE INTO tracking_settings
+      (project_id, is_tracking, track_rewards, track_comments, analyze_comments, track_text_diff,
+       priority, subscriber_count, priority_score, next_fetch)
+    VALUES
+      (@project_id, 1, 1, 0, 0, 1, 1, 0, 1, @next_fetch)
+  `);
+  const reactivate = db.prepare(`
+    UPDATE tracking_settings
+    SET is_tracking = 1,
+        track_rewards = 1,
+        track_text_diff = 1,
+        priority = MAX(priority, 1),
+        priority_score = MAX(priority_score, 1),
+        next_fetch = @next_fetch
+    WHERE project_id = @project_id
+  `);
+
+  let inserted = 0;
+  let reactivated = 0;
+  const tx = db.transaction(() => {
+    candidates.forEach((project, index) => {
+      const next_fetch = now + Math.floor((index / Math.max(1, candidates.length)) * jitterWindow);
+      if (project.tracked) {
+        reactivate.run({ project_id: project.id, next_fetch });
+        reactivated++;
+      } else {
+        const result = insert.run({ project_id: project.id, next_fetch });
+        if (result.changes) inserted++;
+      }
+    });
+  });
+  tx();
+
+  const trackedRow = db.prepare(`
+    SELECT COUNT(*) as c
+    FROM tracking_settings t
+    JOIN projects p ON p.id = t.project_id
+    WHERE t.is_tracking = 1
+      AND p.state = 'live'
+      AND (
+        p.source_url LIKE 'https://www.kickstarter.com/projects/%'
+        OR (p.creator_slug IS NOT NULL AND p.slug IS NOT NULL)
+      )
+  `).get() as { c: number };
+
+  return {
+    inserted,
+    reactivated,
+    totalTrackable: totalRow.c,
+    remaining: Math.max(0, totalRow.c - trackedRow.c),
+  };
 }
 
 export function getTrackingList(): (TrackingSettings & { name: string | null })[] {

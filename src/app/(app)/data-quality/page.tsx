@@ -66,6 +66,9 @@ interface QualityReport {
   tracking: {
     trackedProjects: number;
     dueProjects: number;
+    liveTrackable: number;
+    autoTrackedLive: number;
+    untrackedLive: number;
   };
   sourceHealth: SourceHealth[];
   syncSources: SourceHealth[];
@@ -223,6 +226,36 @@ export default function DataQualityPage() {
           tone={staleTone}
         />
       </div>
+
+      <section className="bg-white border border-gray-100 rounded-lg p-5">
+        <div className="flex items-center gap-2 mb-4">
+          <RadioTower className="w-4 h-4 text-ks-green" />
+          <h2 className="font-semibold text-gray-800">{cn ? '自动巡航覆盖' : 'Autopilot Coverage'}</h2>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <div className="bg-gray-50 rounded-lg p-4">
+            <p className="text-xs text-gray-500">{cn ? '可追踪 live' : 'Trackable live'}</p>
+            <p className="text-2xl font-bold text-gray-900 mt-1">{fmtNum(report.tracking.liveTrackable)}</p>
+          </div>
+          <div className="bg-green-50 rounded-lg p-4">
+            <p className="text-xs text-green-700">{cn ? '已自动追踪' : 'Auto-tracked'}</p>
+            <p className="text-2xl font-bold text-green-900 mt-1">{fmtNum(report.tracking.autoTrackedLive)}</p>
+          </div>
+          <div className="bg-amber-50 rounded-lg p-4">
+            <p className="text-xs text-amber-700">{cn ? '待纳入' : 'Remaining'}</p>
+            <p className="text-2xl font-bold text-amber-900 mt-1">{fmtNum(report.tracking.untrackedLive)}</p>
+          </div>
+          <div className="bg-blue-50 rounded-lg p-4">
+            <p className="text-xs text-blue-700">{cn ? '到期待抓' : 'Due now'}</p>
+            <p className="text-2xl font-bold text-blue-900 mt-1">{fmtNum(report.tracking.dueProjects)}</p>
+          </div>
+        </div>
+        <p className="text-xs text-gray-400 mt-3">
+          {cn
+            ? '后台会分批纳入 live 项目并按优先级刷新 JSON、奖励档位和文案快照。'
+            : 'The background tracker enrolls live projects in batches and refreshes JSON, reward tiers, and text snapshots by priority.'}
+        </p>
+      </section>
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
         <section className="xl:col-span-2 bg-white border border-gray-100 rounded-lg overflow-hidden">
