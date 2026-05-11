@@ -320,6 +320,35 @@ async function scrapeKicktraqViaOCR(
     const base64 = Buffer.from(imgBuffer).toString('base64');
 
     // Ask Claude to extract the daily data from the chart image
+    const ocrPrompt = 'This image contains Kicktraq daily chart data for a Kickstarter project. It shows bar charts with daily values labeled on each bar.\n\n' +
+      'Extract ALL the daily data you can see. The charts show:\n' +
+      '1. "Pledges Per Day" - daily USD pledged amounts (may show $6m, $1m, $469k etc)\n' +
+      '2. "Backers Per Day" - daily backer counts (numbers like 7510, 1595, 638 etc)\n' +
+      '3. "Comments Per Day" - daily comment counts (numbers like 466, 192, 135 etc)\n\n' +
+      'The x-axis shows dates in MM-DD format (e.g. 08-19, 08-23, 09-02).\n\n' +
+      'Return ONLY a JSON array, no other text. Each element: {"date":"YYYY-MM-DD","pledged_usd":NUMBER,"backers":NUMBER,"comments":NUMBER}\n\n' +
+      'For the year: use the most likely year based on dates shown.\n' +
+      'If a value is not visible or unclear, use 0.\n' +
+      'Return as many days as you can read from the chart.';
+
+    const claudeBody = JSON.stringify({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 4096,
+      messages: [{
+        role: 'user',
+        content: [
+          {
+            type: 'image',
+            source: { type: 'base64', media_type: 'image/png', data: base64 },
+          },
+          {
+            type: 'text',
+            text: ocrPrompt,
+          },
+        ],
+      }],
+    });
+
     const claudeRes = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
@@ -327,40 +356,7 @@ async function scrapeKicktraqViaOCR(
         'x-api-key': process.env.ANTHROPIC_API_KEY!,
         'anthropic-version': '2023-06-01',
       },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 4096,
-        messages: [{
-          role: 'user',
-          content: [
-            {
-              type: 'image',
-              source: { type: 'base64', media_type: 'image/png', data: base64 },
-            },
-            {
-              type: 'text',
-              text: `This image contains Kicktraq daily chart data for a Kickstarter project. It shows bar charts with daily values labeled on each bar.
-
-Extract ALL the daily data you can see. The charts show:
-1. "Pledges Per Day" - daily USD pledged amounts (may show $6m, $1m, $469k etc)
-2. "Backers Per Day" - daily backer counts (numbers like 7510, 1595, 638 etc)  
-3. "Comments Per Day" - daily comment counts (numbers like 466, 192, 135 etc)
-
-The x-axis shows dates in MM-DD format (e.g. 08-19, 08-23, 09-02).
-
-Return ONLY a JSON array, no other text. Each element should be:
-{"date":"YYYY-MM-DD","pledged_usd":NUMBER,"backers":NUMBER,"comments":NUMBER}
-
-For the year: look at the dates shown. If dates are in Aug-Sep range and the project appears recent, use the most likely year.
-If a value is not visible or unclear, use 0.
-Return as many days as you can read from the chart.
-
-Example output format:
-[{"date":"2025-08-19","pledged_usd":6849559,"backers":7510,"comments":466},{"date":"2025-08-20","pledged_usd":1049231,"backers":1595,"comments":192}]`,
-            },
-          ],
-        }),
-      }),
+      body: claudeBody,
       signal: AbortSignal.timeout(60_000),
     });
 
