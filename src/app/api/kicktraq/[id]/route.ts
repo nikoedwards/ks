@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSessionUser, SESSION_COOKIE } from '@/lib/auth';
 import { getProjectById } from '@/lib/db';
-import { extractCreatorSlug, extractProjectSlug, scrapeKicktraqDebug, storeKicktraqDays } from '@/lib/scraper';
+import { extractCreatorSlug, extractProjectSlug, scrapeKicktraq, storeKicktraqDays } from '@/lib/scraper';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -27,20 +27,17 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       }, { status: 422 });
     }
 
-    const { days, debug } = await scrapeKicktraqDebug(creatorSlug, projectSlug);
-    console.log(`[kicktraq/${id}] debug:`, JSON.stringify(debug));
-
+    const days = await scrapeKicktraq(creatorSlug, projectSlug);
     if (!days.length) {
       return NextResponse.json({
         ok: false,
         noData: true,
-        debug,
-        message: `No daily chart data found on Kicktraq for this project. It may not have been tracked from day one, or Kicktraq may not have historical data for it.`,
+        message: `No chart data found on Kicktraq for this project.`,
       });
     }
 
     storeKicktraqDays(id, days);
-    return NextResponse.json({ ok: true, days: days.length, debug });
+    return NextResponse.json({ ok: true, days: days.length });
   } catch (err) {
     return NextResponse.json({ ok: false, message: String(err) }, { status: 500 });
   }

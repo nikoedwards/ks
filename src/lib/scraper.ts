@@ -224,41 +224,9 @@ function parseDailyChartJson(json: DailyChartJson): KicktraqDay[] | null {
 }
 
 export async function scrapeKicktraq(creatorSlug: string, projectSlug: string): Promise<KicktraqDay[]> {
-  const { days } = await scrapeKicktraqDebug(creatorSlug, projectSlug);
-  return days;
-}
-
-export interface KicktraqDebugInfo {
-  pageUrl: string;
-  pageStatus: number | null;
-  pageLength: number;
-  cookieCount: number;
-  jsonStatus: number | null;
-  jsonBody: string;
-  jsonParsed: boolean;
-  jsonDays: number;
-  htmlPatterns: string[];
-  htmlDays: number;
-}
-
-export async function scrapeKicktraqDebug(creatorSlug: string, projectSlug: string): Promise<{ days: KicktraqDay[]; debug: KicktraqDebugInfo }> {
   const pageUrl = `https://www.kicktraq.com/projects/${creatorSlug}/${projectSlug}/`;
-  const jsonUrl = `${pageUrl}dailychart.json`;
 
-  const debug: KicktraqDebugInfo = {
-    pageUrl,
-    pageStatus: null,
-    pageLength: 0,
-    cookieCount: 0,
-    jsonStatus: null,
-    jsonBody: '',
-    jsonParsed: false,
-    jsonDays: 0,
-    htmlPatterns: [],
-    htmlDays: 0,
-  };
-
-  // Step 1: fetch main page
+  // Fetch the main page first — needed for session cookie and HTML fallback
   let html = '';
   let cookieStr = '';
   try {
@@ -270,53 +238,20 @@ export async function scrapeKicktraqDebug(creatorSlug: string, projectSlug: stri
       },
       signal: AbortSignal.timeout(20_000),
     });
-    debug.pageStatus = pageRes.status;
-    if (pageRes.status === 404) return { days: [], debug };
-    if (!pageRes.ok) return { days: [], debug };
-
+    if (pageRes.status === 404) return [];
+    if (!pageRes.ok) return [];
     html = await pageRes.text();
-    debug.pageLength = html.length;
-
     const setCookie = pageRes.headers.getSetCookie?.() ?? [];
     cookieStr = setCookie.map(c => c.split(';')[0]).join('; ');
-    debug.cookieCount = setCookie.length;
-
-    // Check what patterns exist in HTML
-    const patterns: Record<string, RegExp> = {
-      addRows: /addRows\s*\(\s*\[/,
-      pledgeData: /var\s+pledgeData/,
-      backerData: /var\s+backerData/,
-      commentData: /var\s+commentData/,
-      startDate: /var\s+startDate/,
-      chart_data: /"chart_data"/,
-      dailychart: /dailychart/,
-      googleViz: /google\.visualization/,
-    };
-    for (const [name, re] of Object.entries(patterns)) {
-      if (re.test(html)) debug.htmlPatterns.push(name);
-    }
-
-    // Capture the context around 'dailychart' to understand how it's called
-    const dcIdx = html.indexOf('dailychart');
-    if (dcIdx >= 0) {
-      debug.htmlPatterns.push('CONTEXT:' + html.slice(Math.max(0, dcIdx - 100), dcIdx + 300).replace(/\s+/g, ' '));
-    }
-
-    // Capture all script tag contents for analysis
-    const scriptMatches = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi)];
-    for (const sm of scriptMatches) {
-      const c = sm[1].trim();
-      if (c.length > 30 && (c.includes('chart') || c.includes('pledge') || c.includes('backer') || c.includes('daily'))) {
-        debug.htmlPatterns.push('SCRIPT:' + c.slice(0, 400).replace(/\s+/g, ' '));
-      }
-    }
-  } catch (e) {
-    debug.pageStatus = -1;
-    debug.jsonBody = String(e);
-    return { days: [], debug };
+  } catch {
+    return [];
   }
 
-  // Step 2: try dailychart.json with session cookie
+  // Try dailychart.json with session cookie
+  // NOTE: Kicktraq's dailychart.json requires browser-side JS execution to validate.
+  // Server-side requests return "invalid request" even with correct cookies.
+  // We attempt it anyway in case the validation changes, but fall back to HTML parsing.
+  const jsonUrl = `${pageUrl}dailychart.json`;
   try {
     const jsonRes = await fetch(jsonUrl, {
       headers: {
@@ -333,28 +268,128 @@ export async function scrapeKicktraqDebug(creatorSlug: string, projectSlug: stri
       },
       signal: AbortSignal.timeout(15_000),
     });
-    debug.jsonStatus = jsonRes.status;
-    const text = await jsonRes.text();
-    debug.jsonBody = text.slice(0, 600); // more context
-
-    if (jsonRes.ok && text && !text.trim().startsWith('<') && !text.includes('invalid request')) {
-      try {
+    if (jsonRes.ok) {
+      const text = await jsonRes.text();
+      if (text && !text.trim().startsWith('<') && !text.includes('invalid request')) {
         const json = JSON.parse(text);
-        debug.jsonParsed = true;
         const days = parseDailyChartJson(json);
-        debug.jsonDays = days?.length ?? 0;
-        if (days?.length) return { days, debug };
-      } catch { /* fall through */ }
+        if (days?.length) return days;
+      }
     }
-  } catch (e) {
-    debug.jsonStatus = -1;
-    debug.jsonBody = String(e);
+  } catch { /* fall through to HTML parsing */ }
+
+  // Try HTML embedded chart data (older Kicktraq format)
+  const htmlDays = parseKicktraqHtml(html);
+  if (htmlDays.length) return htmlDays;
+
+  // Last resort: OCR the dailychart.png via Claude Vision
+  if (process.env.ANTHROPIC_API_KEY) {
+    const ocrDays = await scrapeKicktraqViaOCR(creatorSlug, projectSlug, cookieStr);
+    if (ocrDays.length) return ocrDays;
   }
 
-  // Step 3: HTML fallback
-  const htmlDays = parseKicktraqHtml(html);
-  debug.htmlDays = htmlDays.length;
-  return { days: htmlDays, debug };
+  return [];
+}
+
+// ─── OCR fallback via Claude Vision ──────────────────────────────────────────
+
+async function scrapeKicktraqViaOCR(
+  creatorSlug: string,
+  projectSlug: string,
+  cookieStr: string,
+): Promise<KicktraqDay[]> {
+  const pageUrl = `https://www.kicktraq.com/projects/${creatorSlug}/${projectSlug}/`;
+  const imgUrl = `${pageUrl}dailychart.png`;
+
+  try {
+    // Download the chart image
+    const imgRes = await fetch(imgUrl, {
+      headers: {
+        'Referer': pageUrl,
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'image/png,image/*,*/*',
+        ...(cookieStr ? { 'Cookie': cookieStr } : {}),
+      },
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (!imgRes.ok) return [];
+    const contentType = imgRes.headers.get('content-type') ?? '';
+    if (!contentType.includes('image')) return [];
+
+    const imgBuffer = await imgRes.arrayBuffer();
+    const base64 = Buffer.from(imgBuffer).toString('base64');
+
+    // Ask Claude to extract the daily data from the chart image
+    const claudeRes = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': process.env.ANTHROPIC_API_KEY!,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 4096,
+        messages: [{
+          role: 'user',
+          content: [
+            {
+              type: 'image',
+              source: { type: 'base64', media_type: 'image/png', data: base64 },
+            },
+            {
+              type: 'text',
+              text: `This image contains Kicktraq daily chart data for a Kickstarter project. It shows bar charts with daily values labeled on each bar.
+
+Extract ALL the daily data you can see. The charts show:
+1. "Pledges Per Day" - daily USD pledged amounts (may show $6m, $1m, $469k etc)
+2. "Backers Per Day" - daily backer counts (numbers like 7510, 1595, 638 etc)  
+3. "Comments Per Day" - daily comment counts (numbers like 466, 192, 135 etc)
+
+The x-axis shows dates in MM-DD format (e.g. 08-19, 08-23, 09-02).
+
+Return ONLY a JSON array, no other text. Each element should be:
+{"date":"YYYY-MM-DD","pledged_usd":NUMBER,"backers":NUMBER,"comments":NUMBER}
+
+For the year: look at the dates shown. If dates are in Aug-Sep range and the project appears recent, use the most likely year.
+If a value is not visible or unclear, use 0.
+Return as many days as you can read from the chart.
+
+Example output format:
+[{"date":"2025-08-19","pledged_usd":6849559,"backers":7510,"comments":466},{"date":"2025-08-20","pledged_usd":1049231,"backers":1595,"comments":192}]`,
+            },
+          ],
+        }),
+      }),
+      signal: AbortSignal.timeout(60_000),
+    });
+
+    if (!claudeRes.ok) return [];
+    const claudeData = await claudeRes.json() as { content?: Array<{ type: string; text?: string }> };
+    const text = claudeData.content?.[0]?.text ?? '';
+
+    // Parse the JSON array from Claude's response
+    const jsonMatch = text.match(/\[[\s\S]*\]/);
+    if (!jsonMatch) return [];
+
+    const rows = JSON.parse(jsonMatch[0]) as Array<{
+      date?: string;
+      pledged_usd?: number;
+      backers?: number;
+      comments?: number;
+    }>;
+
+    return rows
+      .filter(r => r.date)
+      .map(r => ({
+        date: normalizeDate(r.date!),
+        pledged_usd: r.pledged_usd ?? 0,
+        backers: r.backers ?? 0,
+        comments: r.comments,
+      }));
+  } catch {
+    return [];
+  }
 }
 
 function parseKicktraqHtml(html: string): KicktraqDay[] {

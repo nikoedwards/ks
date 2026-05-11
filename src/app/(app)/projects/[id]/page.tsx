@@ -592,7 +592,9 @@ export default function ProjectDetailPage() {
                   <button onClick={importKicktraq} disabled={ktImporting}
                     className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700 disabled:opacity-50">
                     <TrendingUp className={`w-4 h-4 ${ktImporting ? 'animate-pulse' : ''}`} />
-                    {ktImporting ? tr.importingFromKT : tr.importFromKT}
+                    {ktImporting
+                      ? (lang === 'cn' ? '正在读取图表数据...' : 'Reading chart data...')
+                      : tr.importFromKT}
                   </button>
                 </div>
                 {ktError && (
@@ -601,8 +603,8 @@ export default function ProjectDetailPage() {
                 {ktNoData && (
                   <p className="text-xs text-gray-400 bg-gray-50 rounded-lg px-3 py-2 max-w-md mx-auto">
                     {lang === 'cn'
-                      ? 'Kicktraq 上暂无该项目的逐日数据，可能未被从第一天起追踪。'
-                      : 'Kicktraq has no daily chart data for this project — it may not have been tracked from day one.'}
+                      ? 'Kicktraq 的图表数据通过浏览器端 JS 加载，服务器无法直接获取。点击"从 Kickstarter 获取"开始积累逐日数据。'
+                      : 'Kicktraq chart data loads via browser-side JS and cannot be fetched server-side. Use "Fetch from Kickstarter" to start collecting daily snapshots.'}
                   </p>
                 )}
                 <p className="text-xs text-gray-400">{tr.kicktraqHint}</p>
