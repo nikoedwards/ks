@@ -80,6 +80,14 @@ export default function SettingsPage() {
   const [ktSyncing, setKtSyncing] = useState(false);
   const [ktResult, setKtResult] = useState<KicktraqSyncResult | null>(null);
 
+  // ── Kicktraq Full Scan state ─────────────────────────────────────────────────
+  const [fullScanRunning, setFullScanRunning] = useState(false);
+  const [fullScanResult, setFullScanResult] = useState<{
+    ok: boolean;
+    result?: { categoriesScanned: number; pagesScanned: number; projectsFound: number; imported: number; merged: number; stoppedReason: string; message?: string };
+    error?: string;
+  } | null>(null);
+
   const fetchStatus = useCallback(() => {
     fetch('/api/sync/status')
       .then(r => r.json())
@@ -163,6 +171,42 @@ export default function SettingsPage() {
     } finally {
       setKtSyncing(false);
     }
+  };
+
+  // ── Kicktraq Full Scan ───────────────────────────────────────────────────────
+  const handleFullScan = async () => {
+    setFullScanRunning(true);
+    setFullScanResult(null);
+    try {
+      // Fire and forget — poll syncState for progress
+      await fetch('/api/sync/kicktraq-full', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ delayMs: 350 }),
+      });
+      // Start polling
+      const poll = setInterval(async () => {
+        const r = await fetch('/api/sync/status').then(x => x.json());
+        setStatus(r);
+        if (r.syncState?.status !== 'running') {
+          clearInterval(poll);
+          setFullScanRunning(false);
+          setFullScanResult({ ok: r.syncState?.status === 'completed', result: undefined });
+        }
+      }, 3000);
+    } catch (e) {
+      setFullScanResult({ ok: false, error: String(e) });
+      setFullScanRunning(false);
+    }
+  };
+
+  const handleAbortFullScan = async () => {
+    await fetch('/api/sync/kicktraq-full', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ abort: true }),
+    });
+    setFullScanRunning(false);
   };
 
   const syncState = status?.syncState;
@@ -377,6 +421,95 @@ export default function SettingsPage() {
               <div className="flex items-center gap-2 text-red-700">
                 <XCircle className="w-4 h-4" />
                 <span>{ktResult.error ?? (lang === 'cn' ? '抓取失败' : 'Fetch failed')}</span>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* ── Kicktraq Full Scan (one-time) ────────────────────────────────────── */}
+      <div className="bg-white rounded-xl border border-amber-100 p-6 shadow-sm">
+        <div className="flex items-center gap-3 mb-1">
+          <Activity className="w-5 h-5 text-amber-500" />
+          <h2 className="font-semibold text-gray-800">
+            {lang === 'cn' ? 'Kicktraq 全量扫描（一次性）' : 'Kicktraq Full Scan (one-time)'}
+          </h2>
+          <span className="text-xs bg-amber-50 text-amber-600 px-2 py-0.5 rounded-full font-medium">
+            {lang === 'cn' ? '全量' : 'full scan'}
+          </span>
+        </div>
+        <p className="text-xs text-gray-400 mb-4">
+          {lang === 'cn' ? '遍历所有类目页面，补全当前活跃项目数据' : 'Crawl all category pages to capture all currently active projects'}
+        </p>
+
+        <p className="text-sm text-gray-500 mb-3">
+          {lang === 'cn'
+            ? '遍历 Kicktraq 全部类目（约 130 个），每个类目翻页抓取所有活跃项目，与现有数据库智能去重合并。预计耗时 15-30 分钟。'
+            : 'Iterates all ~130 Kicktraq categories, paginates through each, and deduplicates against existing records. Estimated runtime: 15–30 minutes.'}
+        </p>
+        <p className="text-xs bg-amber-50 text-amber-700 rounded-lg px-3 py-2 mb-5">
+          {lang === 'cn'
+            ? '⚠️ 注意：/archive/ 已被 Kicktraq 禁用，无法抓取历史全量数据。此扫描只能覆盖当前活跃项目（约 2800 个）。历史数据依赖 webrobots 月度快照。'
+            : '⚠️ Note: /archive/ is disabled by Kicktraq. This scan only covers currently active projects (~2800). Historical data relies on webrobots monthly snapshots.'}
+        </p>
+
+        <div className="flex gap-3">
+          <button
+            onClick={handleFullScan}
+            disabled={fullScanRunning || isRunning || liveSyncing || ktSyncing}
+            className={`flex items-center gap-2 px-5 py-2.5 rounded-lg font-medium text-sm transition-colors ${
+              fullScanRunning
+                ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                : 'bg-amber-500 text-white hover:bg-amber-600'
+            }`}
+          >
+            <Activity className={`w-4 h-4 ${fullScanRunning ? 'animate-spin' : ''}`} />
+            {fullScanRunning
+              ? (lang === 'cn' ? '扫描中...' : 'Scanning...')
+              : (lang === 'cn' ? '开始全量扫描' : 'Start Full Scan')}
+          </button>
+
+          {fullScanRunning && (
+            <button
+              onClick={handleAbortFullScan}
+              className="flex items-center gap-2 px-4 py-2.5 rounded-lg font-medium text-sm bg-red-50 text-red-600 hover:bg-red-100 transition-colors"
+            >
+              <XCircle className="w-4 h-4" />
+              {lang === 'cn' ? '中止' : 'Abort'}
+            </button>
+          )}
+        </div>
+
+        {/* Progress display during full scan */}
+        {fullScanRunning && syncState && syncState.status === 'running' && (
+          <div className="mt-4 space-y-2">
+            <div className="flex items-center gap-2 text-amber-700">
+              <Clock className="w-4 h-4 animate-pulse" />
+              <span className="text-sm">{syncState.message}</span>
+            </div>
+            <div className="w-full bg-gray-100 rounded-full h-2">
+              <div
+                className="bg-amber-400 h-2 rounded-full transition-all duration-500"
+                style={{ width: `${syncState.progress}%` }}
+              />
+            </div>
+            <p className="text-xs text-gray-400">
+              {lang === 'cn' ? `已处理: ${syncState.recordsImported.toLocaleString()} 条` : `Processed: ${syncState.recordsImported.toLocaleString()} records`}
+            </p>
+          </div>
+        )}
+
+        {fullScanResult && !fullScanRunning && (
+          <div className="mt-4 p-3 rounded-lg border text-sm">
+            {fullScanResult.ok ? (
+              <div className="flex items-center gap-2 text-green-700">
+                <CheckCircle className="w-4 h-4" />
+                <span className="font-medium">{lang === 'cn' ? '扫描完成' : 'Scan complete'}</span>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 text-red-700">
+                <XCircle className="w-4 h-4" />
+                <span>{fullScanResult.error ?? (lang === 'cn' ? '扫描失败或已中止' : 'Scan failed or aborted')}</span>
               </div>
             )}
           </div>

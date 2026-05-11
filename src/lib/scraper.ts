@@ -139,13 +139,135 @@ export interface KicktraqDay {
   date: string;        // e.g. "2023-01-15"
   pledged_usd: number; // cumulative
   backers: number;     // cumulative
+  comments?: number;   // daily comment count (from dailychart.json)
+}
+
+// Try the AJAX endpoint first — it returns structured JSON with all chart series
+async function fetchDailyChartJson(creatorSlug: string, projectSlug: string): Promise<KicktraqDay[] | null> {
+  const pageUrl = `https://www.kicktraq.com/projects/${creatorSlug}/${projectSlug}/`;
+  const jsonUrl = `${pageUrl}dailychart.json`;
+  try {
+    const res = await fetch(jsonUrl, {
+      headers: {
+        'Referer': pageUrl,
+        'Origin': 'https://www.kicktraq.com',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Accept': 'application/json, text/javascript, */*; q=0.01',
+        'X-Requested-With': 'XMLHttpRequest',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Sec-Fetch-Dest': 'empty',
+        'Sec-Fetch-Mode': 'cors',
+        'Sec-Fetch-Site': 'same-origin',
+      },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!res.ok) return null;
+    const text = await res.text();
+    if (!text || text.trim().startsWith('<') || text.includes('invalid request')) return null;
+
+    // Parse the JSON — Kicktraq returns various shapes, handle all of them
+    const json = JSON.parse(text);
+    return parseDailyChartJson(json);
+  } catch {
+    return null;
+  }
+}
+
+interface DailyChartJson {
+  // Shape 1: { dates: [...], pledged: [...], backers: [...], comments: [...] }
+  dates?: string[];
+  pledged?: number[];
+  backers?: number[];
+  comments?: number[];
+  // Shape 2: { data: { dates, pledged, backers, comments } }
+  data?: {
+    dates?: string[];
+    pledged?: number[];
+    backers?: number[];
+    comments?: number[];
+  };
+  // Shape 3: Google Charts DataTable rows
+  rows?: Array<[string, number, number, number?]>;
+  // Shape 4: { chart_data: { pledged, backers, comments, start_date } }
+  chart_data?: {
+    pledged?: number[];
+    backers?: number[];
+    comments?: number[];
+    start_date?: string;
+  };
+}
+
+function parseDailyChartJson(json: DailyChartJson): KicktraqDay[] | null {
+  const days: KicktraqDay[] = [];
+
+  // Shape 1 & 2: dates array + parallel arrays
+  const src = json.data ?? json;
+  const dates = (src as DailyChartJson).dates;
+  const pledged = (src as DailyChartJson).pledged;
+  const backers = (src as DailyChartJson).backers;
+  const comments = (src as DailyChartJson).comments;
+
+  if (dates?.length && pledged?.length) {
+    for (let i = 0; i < dates.length; i++) {
+      days.push({
+        date: normalizeDate(dates[i]),
+        pledged_usd: pledged[i] ?? 0,
+        backers: backers?.[i] ?? 0,
+        comments: comments?.[i],
+      });
+    }
+    return days.length ? days : null;
+  }
+
+  // Shape 3: rows array
+  if (json.rows?.length) {
+    for (const row of json.rows) {
+      days.push({
+        date: normalizeDate(row[0]),
+        pledged_usd: row[1] ?? 0,
+        backers: row[2] ?? 0,
+        comments: row[3],
+      });
+    }
+    return days.length ? days : null;
+  }
+
+  // Shape 4: chart_data with start_date
+  if (json.chart_data?.pledged?.length && json.chart_data?.start_date) {
+    const start = new Date(json.chart_data.start_date);
+    const p = json.chart_data.pledged;
+    const b = json.chart_data.backers ?? [];
+    const c = json.chart_data.comments ?? [];
+    for (let i = 0; i < p.length; i++) {
+      const d = new Date(start);
+      d.setDate(d.getDate() + i);
+      days.push({
+        date: d.toISOString().slice(0, 10),
+        pledged_usd: p[i] ?? 0,
+        backers: b[i] ?? 0,
+        comments: c[i],
+      });
+    }
+    return days.length ? days : null;
+  }
+
+  return null;
 }
 
 export async function scrapeKicktraq(creatorSlug: string, projectSlug: string): Promise<KicktraqDay[]> {
+  // Try the JSON endpoint first (has comments data)
+  const jsonDays = await fetchDailyChartJson(creatorSlug, projectSlug);
+  if (jsonDays?.length) return jsonDays;
+
+  // Fall back to HTML parsing
   const url = `https://www.kicktraq.com/projects/${creatorSlug}/${projectSlug}/`;
   try {
     const res = await fetch(url, {
-      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; KicksOnar/1.0)' },
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml',
+        'Accept-Language': 'en-US,en;q=0.9',
+      },
       signal: AbortSignal.timeout(20_000),
     });
     if (!res.ok) return [];
@@ -161,24 +283,31 @@ function parseKicktraqHtml(html: string): KicktraqDay[] {
   // Try multiple patterns
   const days: KicktraqDay[] = [];
 
-  // Pattern 1: addRows with date + pledged + backers
+  // Pattern 1: addRows with date + pledged + backers [+ comments]
   const rowsMatch = html.match(/addRows\s*\(\s*\[([\s\S]*?)\]\s*\)/);
   if (rowsMatch) {
-    const entries = rowsMatch[1].matchAll(/\[\s*['"]([^'"]+)['"]\s*,\s*([\d.]+)\s*,\s*([\d.]+)/g);
+    const entries = rowsMatch[1].matchAll(/\[\s*['"]([^'"]+)['"]\s*,\s*([\d.]+)\s*,\s*([\d.]+)(?:\s*,\s*([\d.]+))?/g);
     for (const m of entries) {
-      days.push({ date: normalizeDate(m[1]), pledged_usd: parseFloat(m[2]), backers: parseInt(m[3]) });
+      days.push({
+        date: normalizeDate(m[1]),
+        pledged_usd: parseFloat(m[2]),
+        backers: parseInt(m[3]),
+        comments: m[4] ? parseInt(m[4]) : undefined,
+      });
     }
     if (days.length) return days;
   }
 
-  // Pattern 2: JavaScript arrays pledgeData / backerData + startDate
+  // Pattern 2: JavaScript arrays pledgeData / backerData / commentData + startDate
   const pledgeMatch = html.match(/var\s+(?:pledge|pledged?)Data\s*=\s*\[([^\]]+)\]/);
   const backerMatch = html.match(/var\s+(?:backer|backers?)Data\s*=\s*\[([^\]]+)\]/);
+  const commentMatch = html.match(/var\s+(?:comment|comments?)Data\s*=\s*\[([^\]]+)\]/);
   const startMatch = html.match(/var\s+startDate\s*=\s*['"]([^'"]+)['"]/);
 
   if (pledgeMatch && startMatch) {
     const pledged = pledgeMatch[1].split(',').map(s => parseFloat(s.trim()) || 0);
     const backers = backerMatch ? backerMatch[1].split(',').map(s => parseInt(s.trim()) || 0) : [];
+    const comments = commentMatch ? commentMatch[1].split(',').map(s => parseInt(s.trim()) || 0) : [];
     const start = new Date(startMatch[1]);
     for (let i = 0; i < pledged.length; i++) {
       const d = new Date(start);
@@ -187,6 +316,7 @@ function parseKicktraqHtml(html: string): KicktraqDay[] {
         date: d.toISOString().slice(0, 10),
         pledged_usd: pledged[i],
         backers: backers[i] ?? 0,
+        comments: comments[i],
       });
     }
     if (days.length) return days;
@@ -197,15 +327,22 @@ function parseKicktraqHtml(html: string): KicktraqDay[] {
   if (chartMatch) {
     const pledgedArr = chartMatch[1].match(/"pledged"\s*:\s*\[([^\]]+)\]/);
     const backersArr = chartMatch[1].match(/"backers"\s*:\s*\[([^\]]+)\]/);
+    const commentsArr = chartMatch[1].match(/"comments"\s*:\s*\[([^\]]+)\]/);
     const startDateM = html.match(/"start_date"\s*:\s*"([^"]+)"/);
     if (pledgedArr && startDateM) {
       const pledged = pledgedArr[1].split(',').map(Number);
       const backerVals = backersArr ? backersArr[1].split(',').map(Number) : [];
+      const commentVals = commentsArr ? commentsArr[1].split(',').map(Number) : [];
       const start = new Date(startDateM[1]);
       for (let i = 0; i < pledged.length; i++) {
         const d = new Date(start);
         d.setDate(d.getDate() + i);
-        days.push({ date: d.toISOString().slice(0, 10), pledged_usd: pledged[i], backers: backerVals[i] ?? 0 });
+        days.push({
+          date: d.toISOString().slice(0, 10),
+          pledged_usd: pledged[i],
+          backers: backerVals[i] ?? 0,
+          comments: commentVals[i],
+        });
       }
     }
   }
@@ -231,7 +368,7 @@ export function storeKicktraqDays(projectId: string, days: KicktraqDay[]) {
       pledged_usd: d.pledged_usd,
       backers_count: d.backers,
       days_to_go: 0,
-      comments_count: 0,
+      comments_count: d.comments ?? 0,
       updates_count: 0,
       state: 'historical',
       source: 'kicktraq',
