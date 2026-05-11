@@ -1,6 +1,9 @@
 import {
   insertSnapshot,
   insertSyncLog,
+  completeCrawlRun,
+  recordCrawlerError,
+  startCrawlRun,
   updateSyncLog,
   upsertProjects,
   saveDB,
@@ -202,8 +205,10 @@ export async function runKickstarterLiveSync(options: LiveSyncOptions = {}): Pro
   let insertedOrUpdated = 0;
   let snapshots = 0;
   let pages = 0;
+  let crawlRunId: number | undefined;
 
   try {
+    crawlRunId = startCrawlRun('ks_live', `discover:${state}`);
     logId = await insertSyncLog({
       url: `ks_live:${state}:since=${since}:maxPages=${maxPages}`,
       started_at: startedAt,
@@ -221,6 +226,22 @@ export async function runKickstarterLiveSync(options: LiveSyncOptions = {}): Pro
       const pageData = await fetchDiscoverPage(page, { state });
       if (pageData.blocked) {
         const message = 'Kickstarter returned a Cloudflare challenge. Use a browser-backed crawler or provide harvested project URLs for this environment.';
+        completeCrawlRun(crawlRunId, {
+          status: 'blocked',
+          discovered_count: discovered,
+          imported_count: insertedOrUpdated,
+          snapshot_count: snapshots,
+          page_count: pages,
+          blocked_count: 1,
+          message,
+        });
+        recordCrawlerError({
+          source: 'ks_live',
+          job_type: `discover:${state}`,
+          url: `${DISCOVER_URL}?sort=newest&state=${state}&page=${page}`,
+          status_code: pageData.status,
+          message,
+        });
         updateSyncState({ status: 'error', message, error: message, completedAt: new Date().toISOString(), progress: 0 });
         if (logId) await updateSyncLog(logId, { completed_at: new Date().toISOString(), status: 'error', error_message: message });
         return { discovered, insertedOrUpdated, snapshots, pages, stoppedReason: 'blocked', message };
@@ -228,6 +249,14 @@ export async function runKickstarterLiveSync(options: LiveSyncOptions = {}): Pro
 
       const projects = pageData.body.projects ?? [];
       if (!projects.length) {
+        completeCrawlRun(crawlRunId, {
+          status: 'completed',
+          discovered_count: discovered,
+          imported_count: insertedOrUpdated,
+          snapshot_count: snapshots,
+          page_count: pages,
+          message: 'No more projects returned.',
+        });
         await complete(logId, insertedOrUpdated, 'No more projects returned.');
         return { discovered, insertedOrUpdated, snapshots, pages, stoppedReason: 'no_more_projects' };
       }
@@ -254,11 +283,27 @@ export async function runKickstarterLiveSync(options: LiveSyncOptions = {}): Pro
       }, Number.POSITIVE_INFINITY);
 
       if (oldestLaunch !== Number.POSITIVE_INFINITY && oldestLaunch < since) {
+        completeCrawlRun(crawlRunId, {
+          status: 'completed',
+          discovered_count: discovered,
+          imported_count: insertedOrUpdated,
+          snapshot_count: snapshots,
+          page_count: pages,
+          message: 'Reached the requested launch-date cutoff.',
+        });
         await complete(logId, insertedOrUpdated, 'Reached the requested launch-date cutoff.');
         return { discovered, insertedOrUpdated, snapshots, pages, stoppedReason: 'since_reached' };
       }
 
       if (!pageData.body.has_more_projects) {
+        completeCrawlRun(crawlRunId, {
+          status: 'completed',
+          discovered_count: discovered,
+          imported_count: insertedOrUpdated,
+          snapshot_count: snapshots,
+          page_count: pages,
+          message: 'No more Kickstarter pages.',
+        });
         await complete(logId, insertedOrUpdated, 'No more Kickstarter pages.');
         return { discovered, insertedOrUpdated, snapshots, pages, stoppedReason: 'no_more_projects' };
       }
@@ -266,10 +311,34 @@ export async function runKickstarterLiveSync(options: LiveSyncOptions = {}): Pro
       await new Promise(resolve => setTimeout(resolve, 750));
     }
 
+    completeCrawlRun(crawlRunId, {
+      status: 'completed',
+      discovered_count: discovered,
+      imported_count: insertedOrUpdated,
+      snapshot_count: snapshots,
+      page_count: pages,
+      message: 'Reached max pages.',
+    });
     await complete(logId, insertedOrUpdated, 'Reached max pages.');
     return { discovered, insertedOrUpdated, snapshots, pages, stoppedReason: 'max_pages' };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    completeCrawlRun(crawlRunId, {
+      status: 'error',
+      discovered_count: discovered,
+      imported_count: insertedOrUpdated,
+      snapshot_count: snapshots,
+      page_count: pages,
+      error_count: 1,
+      message,
+    });
+    recordCrawlerError({
+      source: 'ks_live',
+      job_type: `discover:${state}`,
+      url: `${DISCOVER_URL}?sort=newest&state=${state}`,
+      message,
+      context: { since, maxPages, pages },
+    });
     updateSyncState({ status: 'error', message: `Live sync failed: ${message}`, error: message, completedAt: new Date().toISOString(), progress: 0 });
     if (logId) await updateSyncLog(logId, { completed_at: new Date().toISOString(), status: 'error', error_message: message });
     return { discovered, insertedOrUpdated, snapshots, pages, stoppedReason: 'error', message };

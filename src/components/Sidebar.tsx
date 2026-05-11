@@ -12,6 +12,7 @@ import {
   Github,
   Sparkles,
   Heart,
+  RadioTower,
   LogOut,
   User,
 } from 'lucide-react';
@@ -32,6 +33,7 @@ export default function Sidebar() {
     { href: '/analysis',  label: tr.analysis,  icon: BarChart2 },
     { href: '/predict',   label: tr.predict,   icon: Sparkles },
     { href: '/favorites', label: lang === 'cn' ? '收藏夹' : 'Favorites', icon: Heart },
+    { href: '/data-quality', label: lang === 'cn' ? '数据质量' : 'Data Quality', icon: RadioTower },
     { href: '/settings',  label: tr.sync,      icon: Settings },
   ];
 

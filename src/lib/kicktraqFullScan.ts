@@ -15,7 +15,18 @@
  * Runtime: ~15-30 min at 300ms/page delay.
  */
 
-import { insertSnapshot, insertSyncLog, saveDB, updateSyncLog, upsertProjects, getProjectIdBySlug, mergeKicktraqIntoProject } from './db';
+import {
+  completeCrawlRun,
+  insertSnapshot,
+  insertSyncLog,
+  recordCrawlerError,
+  saveDB,
+  startCrawlRun,
+  updateSyncLog,
+  upsertProjects,
+  getProjectIdBySlug,
+  mergeKicktraqIntoProject,
+} from './db';
 import { updateSyncState } from './syncState';
 
 // ─── All Kicktraq category URLs ───────────────────────────────────────────────
@@ -344,6 +355,7 @@ export async function runKicktraqFullScan(options: FullScanOptions = {}): Promis
   let totalImported = 0;
   let totalMerged = 0;
   let logId: number | undefined;
+  let crawlRunId: number | undefined;
 
   updateSyncState({
     status: 'running',
@@ -357,6 +369,7 @@ export async function runKicktraqFullScan(options: FullScanOptions = {}): Promis
   });
 
   try {
+    crawlRunId = startCrawlRun('kicktraq_full_scan', 'category_scan');
     logId = await insertSyncLog({
       url: `kicktraq_full_scan:categories=${categoriesToScan.length}:resumeFrom=${resumeFrom}`,
       started_at: startedAt,
@@ -366,6 +379,14 @@ export async function runKicktraqFullScan(options: FullScanOptions = {}): Promis
     for (let ci = resumeFrom; ci < categoriesToScan.length; ci++) {
       if (_abortFullScan) {
         const msg = `Scan aborted at category ${ci}/${categoriesToScan.length}`;
+        completeCrawlRun(crawlRunId, {
+          status: 'aborted',
+          discovered_count: projectsFound,
+          imported_count: totalImported + totalMerged,
+          snapshot_count: totalImported + totalMerged,
+          page_count: pagesScanned,
+          message: msg,
+        });
         await finalize(logId, totalImported + totalMerged, 'error', msg);
         return { categoriesScanned, pagesScanned, projectsFound, imported: totalImported, merged: totalMerged, stoppedReason: 'aborted', message: msg };
       }
@@ -405,6 +426,13 @@ export async function runKicktraqFullScan(options: FullScanOptions = {}): Promis
       } catch (catErr) {
         // Log category error but continue with next category
         console.warn(`[kicktraqFullScan] Error on category ${catSlug}:`, catErr);
+        recordCrawlerError({
+          source: 'kicktraq_full_scan',
+          job_type: 'category_scan',
+          url: `https://www.kicktraq.com/categories/${catSlug}/`,
+          message: catErr instanceof Error ? catErr.message : String(catErr),
+          context: { category: catSlug, categoryIndex: ci },
+        });
       }
 
       // Checkpoint save every 20 categories
@@ -415,11 +443,34 @@ export async function runKicktraqFullScan(options: FullScanOptions = {}): Promis
 
     await saveDB();
     const msg = `Full scan complete: ${categoriesScanned} categories, ${pagesScanned} pages, ${projectsFound} projects found, ${totalImported} new + ${totalMerged} merged`;
+    completeCrawlRun(crawlRunId, {
+      status: 'completed',
+      discovered_count: projectsFound,
+      imported_count: totalImported + totalMerged,
+      snapshot_count: totalImported + totalMerged,
+      page_count: pagesScanned,
+      message: msg,
+    });
     await finalize(logId, totalImported + totalMerged, 'completed', msg);
     return { categoriesScanned, pagesScanned, projectsFound, imported: totalImported, merged: totalMerged, stoppedReason: 'completed', message: msg };
 
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    completeCrawlRun(crawlRunId, {
+      status: 'error',
+      discovered_count: projectsFound,
+      imported_count: totalImported + totalMerged,
+      snapshot_count: totalImported + totalMerged,
+      page_count: pagesScanned,
+      error_count: 1,
+      message,
+    });
+    recordCrawlerError({
+      source: 'kicktraq_full_scan',
+      job_type: 'category_scan',
+      message,
+      context: { categoriesScanned, pagesScanned, projectsFound },
+    });
     await finalize(logId, totalImported + totalMerged, 'error', message);
     return { categoriesScanned, pagesScanned, projectsFound, imported: totalImported, merged: totalMerged, stoppedReason: 'error', message };
   }

@@ -1,4 +1,15 @@
-import { insertSnapshot, insertSyncLog, saveDB, updateSyncLog, upsertProjects, getProjectIdBySlug, mergeKicktraqIntoProject } from './db';
+import {
+  completeCrawlRun,
+  insertSnapshot,
+  insertSyncLog,
+  recordCrawlerError,
+  saveDB,
+  startCrawlRun,
+  updateSyncLog,
+  upsertProjects,
+  getProjectIdBySlug,
+  mergeKicktraqIntoProject,
+} from './db';
 import { updateSyncState } from './syncState';
 
 const KICKTRAQ_ACTIVE_URL = 'https://www.kicktraq.com/projects/';
@@ -272,6 +283,8 @@ export async function runKicktraqActiveSync(options: KicktraqActiveSyncOptions =
   let imported = 0;
   let snapshots = 0;
   let pages = 0;
+  let projectsFound = 0;
+  let crawlRunId: number | undefined;
 
   updateSyncState({
     status: 'running',
@@ -285,6 +298,7 @@ export async function runKicktraqActiveSync(options: KicktraqActiveSyncOptions =
   });
 
   try {
+    crawlRunId = startCrawlRun('kicktraq_active', 'active_projects');
     logId = await insertSyncLog({
       url: `kicktraq_active:maxPages=${options.maxPages ?? 'all'}:since=${since}:until=${until}:onlyLive=${onlyCurrentlyLive}`,
       started_at: startedAt,
@@ -298,6 +312,7 @@ export async function runKicktraqActiveSync(options: KicktraqActiveSyncOptions =
       pages = page;
       const html = page === 1 ? firstHtml : await fetchActivePage(page);
       const projects = filterProjects(parseProjects(html), { since, until, onlyCurrentlyLive });
+      projectsFound += projects.length;
       const stored = await storeProjects(projects, now);
       imported += stored.imported;
       snapshots += stored.snapshots;
@@ -313,6 +328,14 @@ export async function runKicktraqActiveSync(options: KicktraqActiveSyncOptions =
 
     await saveDB();
     const completedAt = new Date().toISOString();
+    completeCrawlRun(crawlRunId, {
+      status: 'completed',
+      discovered_count: projectsFound,
+      imported_count: imported,
+      snapshot_count: snapshots,
+      page_count: pages,
+      message: `Kicktraq active import completed: ${imported.toLocaleString()} projects.`,
+    });
     updateSyncState({
       status: 'completed',
       message: `Kicktraq active import completed: ${imported.toLocaleString()} projects.`,
@@ -332,6 +355,22 @@ export async function runKicktraqActiveSync(options: KicktraqActiveSyncOptions =
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     const completedAt = new Date().toISOString();
+    completeCrawlRun(crawlRunId, {
+      status: 'error',
+      discovered_count: projectsFound,
+      imported_count: imported,
+      snapshot_count: snapshots,
+      page_count: pages,
+      error_count: 1,
+      message,
+    });
+    recordCrawlerError({
+      source: 'kicktraq_active',
+      job_type: 'active_projects',
+      url: KICKTRAQ_ACTIVE_URL,
+      message,
+      context: { pages, maxPages: options.maxPages, since, until, onlyCurrentlyLive },
+    });
     updateSyncState({ status: 'error', message: `Kicktraq active import failed: ${message}`, error: message, completedAt, progress: 0 });
     if (logId) await updateSyncLog(logId, { completed_at: completedAt, status: 'error', error_message: message });
     return { pages, imported, snapshots, stoppedReason: 'error', message };

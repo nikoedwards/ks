@@ -180,6 +180,67 @@ function getDB(): Database {
       status TEXT,
       error_message TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS crawl_jobs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      source TEXT NOT NULL,
+      job_type TEXT NOT NULL,
+      payload_json TEXT,
+      priority INTEGER DEFAULT 1,
+      status TEXT DEFAULT 'queued',
+      attempts INTEGER DEFAULT 0,
+      max_attempts INTEGER DEFAULT 3,
+      scheduled_at INTEGER DEFAULT (unixepoch()),
+      started_at INTEGER,
+      completed_at INTEGER,
+      last_error TEXT,
+      created_at INTEGER DEFAULT (unixepoch()),
+      updated_at INTEGER DEFAULT (unixepoch())
+    );
+
+    CREATE TABLE IF NOT EXISTS crawl_runs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      source TEXT NOT NULL,
+      job_type TEXT NOT NULL,
+      status TEXT NOT NULL,
+      started_at INTEGER NOT NULL,
+      completed_at INTEGER,
+      discovered_count INTEGER DEFAULT 0,
+      imported_count INTEGER DEFAULT 0,
+      snapshot_count INTEGER DEFAULT 0,
+      page_count INTEGER DEFAULT 0,
+      blocked_count INTEGER DEFAULT 0,
+      error_count INTEGER DEFAULT 0,
+      message TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS source_raw_payloads (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      source TEXT NOT NULL,
+      source_key TEXT NOT NULL,
+      fetched_at INTEGER DEFAULT (unixepoch()),
+      status_code INTEGER,
+      content_type TEXT,
+      payload_bytes INTEGER DEFAULT 0,
+      checksum TEXT,
+      payload_preview TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS crawler_errors (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      source TEXT NOT NULL,
+      job_type TEXT,
+      project_id TEXT,
+      url TEXT,
+      status_code INTEGER,
+      message TEXT NOT NULL,
+      occurred_at INTEGER DEFAULT (unixepoch()),
+      context_json TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_crawl_jobs_due ON crawl_jobs(status, scheduled_at, priority);
+    CREATE INDEX IF NOT EXISTS idx_crawl_runs_source ON crawl_runs(source, started_at);
+    CREATE INDEX IF NOT EXISTS idx_payloads_source_key ON source_raw_payloads(source, source_key, fetched_at);
+    CREATE INDEX IF NOT EXISTS idx_crawler_errors_source ON crawler_errors(source, occurred_at);
   `);
 
   // Add email_verified column to existing users table if absent
@@ -500,6 +561,84 @@ export async function updateSyncLog(
   getDB().prepare(`UPDATE sync_logs SET ${sets} WHERE id = @id`).run({ ...data, id });
 }
 
+export interface CrawlRunUpdate {
+  status?: string;
+  completed_at?: number;
+  discovered_count?: number;
+  imported_count?: number;
+  snapshot_count?: number;
+  page_count?: number;
+  blocked_count?: number;
+  error_count?: number;
+  message?: string;
+}
+
+export function startCrawlRun(source: string, jobType: string): number {
+  const result = getDB().prepare(`
+    INSERT INTO crawl_runs (source, job_type, status, started_at)
+    VALUES (?, ?, 'running', unixepoch())
+  `).run(source, jobType);
+  return Number(result.lastInsertRowid);
+}
+
+export function completeCrawlRun(id: number | undefined, data: CrawlRunUpdate) {
+  if (!id) return;
+  const next = {
+    completed_at: Math.floor(Date.now() / 1000),
+    ...data,
+  };
+  const sets = Object.keys(next).map(k => `${k} = @${k}`).join(', ');
+  getDB().prepare(`UPDATE crawl_runs SET ${sets} WHERE id = @id`).run({ ...next, id });
+}
+
+export function recordCrawlerError(error: {
+  source: string;
+  job_type?: string;
+  project_id?: string | null;
+  url?: string | null;
+  status_code?: number | null;
+  message: string;
+  context?: Record<string, unknown>;
+}) {
+  getDB().prepare(`
+    INSERT INTO crawler_errors (source, job_type, project_id, url, status_code, message, context_json)
+    VALUES (@source, @job_type, @project_id, @url, @status_code, @message, @context_json)
+  `).run({
+    source: error.source,
+    job_type: error.job_type ?? null,
+    project_id: error.project_id ?? null,
+    url: error.url ?? null,
+    status_code: error.status_code ?? null,
+    message: error.message,
+    context_json: error.context ? JSON.stringify(error.context).slice(0, 4000) : null,
+  });
+}
+
+export function recordSourcePayload(payload: {
+  source: string;
+  source_key: string;
+  status_code?: number | null;
+  content_type?: string | null;
+  payload_bytes?: number;
+  checksum?: string | null;
+  payload_preview?: string | null;
+}) {
+  getDB().prepare(`
+    INSERT INTO source_raw_payloads
+      (source, source_key, status_code, content_type, payload_bytes, checksum, payload_preview)
+    VALUES
+      (@source, @source_key, @status_code, @content_type, @payload_bytes, @checksum, @payload_preview)
+  `).run({
+    source: payload.source,
+    source_key: payload.source_key,
+    status_code: payload.status_code ?? null,
+    content_type: payload.content_type ?? null,
+    payload_bytes: payload.payload_bytes ?? 0,
+    checksum: payload.checksum ?? null,
+    payload_preview: payload.payload_preview?.slice(0, 1000) ?? null,
+  });
+}
+
 export async function getLastSync() {
   return getDB().prepare(`SELECT * FROM sync_logs ORDER BY id DESC LIMIT 1`).get() ?? null;
 }
@@ -511,6 +650,135 @@ export async function getSyncHistory() {
 export async function getProjectCount(): Promise<number> {
   const row = getDB().prepare('SELECT COUNT(*) as c FROM projects').get() as { c: number };
   return row?.c ?? 0;
+}
+
+export function getDataQualityReport() {
+  const db = getDB();
+  const now = Math.floor(Date.now() / 1000);
+  const sixHoursAgo = now - 6 * 3600;
+  const dayAgo = now - 24 * 3600;
+
+  const totals = db.prepare(`
+    SELECT
+      COUNT(*) as total_projects,
+      SUM(CASE WHEN state = 'live' THEN 1 ELSE 0 END) as live_projects,
+      SUM(CASE WHEN data_source LIKE '%webrobots%' THEN 1 ELSE 0 END) as webrobots_projects,
+      SUM(CASE WHEN data_source LIKE '%ks_live%' THEN 1 ELSE 0 END) as ks_live_projects,
+      SUM(CASE WHEN data_source LIKE '%kicktraq%' THEN 1 ELSE 0 END) as kicktraq_projects,
+      SUM(CASE WHEN source_url IS NULL OR source_url = '' THEN 1 ELSE 0 END) as missing_source_url,
+      SUM(CASE WHEN creator_slug IS NULL OR creator_slug = '' OR slug IS NULL OR slug = '' THEN 1 ELSE 0 END) as missing_slug,
+      SUM(CASE WHEN launched_at IS NULL THEN 1 ELSE 0 END) as missing_launch_date
+    FROM projects
+  `).get() as Record<string, number | null>;
+
+  const snapshots = db.prepare(`
+    SELECT
+      COUNT(*) as total_snapshots,
+      SUM(CASE WHEN captured_at >= @dayAgo THEN 1 ELSE 0 END) as snapshots_24h,
+      COUNT(DISTINCT project_id) as projects_with_snapshots,
+      MAX(captured_at) as latest_snapshot_at
+    FROM project_snapshots
+  `).get({ dayAgo }) as Record<string, number | null>;
+
+  const staleLive = db.prepare(`
+    SELECT COUNT(*) as c
+    FROM projects p
+    LEFT JOIN (
+      SELECT project_id, MAX(captured_at) as last_snapshot_at
+      FROM project_snapshots
+      GROUP BY project_id
+    ) s ON s.project_id = p.id
+    WHERE p.state = 'live'
+      AND (s.last_snapshot_at IS NULL OR s.last_snapshot_at < @sixHoursAgo)
+  `).get({ sixHoursAgo }) as { c: number };
+
+  const tracking = db.prepare(`
+    SELECT
+      COUNT(*) as tracked_projects,
+      SUM(CASE WHEN next_fetch IS NULL OR next_fetch <= @now THEN 1 ELSE 0 END) as due_projects
+    FROM tracking_settings
+    WHERE is_tracking = 1
+  `).get({ now }) as Record<string, number | null>;
+
+  const recentRuns = db.prepare(`
+    SELECT id, source, job_type, status, started_at, completed_at,
+           discovered_count, imported_count, snapshot_count, page_count,
+           blocked_count, error_count, message
+    FROM crawl_runs
+    ORDER BY started_at DESC, id DESC
+    LIMIT 12
+  `).all();
+
+  const sourceHealth = db.prepare(`
+    SELECT
+      source,
+      COUNT(*) as runs,
+      SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed,
+      SUM(CASE WHEN status = 'blocked' THEN 1 ELSE 0 END) as blocked,
+      SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as errors,
+      MAX(started_at) as last_started_at,
+      MAX(completed_at) as last_completed_at,
+      SUM(discovered_count) as discovered_count,
+      SUM(imported_count) as imported_count,
+      SUM(snapshot_count) as snapshot_count
+    FROM crawl_runs
+    GROUP BY source
+    ORDER BY last_started_at DESC
+  `).all();
+
+  const recentErrors = db.prepare(`
+    SELECT id, source, job_type, project_id, url, status_code, message, occurred_at
+    FROM crawler_errors
+    ORDER BY occurred_at DESC, id DESC
+    LIMIT 10
+  `).all();
+
+  const syncSources = db.prepare(`
+    SELECT
+      CASE
+        WHEN url LIKE 'ks_live:%' THEN 'ks_live'
+        WHEN url LIKE 'kicktraq_active:%' THEN 'kicktraq_active'
+        WHEN url LIKE 'kicktraq_full_scan:%' THEN 'kicktraq_full_scan'
+        ELSE 'webrobots'
+      END as source,
+      COUNT(*) as runs,
+      SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed,
+      SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as errors,
+      MAX(completed_at) as last_completed_at,
+      SUM(COALESCE(records_imported, 0)) as records_imported
+    FROM sync_logs
+    GROUP BY source
+    ORDER BY last_completed_at DESC
+  `).all();
+
+  return {
+    generatedAt: now,
+    totals: {
+      totalProjects: Number(totals.total_projects ?? 0),
+      liveProjects: Number(totals.live_projects ?? 0),
+      webrobotsProjects: Number(totals.webrobots_projects ?? 0),
+      ksLiveProjects: Number(totals.ks_live_projects ?? 0),
+      kicktraqProjects: Number(totals.kicktraq_projects ?? 0),
+      missingSourceUrl: Number(totals.missing_source_url ?? 0),
+      missingSlug: Number(totals.missing_slug ?? 0),
+      missingLaunchDate: Number(totals.missing_launch_date ?? 0),
+    },
+    snapshots: {
+      totalSnapshots: Number(snapshots.total_snapshots ?? 0),
+      snapshots24h: Number(snapshots.snapshots_24h ?? 0),
+      projectsWithSnapshots: Number(snapshots.projects_with_snapshots ?? 0),
+      latestSnapshotAt: snapshots.latest_snapshot_at ?? null,
+      staleLiveProjects: staleLive.c ?? 0,
+    },
+    tracking: {
+      trackedProjects: Number(tracking.tracked_projects ?? 0),
+      dueProjects: Number(tracking.due_projects ?? 0),
+    },
+    sourceHealth,
+    syncSources,
+    recentRuns,
+    recentErrors,
+  };
 }
 
 export async function getMeta(): Promise<{

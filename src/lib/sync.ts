@@ -3,7 +3,16 @@ import unzipper from 'unzipper';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { getDBInstance, upsertBatch, insertSyncLog, updateSyncLog, saveDB } from './db';
+import {
+  completeCrawlRun,
+  getDBInstance,
+  insertSyncLog,
+  recordCrawlerError,
+  saveDB,
+  startCrawlRun,
+  updateSyncLog,
+  upsertBatch,
+} from './db';
 import { updateSyncState } from './syncState';
 
 const DATASETS_PAGE = 'https://webrobots.io/kickstarter-datasets/';
@@ -222,8 +231,11 @@ export async function runSync(): Promise<void> {
 
   let logId: number | undefined;
   let tmpPath: string | undefined;
+  let crawlRunId: number | undefined;
+  let totalImported = 0;
 
   try {
+    crawlRunId = startCrawlRun('webrobots', 'monthly_dataset');
     // Step 1: Get latest URL
     const url = await getLatestDatasetUrl();
     const fileName = url.split('/').pop() ?? url;
@@ -245,7 +257,7 @@ export async function runSync(): Promise<void> {
     const db = await getDBInstance();
 
     // Step 4: Import CSV rows
-    const totalImported = await importCsvFromZip(tmpPath, db, (imported) => {
+    totalImported = await importCsvFromZip(tmpPath, db, (imported) => {
       const progress = Math.min(52 + Math.floor(imported / 4000), 90);
       updateSyncState({
         message: `已导入 ${imported.toLocaleString()} 条记录...`,
@@ -259,6 +271,14 @@ export async function runSync(): Promise<void> {
     await saveDB();
 
     const completedAt = new Date().toISOString();
+    completeCrawlRun(crawlRunId, {
+      status: 'completed',
+      discovered_count: totalImported,
+      imported_count: totalImported,
+      snapshot_count: 0,
+      page_count: 1,
+      message: `Imported ${totalImported.toLocaleString()} records from webrobots.`,
+    });
     updateSyncState({
       status: 'completed',
       message: `同步完成！共导入 ${totalImported.toLocaleString()} 条记录。`,
@@ -274,6 +294,21 @@ export async function runSync(): Promise<void> {
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     const completedAt = new Date().toISOString();
+    completeCrawlRun(crawlRunId, {
+      status: 'error',
+      discovered_count: totalImported,
+      imported_count: totalImported,
+      snapshot_count: 0,
+      page_count: 0,
+      error_count: 1,
+      message: error,
+    });
+    recordCrawlerError({
+      source: 'webrobots',
+      job_type: 'monthly_dataset',
+      message: error,
+      context: { importedBeforeFailure: totalImported },
+    });
     updateSyncState({ status: 'error', message: `同步失败: ${error}`, error, completedAt, progress: 0 });
     if (logId) {
       await updateSyncLog(logId, { completed_at: completedAt, status: 'error', error_message: error });
