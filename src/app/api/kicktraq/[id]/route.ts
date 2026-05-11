@@ -32,12 +32,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       return NextResponse.json({
         ok: false,
         noData: true,
+        _v: 'ocr-v1',
         message: `No chart data found on Kicktraq for this project.`,
       });
     }
 
     storeKicktraqDays(id, days);
-    return NextResponse.json({ ok: true, days: days.length });
+    return NextResponse.json({ ok: true, days: days.length, _v: 'ocr-v1' });
   } catch (err) {
     return NextResponse.json({ ok: false, message: String(err) }, { status: 500 });
   }
