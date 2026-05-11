@@ -224,9 +224,41 @@ function parseDailyChartJson(json: DailyChartJson): KicktraqDay[] | null {
 }
 
 export async function scrapeKicktraq(creatorSlug: string, projectSlug: string): Promise<KicktraqDay[]> {
-  const pageUrl = `https://www.kicktraq.com/projects/${creatorSlug}/${projectSlug}/`;
+  const { days } = await scrapeKicktraqDebug(creatorSlug, projectSlug);
+  return days;
+}
 
-  // Fetch the main page first (needed for session cookie + HTML fallback)
+export interface KicktraqDebugInfo {
+  pageUrl: string;
+  pageStatus: number | null;
+  pageLength: number;
+  cookieCount: number;
+  jsonStatus: number | null;
+  jsonBody: string;
+  jsonParsed: boolean;
+  jsonDays: number;
+  htmlPatterns: string[];
+  htmlDays: number;
+}
+
+export async function scrapeKicktraqDebug(creatorSlug: string, projectSlug: string): Promise<{ days: KicktraqDay[]; debug: KicktraqDebugInfo }> {
+  const pageUrl = `https://www.kicktraq.com/projects/${creatorSlug}/${projectSlug}/`;
+  const jsonUrl = `${pageUrl}dailychart.json`;
+
+  const debug: KicktraqDebugInfo = {
+    pageUrl,
+    pageStatus: null,
+    pageLength: 0,
+    cookieCount: 0,
+    jsonStatus: null,
+    jsonBody: '',
+    jsonParsed: false,
+    jsonDays: 0,
+    htmlPatterns: [],
+    htmlDays: 0,
+  };
+
+  // Step 1: fetch main page
   let html = '';
   let cookieStr = '';
   try {
@@ -238,17 +270,38 @@ export async function scrapeKicktraq(creatorSlug: string, projectSlug: string): 
       },
       signal: AbortSignal.timeout(20_000),
     });
-    if (pageRes.status === 404) return [];
-    if (!pageRes.ok) return [];
+    debug.pageStatus = pageRes.status;
+    if (pageRes.status === 404) return { days: [], debug };
+    if (!pageRes.ok) return { days: [], debug };
+
     html = await pageRes.text();
+    debug.pageLength = html.length;
+
     const setCookie = pageRes.headers.getSetCookie?.() ?? [];
     cookieStr = setCookie.map(c => c.split(';')[0]).join('; ');
-  } catch {
-    return [];
+    debug.cookieCount = setCookie.length;
+
+    // Check what patterns exist in HTML
+    const patterns: Record<string, RegExp> = {
+      addRows: /addRows\s*\(\s*\[/,
+      pledgeData: /var\s+pledgeData/,
+      backerData: /var\s+backerData/,
+      commentData: /var\s+commentData/,
+      startDate: /var\s+startDate/,
+      chart_data: /"chart_data"/,
+      dailychart: /dailychart/,
+      googleViz: /google\.visualization/,
+    };
+    for (const [name, re] of Object.entries(patterns)) {
+      if (re.test(html)) debug.htmlPatterns.push(name);
+    }
+  } catch (e) {
+    debug.pageStatus = -1;
+    debug.jsonBody = String(e);
+    return { days: [], debug };
   }
 
-  // Try dailychart.json with the session cookie we just got
-  const jsonUrl = `${pageUrl}dailychart.json`;
+  // Step 2: try dailychart.json with session cookie
   try {
     const jsonRes = await fetch(jsonUrl, {
       headers: {
@@ -265,18 +318,28 @@ export async function scrapeKicktraq(creatorSlug: string, projectSlug: string): 
       },
       signal: AbortSignal.timeout(15_000),
     });
-    if (jsonRes.ok) {
-      const text = await jsonRes.text();
-      if (text && !text.trim().startsWith('<') && !text.includes('invalid request')) {
-        const json = JSON.parse(text);
-        const days = parseDailyChartJson(json);
-        if (days?.length) return days;
-      }
-    }
-  } catch { /* fall through to HTML parsing */ }
+    debug.jsonStatus = jsonRes.status;
+    const text = await jsonRes.text();
+    debug.jsonBody = text.slice(0, 300);
 
-  // Fall back to parsing chart data embedded in the HTML
-  return parseKicktraqHtml(html);
+    if (jsonRes.ok && text && !text.trim().startsWith('<') && !text.includes('invalid request')) {
+      try {
+        const json = JSON.parse(text);
+        debug.jsonParsed = true;
+        const days = parseDailyChartJson(json);
+        debug.jsonDays = days?.length ?? 0;
+        if (days?.length) return { days, debug };
+      } catch { /* fall through */ }
+    }
+  } catch (e) {
+    debug.jsonStatus = -1;
+    debug.jsonBody = String(e);
+  }
+
+  // Step 3: HTML fallback
+  const htmlDays = parseKicktraqHtml(html);
+  debug.htmlDays = htmlDays.length;
+  return { days: htmlDays, debug };
 }
 
 function parseKicktraqHtml(html: string): KicktraqDay[] {

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSessionUser, SESSION_COOKIE } from '@/lib/auth';
 import { getProjectById } from '@/lib/db';
-import { extractCreatorSlug, extractProjectSlug, scrapeKicktraq, storeKicktraqDays } from '@/lib/scraper';
+import { extractCreatorSlug, extractProjectSlug, scrapeKicktraqDebug, storeKicktraqDays } from '@/lib/scraper';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -16,7 +16,6 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const project = await getProjectById(id) as { source_url?: string; slug?: string; creator_slug?: string } | null;
     if (!project) return NextResponse.json({ ok: false, message: 'Project not found.' }, { status: 404 });
 
-    // Prefer DB creator_slug; fall back to extracting from source_url for legacy rows
     const sourceUrl = project.source_url ?? '';
     const creatorSlug = project.creator_slug || extractCreatorSlug(sourceUrl);
     const projectSlug = project.slug || extractProjectSlug(sourceUrl);
@@ -28,17 +27,20 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       }, { status: 422 });
     }
 
-    const days = await scrapeKicktraq(creatorSlug, projectSlug);
+    const { days, debug } = await scrapeKicktraqDebug(creatorSlug, projectSlug);
+    console.log(`[kicktraq/${id}] debug:`, JSON.stringify(debug));
+
     if (!days.length) {
       return NextResponse.json({
         ok: false,
         noData: true,
+        debug,
         message: `No daily chart data found on Kicktraq for this project. It may not have been tracked from day one, or Kicktraq may not have historical data for it.`,
       });
     }
 
     storeKicktraqDays(id, days);
-    return NextResponse.json({ ok: true, days: days.length });
+    return NextResponse.json({ ok: true, days: days.length, debug });
   } catch (err) {
     return NextResponse.json({ ok: false, message: String(err) }, { status: 500 });
   }
