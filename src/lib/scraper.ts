@@ -295,6 +295,21 @@ export async function scrapeKicktraqDebug(creatorSlug: string, projectSlug: stri
     for (const [name, re] of Object.entries(patterns)) {
       if (re.test(html)) debug.htmlPatterns.push(name);
     }
+
+    // Capture the context around 'dailychart' to understand how it's called
+    const dcIdx = html.indexOf('dailychart');
+    if (dcIdx >= 0) {
+      debug.htmlPatterns.push('CONTEXT:' + html.slice(Math.max(0, dcIdx - 100), dcIdx + 300).replace(/\s+/g, ' '));
+    }
+
+    // Capture all script tag contents for analysis
+    const scriptMatches = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi)];
+    for (const sm of scriptMatches) {
+      const c = sm[1].trim();
+      if (c.length > 30 && (c.includes('chart') || c.includes('pledge') || c.includes('backer') || c.includes('daily'))) {
+        debug.htmlPatterns.push('SCRIPT:' + c.slice(0, 400).replace(/\s+/g, ' '));
+      }
+    }
   } catch (e) {
     debug.pageStatus = -1;
     debug.jsonBody = String(e);
@@ -320,7 +335,7 @@ export async function scrapeKicktraqDebug(creatorSlug: string, projectSlug: stri
     });
     debug.jsonStatus = jsonRes.status;
     const text = await jsonRes.text();
-    debug.jsonBody = text.slice(0, 300);
+    debug.jsonBody = text.slice(0, 600); // more context
 
     if (jsonRes.ok && text && !text.trim().startsWith('<') && !text.includes('invalid request')) {
       try {
