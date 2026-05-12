@@ -19,7 +19,7 @@ export async function POST(req: NextRequest) {
     if (!user) return NextResponse.json({ error: 'Invalid email or password.' }, { status: 401 });
 
     const token = createSession(user.id);
-    const res = NextResponse.json({ user: { id: user.id, username: user.username, email: user.email } });
+    const res = NextResponse.json({ user: { id: user.id, username: user.username, email: user.email, role: user.role } });
     res.cookies.set(SESSION_COOKIE, token, { httpOnly: true, sameSite: 'lax', path: '/', maxAge: 30 * 86400 });
     return res;
   } catch (err) {

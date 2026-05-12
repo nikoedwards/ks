@@ -42,6 +42,10 @@ interface KSProject {
     little?: string;
     small?: string;
     med?: string;
+    ed?: string;
+    thumb?: string;
+    '1024x576'?: string;
+    '1536x864'?: string;
   };
 }
 
@@ -121,8 +125,8 @@ export async function scrapeAndStore(projectId: string, jsonUrl: string, opts: S
     state: p.state ?? null,
     pledged_usd: pledgedUsd,
     backers_count: p.backers_count ?? null,
-    image_url: p.photo?.full ?? p.photo?.med ?? p.photo?.small ?? null,
-    image_thumb_url: p.photo?.little ?? p.photo?.small ?? p.photo?.med ?? p.photo?.full ?? null,
+    image_url: p.photo?.full ?? p.photo?.['1536x864'] ?? p.photo?.['1024x576'] ?? p.photo?.ed ?? p.photo?.med ?? p.photo?.small ?? null,
+    image_thumb_url: p.photo?.little ?? p.photo?.thumb ?? p.photo?.small ?? p.photo?.ed ?? p.photo?.med ?? p.photo?.full ?? null,
   });
 
   if (opts.track_rewards && p.rewards?.length) {

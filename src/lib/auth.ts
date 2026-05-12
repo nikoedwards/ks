@@ -8,10 +8,13 @@ const DB_PATH  = path.join(DATA_DIR, 'kickstarter.db');
 
 function getDB() {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-  return new BetterSqlite3(DB_PATH);
+  const db = new BetterSqlite3(DB_PATH);
+  ensureAuthMigrations(db);
+  return db;
 }
 
-export interface AuthUser { id: number; username: string; email: string | null; }
+export type UserRole = 'admin' | 'user';
+export interface AuthUser { id: number; username: string; email: string | null; role: UserRole; }
 
 const SESSION_DAYS = 30;
 
@@ -23,6 +26,18 @@ function generateToken(): string {
   return randomBytes(32).toString('hex');
 }
 
+function ensureAuthMigrations(db: BetterSqlite3.Database) {
+  try { db.exec("ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'"); } catch { /* already exists */ }
+  const adminEmail = process.env.ADMIN_EMAIL?.trim().toLowerCase();
+  if (adminEmail) {
+    db.prepare("UPDATE users SET role = 'admin' WHERE lower(email) = ?").run(adminEmail);
+  }
+  const admin = db.prepare("SELECT id FROM users WHERE role = 'admin' LIMIT 1").get();
+  if (!admin) {
+    db.prepare("UPDATE users SET role = 'admin' WHERE id = (SELECT id FROM users ORDER BY id ASC LIMIT 1)").run();
+  }
+}
+
 // ── User creation ──────────────────────────────────────────────────────────────
 
 export function createUser(username: string, password: string, email?: string): AuthUser {
@@ -31,7 +46,7 @@ export function createUser(username: string, password: string, email?: string): 
   const result = db.prepare(
     `INSERT INTO users (username, email, password_hash, email_verified) VALUES (?, ?, ?, 1)`
   ).run(username.trim(), email?.trim()?.toLowerCase() ?? null, hash);
-  return { id: Number(result.lastInsertRowid), username: username.trim(), email: email?.trim() ?? null };
+  return { id: Number(result.lastInsertRowid), username: username.trim(), email: email?.trim() ?? null, role: 'user' };
 }
 
 export function createUserByEmail(email: string, password: string): AuthUser {
@@ -41,7 +56,7 @@ export function createUserByEmail(email: string, password: string): AuthUser {
   const result = db.prepare(
     `INSERT INTO users (username, email, password_hash, email_verified) VALUES (?, ?, ?, 0)`
   ).run(username, email.trim().toLowerCase(), hash);
-  return { id: Number(result.lastInsertRowid), username, email: email.trim().toLowerCase() };
+  return { id: Number(result.lastInsertRowid), username, email: email.trim().toLowerCase(), role: 'user' };
 }
 
 export function activateUser(email: string) {
@@ -52,20 +67,20 @@ export function activateUser(email: string) {
 
 export function verifyUser(username: string, password: string): AuthUser | null {
   const db = getDB();
-  const user = db.prepare(`SELECT id, username, email, password_hash FROM users WHERE username = ?`).get(username.trim()) as
-    ({ id: number; username: string; email: string | null; password_hash: string }) | undefined;
+  const user = db.prepare(`SELECT id, username, email, role, password_hash FROM users WHERE username = ?`).get(username.trim()) as
+    ({ id: number; username: string; email: string | null; role: UserRole; password_hash: string }) | undefined;
   if (!user) return null;
   if (user.password_hash !== hashPassword(password)) return null;
-  return { id: user.id, username: user.username, email: user.email };
+  return { id: user.id, username: user.username, email: user.email, role: user.role ?? 'user' };
 }
 
 export function verifyUserByEmail(email: string, password: string): AuthUser | null {
   const db = getDB();
-  const user = db.prepare(`SELECT id, username, email, password_hash, email_verified FROM users WHERE email = ?`).get(email.trim().toLowerCase()) as
-    ({ id: number; username: string; email: string | null; password_hash: string; email_verified: number }) | undefined;
+  const user = db.prepare(`SELECT id, username, email, role, password_hash, email_verified FROM users WHERE email = ?`).get(email.trim().toLowerCase()) as
+    ({ id: number; username: string; email: string | null; role: UserRole; password_hash: string; email_verified: number }) | undefined;
   if (!user) return null;
   if (user.password_hash !== hashPassword(password)) return null;
-  return { id: user.id, username: user.username, email: user.email };
+  return { id: user.id, username: user.username, email: user.email, role: user.role ?? 'user' };
 }
 
 export function usernameExists(username: string): boolean {
@@ -112,7 +127,7 @@ export function getSessionUser(token: string): AuthUser | null {
   const db = getDB();
   const now = Math.floor(Date.now() / 1000);
   const row = db.prepare(
-    `SELECT u.id, u.username, u.email FROM sessions s
+    `SELECT u.id, u.username, u.email, u.role FROM sessions s
      JOIN users u ON u.id = s.user_id
      WHERE s.token = ? AND s.expires_at > ?`
   ).get(token, now) as AuthUser | undefined;
@@ -139,7 +154,7 @@ export function getFavoriteIds(userId: number): string[] {
 }
 
 export function getUserByEmail(email: string): AuthUser | null {
-  return getDB().prepare(`SELECT id, username, email FROM users WHERE email = ?`).get(email.toLowerCase()) as AuthUser | null;
+  return getDB().prepare(`SELECT id, username, email, role FROM users WHERE email = ?`).get(email.toLowerCase()) as AuthUser | null;
 }
 
 export const SESSION_COOKIE = 'ks_session';

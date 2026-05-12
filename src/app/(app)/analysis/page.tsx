@@ -3,6 +3,8 @@
 import { useEffect, useState, useCallback } from 'react';
 import BarChart from '@/components/charts/BarChart';
 import LineChart from '@/components/charts/LineChart';
+import PieChart from '@/components/charts/PieChart';
+import StatCard from '@/components/StatCard';
 import EmptyState from '@/components/EmptyState';
 import DataSource from '@/components/DataSource';
 import { useLanguage } from '@/hooks/useLanguage';
@@ -40,6 +42,19 @@ interface CountryRow {
   total_backers: number;
 }
 
+interface StatsResponse {
+  stats: Record<string, number>;
+  stateDistribution: { state: string; count: number }[];
+}
+
+const STATE_COLORS: Record<string, string> = {
+  successful: '#05CE78',
+  failed: '#EF4444',
+  live: '#3B82F6',
+  canceled: '#F59E0B',
+  suspended: '#8B5CF6',
+};
+
 // ── Period helper ─────────────────────────────────────────────────────────────
 
 const YEAR_PRESETS = ['2025', '2024', '2023', '2022', '2021', '2020', '2019'] as const;
@@ -60,7 +75,7 @@ function buildQuery(dateFrom?: number, dateTo?: number): string {
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-type Tab = 'categories' | 'trends' | 'countries';
+type Tab = 'overview' | 'categories' | 'trends' | 'countries';
 type Period = 'all' | typeof YEAR_PRESETS[number] | 'custom';
 
 export default function AnalysisPage() {
@@ -69,11 +84,13 @@ export default function AnalysisPage() {
   const tCat = t[lang].categories;
   const tTrend = t[lang].trends;
   const tCoun = t[lang].countries;
+  const tDash = t[lang].dashboard;
+  const stateTr = t[lang].states;
 
   const { user, showLogin } = useAuth();
   const gate = (fn: () => void) => { if (user) { fn(); return; } showLogin(fn); };
 
-  const [tab, setTab] = useState<Tab>('categories');
+  const [tab, setTab] = useState<Tab>('overview');
   const [period, setPeriod] = useState<Period>('all');
   const [customFrom, setCustomFrom] = useState('');
   const [customTo, setCustomTo]   = useState('');
@@ -81,6 +98,7 @@ export default function AnalysisPage() {
   const [categories, setCategories] = useState<CategoryRow[]>([]);
   const [trends, setTrends]         = useState<TrendRow[]>([]);
   const [countries, setCountries]   = useState<CountryRow[]>([]);
+  const [statsData, setStatsData]   = useState<StatsResponse | null>(null);
   const [loading, setLoading]       = useState(false);
   const [empty, setEmpty]           = useState(false);
 
@@ -101,17 +119,19 @@ export default function AnalysisPage() {
     setEmpty(false);
 
     Promise.all([
+      fetch(`/api/stats${qs}`).then(r => r.json()),
       fetch(`/api/categories${qs}`).then(r => r.json()),
       fetch(`/api/trends${qs}`).then(r => r.json()),
       fetch(`/api/countries${qs}`).then(r => r.json()),
-    ]).then(([cat, trend, coun]) => {
+    ]).then(([stats, cat, trend, coun]) => {
       const catData   = cat.data   ?? [];
       const trendData = trend.data ?? [];
       const counData  = coun.data  ?? [];
+      setStatsData(stats.empty ? null : stats);
       setCategories(catData);
       setTrends(trendData);
       setCountries(counData);
-      if (!catData.length && !trendData.length && !counData.length) setEmpty(true);
+      if (!stats?.stats && !catData.length && !trendData.length && !counData.length) setEmpty(true);
       setLoading(false);
     }).catch(() => setLoading(false));
   }, [getDateRange]);
@@ -175,6 +195,7 @@ export default function AnalysisPage() {
   // ── Tab bar ─────────────────────────────────────────────────────────────────
 
   const tabs: { key: Tab; label: string }[] = [
+    { key: 'overview', label: lang === 'cn' ? '数据概览' : 'Overview' },
     { key: 'categories', label: tr.tabCategories },
     { key: 'trends',     label: tr.tabTrends },
     { key: 'countries',  label: tr.tabCountries },
@@ -227,6 +248,56 @@ export default function AnalysisPage() {
   // ── Category tab ────────────────────────────────────────────────────────────
 
   const top12 = categories.slice(0, 12);
+
+  const overviewContent = statsData ? (() => {
+    const { stats, stateDistribution } = statsData;
+    const pieData = stateDistribution.map(d => ({
+      name: stateTr[d.state as keyof typeof stateTr] ?? d.state,
+      value: d.count,
+      color: STATE_COLORS[d.state],
+    }));
+    return (
+      <div className="space-y-5">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          <StatCard title={tDash.totalProjects} value={Number(stats.total ?? 0).toLocaleString()} sub={tDash.totalProjectsSub} />
+          <StatCard title={tDash.successRate} value={`${stats.success_rate ?? 0}%`} sub={tDash.successRateSub(Number(stats.successful ?? 0).toLocaleString())} accent />
+          <StatCard title={tDash.totalRaised} value={`$${stats.total_pledged_usd ?? 0}M`} sub={tDash.totalRaisedSub} />
+          <StatCard title={tDash.avgBackers} value={Number(stats.avg_backers ?? 0).toLocaleString()} sub={tDash.avgBackersSub} />
+        </div>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+          <PieChart data={pieData} title={tDash.statusDist} />
+          <BarChart
+            data={top12}
+            xKey="category"
+            bars={[{ key: 'success_rate', name: tDash.successRatePct, color: '#05CE78' }]}
+            title={tDash.categoryRate}
+            yFormatter={v => `${v}%`}
+            height={280}
+          />
+        </div>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+          <LineChart
+            data={trends}
+            xKey="month"
+            lines={[
+              { key: 'total', name: tDash.launches, color: '#3B82F6' },
+              { key: 'successful', name: tDash.successes, color: '#05CE78' },
+            ]}
+            title={tDash.trendTitle}
+            height={280}
+          />
+          <LineChart
+            data={trends}
+            xKey="month"
+            lines={[{ key: 'success_rate', name: tDash.successRatePct, color: '#8B5CF6' }]}
+            title={tDash.trendSuccessTitle}
+            yFormatter={v => `${v}%`}
+            height={280}
+          />
+        </div>
+      </div>
+    );
+  })() : null;
 
   const categoryContent = (
     <div className="space-y-5">
@@ -489,6 +560,7 @@ export default function AnalysisPage() {
       <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
         <div className="px-5 pt-1">{tabBar}</div>
         <div className="p-5">
+          {tab === 'overview' && overviewContent}
           {tab === 'categories' && categoryContent}
           {tab === 'trends'     && trendsContent}
           {tab === 'countries'  && countriesContent}

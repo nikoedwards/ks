@@ -2,7 +2,7 @@
 
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react';
 
-export interface AuthUser { id: number; username: string; email: string | null; }
+export interface AuthUser { id: number; username: string; email: string | null; role: 'admin' | 'user'; }
 
 interface AuthCtx {
   user: AuthUser | null;

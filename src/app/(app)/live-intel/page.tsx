@@ -207,7 +207,7 @@ export default function LiveIntelPage() {
       if (seen.has(p.id)) return false;
       seen.add(p.id);
       return true;
-    }).slice(0, 4);
+    }).sort((a, b) => Number(!!(b.image_thumb_url ?? b.image_url)) - Number(!!(a.image_thumb_url ?? a.image_url))).slice(0, 4);
   }, [data]);
 
   if (!data) {

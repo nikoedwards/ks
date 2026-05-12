@@ -8,15 +8,18 @@ import {
   Search,
   BarChart2,
   Settings,
+  SlidersHorizontal,
   Info,
   Github,
   Flame,
   Sparkles,
   Heart,
   RadioTower,
+  Users,
   LogOut,
   User,
 } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
 import { useLanguage } from '@/hooks/useLanguage';
 import { t } from '@/lib/i18n';
 import { useAuth } from '@/contexts/AuthContext';
@@ -27,17 +30,35 @@ export default function Sidebar() {
   const [lang, setLang] = useLanguage();
   const tr = t[lang].nav;
   const { user, logout, showLogin } = useAuth();
+  const [navConfig, setNavConfig] = useState<{ nav_key: string }[]>([]);
 
-  const nav = [
-    { href: '/dashboard', label: tr.overview,  icon: LayoutDashboard },
-    { href: '/projects',  label: tr.projects,  icon: Search },
-    { href: '/live-intel', label: lang === 'cn' ? 'Live 情报' : 'Live Intel', icon: Flame },
-    { href: '/analysis',  label: tr.analysis,  icon: BarChart2 },
-    { href: '/predict',   label: tr.predict,   icon: Sparkles },
-    { href: '/favorites', label: lang === 'cn' ? '收藏夹' : 'Favorites', icon: Heart },
-    { href: '/data-quality', label: lang === 'cn' ? '数据质量' : 'Data Quality', icon: RadioTower },
-    { href: '/settings',  label: tr.sync,      icon: Settings },
-  ];
+  const navMap = useMemo(() => ({
+    dashboard: { href: '/dashboard', label: tr.overview, icon: LayoutDashboard },
+    projects: { href: '/projects', label: tr.projects, icon: Search },
+    'live-intel': { href: '/live-intel', label: lang === 'cn' ? 'Live 情报' : 'Live Intel', icon: Flame },
+    analysis: { href: '/analysis', label: tr.analysis, icon: BarChart2 },
+    predict: { href: '/predict', label: tr.predict, icon: Sparkles },
+    favorites: { href: '/favorites', label: lang === 'cn' ? '收藏夹' : 'Favorites', icon: Heart },
+    'data-quality': { href: '/data-quality', label: lang === 'cn' ? '数据质量' : 'Data Quality', icon: RadioTower },
+    settings: { href: '/settings', label: tr.sync, icon: Settings },
+    'admin-users': { href: '/admin/users', label: lang === 'cn' ? '用户看板' : 'Users', icon: Users },
+    'admin-nav': { href: '/admin/nav', label: lang === 'cn' ? '导航配置' : 'Nav Config', icon: SlidersHorizontal },
+  }), [lang, tr]);
+
+  useEffect(() => {
+    fetch('/api/nav').then(r => r.json()).then(d => setNavConfig(d.items ?? [])).catch(() => setNavConfig([]));
+  }, [user]);
+
+  const nav = (navConfig.length ? navConfig : [
+    { nav_key: 'dashboard' },
+    { nav_key: 'projects' },
+    { nav_key: 'live-intel' },
+    { nav_key: 'analysis' },
+    { nav_key: 'predict' },
+    { nav_key: 'favorites' },
+    { nav_key: 'data-quality' },
+    { nav_key: 'settings' },
+  ]).map(item => navMap[item.nav_key as keyof typeof navMap]).filter(Boolean);
 
   return (
     <>

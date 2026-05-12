@@ -45,6 +45,10 @@ export interface KSDiscoverProject {
     little?: string;
     small?: string;
     med?: string;
+    ed?: string;
+    thumb?: string;
+    '1024x576'?: string;
+    '1536x864'?: string;
     key?: string;
   };
   urls?: { web?: { project?: string } };
@@ -92,8 +96,8 @@ function projectUrl(project: KSDiscoverProject): string | null {
 function projectImage(project: KSDiscoverProject): { image_url: string | null; image_thumb_url: string | null } {
   const photo = project.photo;
   return {
-    image_url: photo?.full ?? photo?.med ?? photo?.small ?? null,
-    image_thumb_url: photo?.little ?? photo?.small ?? photo?.med ?? photo?.full ?? null,
+    image_url: photo?.full ?? photo?.['1536x864'] ?? photo?.['1024x576'] ?? photo?.ed ?? photo?.med ?? photo?.small ?? null,
+    image_thumb_url: photo?.little ?? photo?.thumb ?? photo?.small ?? photo?.ed ?? photo?.med ?? photo?.full ?? null,
   };
 }
 

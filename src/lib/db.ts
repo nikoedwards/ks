@@ -13,6 +13,7 @@ declare global {
 
 function ensureRuntimeMigrations(db: Database) {
   try { db.exec('ALTER TABLE users ADD COLUMN email_verified INTEGER DEFAULT 1'); } catch { /* already exists */ }
+  try { db.exec("ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'"); } catch { /* already exists */ }
   try { db.exec('ALTER TABLE projects ADD COLUMN creator_slug TEXT'); } catch { /* already exists */ }
   try { db.exec("ALTER TABLE projects ADD COLUMN data_source TEXT DEFAULT 'webrobots'"); } catch { /* already exists */ }
   try { db.exec('ALTER TABLE projects ADD COLUMN first_seen_at INTEGER'); } catch { /* already exists */ }
@@ -23,6 +24,10 @@ function ensureRuntimeMigrations(db: Database) {
   try { db.exec('ALTER TABLE projects ADD COLUMN image_thumb_url TEXT'); } catch { /* already exists */ }
   try { db.exec('ALTER TABLE tracking_settings ADD COLUMN subscriber_count INTEGER DEFAULT 0'); } catch { /* already exists */ }
   try { db.exec('ALTER TABLE tracking_settings ADD COLUMN priority_score INTEGER DEFAULT 0'); } catch { /* already exists */ }
+  const adminEmail = process.env.ADMIN_EMAIL?.trim().toLowerCase();
+  if (adminEmail) db.prepare("UPDATE users SET role = 'admin' WHERE lower(email) = ?").run(adminEmail);
+  const admin = db.prepare("SELECT id FROM users WHERE role = 'admin' LIMIT 1").get();
+  if (!admin) db.prepare("UPDATE users SET role = 'admin' WHERE id = (SELECT id FROM users ORDER BY id ASC LIMIT 1)").run();
 }
 
 function getDB(): Database {
@@ -260,6 +265,14 @@ function getDB(): Database {
     CREATE INDEX IF NOT EXISTS idx_crawl_runs_source ON crawl_runs(source, started_at);
     CREATE INDEX IF NOT EXISTS idx_payloads_source_key ON source_raw_payloads(source, source_key, fetched_at);
     CREATE INDEX IF NOT EXISTS idx_crawler_errors_source ON crawler_errors(source, occurred_at);
+
+    CREATE TABLE IF NOT EXISTS nav_settings (
+      nav_key TEXT PRIMARY KEY,
+      sort_order INTEGER NOT NULL,
+      admin_visible INTEGER DEFAULT 1,
+      user_visible INTEGER DEFAULT 1,
+      updated_at INTEGER DEFAULT (unixepoch())
+    );
   `);
 
   ensureRuntimeMigrations(db);
@@ -287,7 +300,20 @@ export interface DashboardStats {
   avg_goal: number;
 }
 
-export async function getStats(): Promise<DashboardStats> {
+function dateWhere(alias = '') {
+  const p = alias ? `${alias}.` : '';
+  return {
+    clauses: [] as string[],
+    params: {} as Record<string, unknown>,
+    launched: `${p}launched_at`,
+  };
+}
+
+export async function getStats(filter: { dateFrom?: number; dateTo?: number } = {}): Promise<DashboardStats> {
+  const w = dateWhere();
+  if (filter.dateFrom) { w.clauses.push(`${w.launched} >= @dateFrom`); w.params.dateFrom = filter.dateFrom; }
+  if (filter.dateTo) { w.clauses.push(`${w.launched} <= @dateTo`); w.params.dateTo = filter.dateTo; }
+  const where = w.clauses.length ? `WHERE ${w.clauses.join(' AND ')}` : '';
   return getDB().prepare(`
     SELECT
       COUNT(*) as total,
@@ -301,13 +327,18 @@ export async function getStats(): Promise<DashboardStats> {
       ROUND(AVG(backers_count), 1) as avg_backers,
       ROUND(AVG(goal), 0) as avg_goal
     FROM projects
-  `).get() as DashboardStats;
+    ${where}
+  `).get(w.params) as DashboardStats;
 }
 
-export async function getStateDistribution(): Promise<{ state: string; count: number }[]> {
+export async function getStateDistribution(filter: { dateFrom?: number; dateTo?: number } = {}): Promise<{ state: string; count: number }[]> {
+  const w = dateWhere();
+  if (filter.dateFrom) { w.clauses.push(`${w.launched} >= @dateFrom`); w.params.dateFrom = filter.dateFrom; }
+  if (filter.dateTo) { w.clauses.push(`${w.launched} <= @dateTo`); w.params.dateTo = filter.dateTo; }
+  const where = w.clauses.length ? `WHERE ${w.clauses.join(' AND ')}` : '';
   return getDB().prepare(
-    `SELECT state, COUNT(*) as count FROM projects GROUP BY state ORDER BY count DESC`
-  ).all() as { state: string; count: number }[];
+    `SELECT state, COUNT(*) as count FROM projects ${where} GROUP BY state ORDER BY count DESC`
+  ).all(w.params) as { state: string; count: number }[];
 }
 
 export interface ProjectFilter {
@@ -682,6 +713,118 @@ export function updateProjectLiveMetadata(projectId: string, data: {
     image_url: data.image_url ?? null,
     image_thumb_url: data.image_thumb_url ?? null,
   });
+}
+
+export const DEFAULT_NAV_ITEMS = [
+  'dashboard',
+  'projects',
+  'live-intel',
+  'analysis',
+  'predict',
+  'favorites',
+  'data-quality',
+  'settings',
+  'admin-users',
+  'admin-nav',
+] as const;
+
+export type NavKey = typeof DEFAULT_NAV_ITEMS[number];
+
+export function ensureDefaultNavSettings() {
+  const db = getDB();
+  const stmt = db.prepare(`
+    INSERT OR IGNORE INTO nav_settings (nav_key, sort_order, admin_visible, user_visible)
+    VALUES (@nav_key, @sort_order, @admin_visible, @user_visible)
+  `);
+  const tx = db.transaction(() => {
+    DEFAULT_NAV_ITEMS.forEach((key, index) => {
+      const adminOnly = key === 'admin-users' || key === 'admin-nav';
+      const hiddenByDefault = key === 'dashboard';
+      stmt.run({
+        nav_key: key,
+        sort_order: index,
+        admin_visible: hiddenByDefault ? 0 : 1,
+        user_visible: adminOnly || hiddenByDefault ? 0 : 1,
+      });
+    });
+  });
+  tx();
+}
+
+export function getNavSettings(role: 'admin' | 'user' = 'user') {
+  ensureDefaultNavSettings();
+  const visibleCol = role === 'admin' ? 'admin_visible' : 'user_visible';
+  return getDB().prepare(`
+    SELECT nav_key, sort_order, admin_visible, user_visible
+    FROM nav_settings
+    WHERE ${visibleCol} = 1
+    ORDER BY sort_order ASC
+  `).all();
+}
+
+export function getAllNavSettings() {
+  ensureDefaultNavSettings();
+  return getDB().prepare(`
+    SELECT nav_key, sort_order, admin_visible, user_visible
+    FROM nav_settings
+    ORDER BY sort_order ASC
+  `).all();
+}
+
+export function updateNavSettings(items: { nav_key: string; sort_order: number; admin_visible: number; user_visible: number }[]) {
+  ensureDefaultNavSettings();
+  const allowed = new Set(DEFAULT_NAV_ITEMS);
+  const stmt = getDB().prepare(`
+    UPDATE nav_settings
+    SET sort_order = @sort_order,
+        admin_visible = @admin_visible,
+        user_visible = @user_visible,
+        updated_at = unixepoch()
+    WHERE nav_key = @nav_key
+  `);
+  const tx = getDB().transaction(() => {
+    for (const item of items) {
+      if (!allowed.has(item.nav_key as NavKey)) continue;
+      stmt.run({
+        nav_key: item.nav_key,
+        sort_order: item.sort_order,
+        admin_visible: item.admin_visible ? 1 : 0,
+        user_visible: item.user_visible ? 1 : 0,
+      });
+    }
+  });
+  tx();
+}
+
+export function getUserAdminDashboard() {
+  const db = getDB();
+  ensureRuntimeMigrations(db);
+  const summary = db.prepare(`
+    SELECT
+      COUNT(*) as total_users,
+      SUM(CASE WHEN role = 'admin' THEN 1 ELSE 0 END) as admins,
+      SUM(CASE WHEN role != 'admin' OR role IS NULL THEN 1 ELSE 0 END) as normal_users,
+      SUM(CASE WHEN email_verified = 1 THEN 1 ELSE 0 END) as verified_users
+    FROM users
+  `).get();
+  const users = db.prepare(`
+    SELECT
+      u.id, u.username, u.email, COALESCE(u.role, 'user') as role, u.email_verified, u.created_at,
+      COUNT(DISTINCT f.project_id) as favorites_count,
+      COUNT(DISTINCT s.project_id) as subscriptions_count,
+      MAX(sess.expires_at) as session_expires_at
+    FROM users u
+    LEFT JOIN favorites f ON f.user_id = u.id
+    LEFT JOIN user_project_subscriptions s ON s.user_id = u.id AND s.is_tracking = 1
+    LEFT JOIN sessions sess ON sess.user_id = u.id
+    GROUP BY u.id
+    ORDER BY u.created_at DESC, u.id DESC
+  `).all();
+  return { summary, users };
+}
+
+export function updateUserRole(userId: number, role: 'admin' | 'user') {
+  getDB().prepare("UPDATE users SET role = ? WHERE id = ?").run(role, userId);
 }
 
 export async function getLastSync() {
