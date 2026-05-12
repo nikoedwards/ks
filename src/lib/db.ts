@@ -15,6 +15,17 @@ function ensureRuntimeMigrations(db: Database) {
   try { db.exec('ALTER TABLE users ADD COLUMN email_verified INTEGER DEFAULT 1'); } catch { /* already exists */ }
   try { db.exec("ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'"); } catch { /* already exists */ }
   try { db.exec('ALTER TABLE projects ADD COLUMN creator_slug TEXT'); } catch { /* already exists */ }
+  try { db.exec('ALTER TABLE projects ADD COLUMN creator_url TEXT'); } catch { /* already exists */ }
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS pending_registrations (
+      email TEXT PRIMARY KEY,
+      username TEXT NOT NULL,
+      password_hash TEXT NOT NULL,
+      code TEXT NOT NULL,
+      expires_at INTEGER NOT NULL,
+      created_at INTEGER DEFAULT (unixepoch())
+    );
+  `);
   try { db.exec("ALTER TABLE projects ADD COLUMN data_source TEXT DEFAULT 'webrobots'"); } catch { /* already exists */ }
   try { db.exec('ALTER TABLE projects ADD COLUMN first_seen_at INTEGER'); } catch { /* already exists */ }
   try { db.exec('ALTER TABLE projects ADD COLUMN last_seen_at INTEGER'); } catch { /* already exists */ }
@@ -64,6 +75,7 @@ function getDB(): Database {
       deadline INTEGER,
       creator_name TEXT,
       creator_slug TEXT,
+      creator_url TEXT,
       source_url TEXT,
       slug TEXT,
       image_url TEXT,
@@ -110,6 +122,15 @@ function getDB(): Database {
       used INTEGER DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS idx_otps_email ON email_otps(email);
+
+    CREATE TABLE IF NOT EXISTS pending_registrations (
+      email TEXT PRIMARY KEY,
+      username TEXT NOT NULL,
+      password_hash TEXT NOT NULL,
+      code TEXT NOT NULL,
+      expires_at INTEGER NOT NULL,
+      created_at INTEGER DEFAULT (unixepoch())
+    );
 
     CREATE TABLE IF NOT EXISTS tracking_settings (
       project_id TEXT PRIMARY KEY,
@@ -391,7 +412,9 @@ export async function getProjects(filter: ProjectFilter = {}) {
             p.category_parent, p.category_name, p.goal,
             p.pledged, p.usd_pledged,
             COALESCE(s.snap_backers, p.backers_count) as backers_count,
-            p.staff_pick, p.launched_at, p.deadline, p.source_url, p.slug,
+            p.staff_pick, p.launched_at, p.deadline,
+            p.creator_name, p.creator_slug, p.creator_url,
+            p.source_url, p.slug,
             p.image_url, p.image_thumb_url, p.data_source,
             CASE
               WHEN s.source = 'kicktraq_active' AND COALESCE(p.currency, 'USD') <> 'USD' THEN NULL
@@ -512,12 +535,12 @@ export function upsertBatch(db: Database, rows: Record<string, unknown>[]): void
     INSERT INTO projects
       (id, name, blurb, goal, pledged, usd_pledged, state, country, country_name,
        currency, category_id, category_name, category_parent, backers_count,
-       staff_pick, created_at, launched_at, deadline, creator_name, creator_slug, source_url, slug,
+       staff_pick, created_at, launched_at, deadline, creator_name, creator_slug, creator_url, source_url, slug,
        image_url, image_thumb_url, data_source, first_seen_at, last_seen_at, webrobots_synced_at, ks_live_synced_at)
     VALUES
       (@id, @name, @blurb, @goal, @pledged, @usd_pledged, @state, @country, @country_name,
        @currency, @category_id, @category_name, @category_parent, @backers_count,
-       @staff_pick, @created_at, @launched_at, @deadline, @creator_name, @creator_slug, @source_url, @slug,
+       @staff_pick, @created_at, @launched_at, @deadline, @creator_name, @creator_slug, @creator_url, @source_url, @slug,
        @image_url, @image_thumb_url, @data_source, @first_seen_at, @last_seen_at, @webrobots_synced_at, @ks_live_synced_at)
     ON CONFLICT(id) DO UPDATE SET
       name = excluded.name,
@@ -539,6 +562,7 @@ export function upsertBatch(db: Database, rows: Record<string, unknown>[]): void
       deadline = COALESCE(excluded.deadline, projects.deadline),
       creator_name = COALESCE(excluded.creator_name, projects.creator_name),
       creator_slug = COALESCE(excluded.creator_slug, projects.creator_slug),
+      creator_url = COALESCE(excluded.creator_url, projects.creator_url),
       source_url = COALESCE(excluded.source_url, projects.source_url),
       slug = COALESCE(excluded.slug, projects.slug),
       image_url = COALESCE(excluded.image_url, projects.image_url),
@@ -566,6 +590,7 @@ export function upsertBatch(db: Database, rows: Record<string, unknown>[]): void
         last_seen_at: row.last_seen_at ?? now,
         webrobots_synced_at: row.webrobots_synced_at ?? (dataSource === 'webrobots' ? now : null),
         ks_live_synced_at: row.ks_live_synced_at ?? (dataSource === 'ks_live' ? now : null),
+        creator_url: row.creator_url ?? null,
         image_url: row.image_url ?? null,
         image_thumb_url: row.image_thumb_url ?? null,
       });
@@ -695,6 +720,9 @@ export function updateProjectLiveMetadata(projectId: string, data: {
   goal_usd?: number | null;
   pledged_usd?: number | null;
   backers_count?: number | null;
+  creator_name?: string | null;
+  creator_slug?: string | null;
+  creator_url?: string | null;
   image_url?: string | null;
   image_thumb_url?: string | null;
 }) {
@@ -706,6 +734,9 @@ export function updateProjectLiveMetadata(projectId: string, data: {
       goal = CASE WHEN @goal_usd IS NOT NULL THEN @goal_usd ELSE goal END,
       usd_pledged = CASE WHEN @pledged_usd IS NOT NULL THEN @pledged_usd ELSE usd_pledged END,
       backers_count = CASE WHEN @backers_count IS NOT NULL THEN @backers_count ELSE backers_count END,
+      creator_name = COALESCE(@creator_name, creator_name),
+      creator_slug = COALESCE(@creator_slug, creator_slug),
+      creator_url = COALESCE(@creator_url, creator_url),
       image_url = COALESCE(@image_url, image_url),
       image_thumb_url = COALESCE(@image_thumb_url, image_thumb_url),
       last_seen_at = unixepoch()
@@ -718,6 +749,9 @@ export function updateProjectLiveMetadata(projectId: string, data: {
     goal_usd: data.goal_usd ?? null,
     pledged_usd: data.pledged_usd ?? null,
     backers_count: data.backers_count ?? null,
+    creator_name: data.creator_name ?? null,
+    creator_slug: data.creator_slug ?? null,
+    creator_url: data.creator_url ?? null,
     image_url: data.image_url ?? null,
     image_thumb_url: data.image_thumb_url ?? null,
   });
@@ -1195,7 +1229,7 @@ export async function getProjectById(id: string) {
     `SELECT id, name, blurb, state, country, country_name, currency,
             category_id, category_parent, category_name, goal, pledged, usd_pledged,
             backers_count, staff_pick, created_at, launched_at, deadline,
-            creator_name, creator_slug, source_url, slug, image_url, image_thumb_url
+            creator_name, creator_slug, creator_url, source_url, slug, image_url, image_thumb_url
      FROM projects WHERE id = ?`
   ).get(id) ?? null;
 }

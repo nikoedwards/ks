@@ -27,7 +27,18 @@ function generateToken(): string {
 }
 
 function ensureAuthMigrations(db: BetterSqlite3.Database) {
+  try { db.exec('ALTER TABLE users ADD COLUMN email_verified INTEGER DEFAULT 1'); } catch { /* already exists */ }
   try { db.exec("ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'"); } catch { /* already exists */ }
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS pending_registrations (
+      email TEXT PRIMARY KEY,
+      username TEXT NOT NULL,
+      password_hash TEXT NOT NULL,
+      code TEXT NOT NULL,
+      expires_at INTEGER NOT NULL,
+      created_at INTEGER DEFAULT (unixepoch())
+    );
+  `);
   const adminEmail = process.env.ADMIN_EMAIL?.trim().toLowerCase();
   if (adminEmail) {
     db.prepare("UPDATE users SET role = 'admin' WHERE lower(email) = ?").run(adminEmail);
@@ -52,7 +63,7 @@ export function createUser(username: string, password: string, email?: string): 
 export function createUserByEmail(email: string, password: string): AuthUser {
   const db = getDB();
   const hash = hashPassword(password);
-  const username = email.split('@')[0].replace(/[^a-zA-Z0-9_]/g, '');
+  const username = uniqueUsername(db, usernameFromEmail(email));
   const result = db.prepare(
     `INSERT INTO users (username, email, password_hash, email_verified) VALUES (?, ?, ?, 0)`
   ).run(username, email.trim().toLowerCase(), hash);
@@ -63,14 +74,29 @@ export function activateUser(email: string) {
   getDB().prepare(`UPDATE users SET email_verified = 1 WHERE email = ?`).run(email.trim().toLowerCase());
 }
 
+function usernameFromEmail(email: string): string {
+  return email.split('@')[0].replace(/[^a-zA-Z0-9_]/g, '').slice(0, 32) || 'user';
+}
+
+function uniqueUsername(db: BetterSqlite3.Database, base: string): string {
+  let username = base;
+  let suffix = 1;
+  while (db.prepare(`SELECT 1 FROM users WHERE username = ?`).get(username)) {
+    suffix += 1;
+    username = `${base}${suffix}`;
+  }
+  return username;
+}
+
 // ── Lookup helpers ─────────────────────────────────────────────────────────────
 
 export function verifyUser(username: string, password: string): AuthUser | null {
   const db = getDB();
-  const user = db.prepare(`SELECT id, username, email, role, password_hash FROM users WHERE username = ?`).get(username.trim()) as
-    ({ id: number; username: string; email: string | null; role: UserRole; password_hash: string }) | undefined;
+  const user = db.prepare(`SELECT id, username, email, role, password_hash, email_verified FROM users WHERE username = ?`).get(username.trim()) as
+    ({ id: number; username: string; email: string | null; role: UserRole; password_hash: string; email_verified: number }) | undefined;
   if (!user) return null;
   if (user.password_hash !== hashPassword(password)) return null;
+  if (user.email_verified !== 1) return null;
   return { id: user.id, username: user.username, email: user.email, role: user.role ?? 'user' };
 }
 
@@ -80,6 +106,7 @@ export function verifyUserByEmail(email: string, password: string): AuthUser | n
     ({ id: number; username: string; email: string | null; role: UserRole; password_hash: string; email_verified: number }) | undefined;
   if (!user) return null;
   if (user.password_hash !== hashPassword(password)) return null;
+  if (user.email_verified !== 1) return null;
   return { id: user.id, username: user.username, email: user.email, role: user.role ?? 'user' };
 }
 
@@ -100,6 +127,54 @@ export function createOtp(email: string): string {
   const expiresAt = Math.floor(Date.now() / 1000) + 10 * 60; // 10 min
   db.prepare(`INSERT INTO email_otps (email, code, expires_at) VALUES (?, ?, ?)`).run(email.toLowerCase(), code, expiresAt);
   return code;
+}
+
+export function createPendingRegistration(email: string, password: string): string {
+  const db = getDB();
+  const normalizedEmail = email.trim().toLowerCase();
+  const code = Math.floor(100000 + Math.random() * 900000).toString();
+  const expiresAt = Math.floor(Date.now() / 1000) + 10 * 60;
+  const username = usernameFromEmail(normalizedEmail);
+  const hash = hashPassword(password);
+  db.prepare(`DELETE FROM pending_registrations WHERE email = ?`).run(normalizedEmail);
+  db.prepare(
+    `INSERT INTO pending_registrations (email, username, password_hash, code, expires_at)
+     VALUES (?, ?, ?, ?, ?)`
+  ).run(normalizedEmail, username, hash, code, expiresAt);
+  return code;
+}
+
+export function deletePendingRegistration(email: string): void {
+  getDB().prepare(`DELETE FROM pending_registrations WHERE email = ?`).run(email.trim().toLowerCase());
+}
+
+export function completePendingRegistration(email: string, code: string): AuthUser | null {
+  const db = getDB();
+  const normalizedEmail = email.trim().toLowerCase();
+  const now = Math.floor(Date.now() / 1000);
+  const pending = db.prepare(
+    `SELECT email, username, password_hash FROM pending_registrations
+     WHERE email = ? AND code = ? AND expires_at > ?`
+  ).get(normalizedEmail, code.trim(), now) as
+    ({ email: string; username: string; password_hash: string }) | undefined;
+  if (!pending) return null;
+  if (emailExists(normalizedEmail)) {
+    deletePendingRegistration(normalizedEmail);
+    return null;
+  }
+
+  const createVerifiedUser = db.transaction(() => {
+    const username = uniqueUsername(db, pending.username);
+    const result = db.prepare(
+      `INSERT INTO users (username, email, password_hash, email_verified)
+       VALUES (?, ?, ?, 1)`
+    ).run(username, normalizedEmail, pending.password_hash);
+    db.prepare(`DELETE FROM pending_registrations WHERE email = ?`).run(normalizedEmail);
+    db.prepare(`DELETE FROM email_otps WHERE email = ?`).run(normalizedEmail);
+    return { id: Number(result.lastInsertRowid), username, email: normalizedEmail, role: 'user' as UserRole };
+  });
+
+  return createVerifiedUser();
 }
 
 export function verifyOtp(email: string, code: string): boolean {

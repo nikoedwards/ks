@@ -62,11 +62,8 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
 }
 
 // POST /api/track/[id] → trigger immediate scrape
-export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+export async function POST(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const token = req.cookies.get(SESSION_COOKIE)?.value;
-  const user = token ? getSessionUser(token) : null;
-  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
   const project = await getProjectById(id) as { source_url?: string; creator_slug?: string; slug?: string } | null;
   if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 });
@@ -90,5 +87,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     track_text_diff: settings?.track_text_diff ?? 1,
   });
 
-  return NextResponse.json({ ok, scraped: ok });
+  return NextResponse.json({
+    ok,
+    scraped: ok,
+    message: ok
+      ? 'Synced from Kickstarter.'
+      : 'Kickstarter did not return readable JSON for this project. It may be blocked by Cloudflare from the server environment.',
+  });
 }

@@ -67,16 +67,19 @@ function parseRecord(raw: RawRecord): Record<string, unknown> | null {
 
   let creator_name: string | null = null;
   let creator_slug: string | null = null;
+  let creator_url: string | null = null;
   try {
     const creatorJson = JSON.parse(raw.creator || '{}');
     creator_name = creatorJson.name ?? null;
     creator_slug = creatorJson.slug ?? null;
+    creator_url = creatorJson.urls?.web?.user ?? null;
   } catch { /* ignore */ }
 
   const goal = parseFloat(raw.goal || '0') || 0;
   const pledged = parseFloat(raw.pledged || '0') || 0;
   const usd_rate = parseFloat(raw.static_usd_rate || '1') || 1;
   const usd_pledged = parseFloat(raw.usd_pledged || String(pledged * usd_rate)) || 0;
+  const goal_usd = goal * usd_rate;
 
   const projectSlug = raw.slug ?? null;
   const source_url = creator_slug && projectSlug
@@ -87,7 +90,7 @@ function parseRecord(raw: RawRecord): Record<string, unknown> | null {
     id: raw.id,
     name: raw.name.slice(0, 500),
     blurb: raw.blurb?.slice(0, 1000) ?? null,
-    goal, pledged, usd_pledged,
+    goal: goal_usd, pledged, usd_pledged,
     state: raw.state,
     country: raw.country ?? null,
     country_name: raw.country_displayable_name ?? null,
@@ -100,6 +103,7 @@ function parseRecord(raw: RawRecord): Record<string, unknown> | null {
     deadline: raw.deadline ? parseInt(raw.deadline) || null : null,
     creator_name,
     creator_slug,
+    creator_url: creator_url ?? (creator_slug ? `https://www.kickstarter.com/profile/${creator_slug}` : null),
     source_url,
     slug: projectSlug,
   };

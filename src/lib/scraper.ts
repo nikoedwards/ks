@@ -39,7 +39,7 @@ interface KSProject {
   updates_count?: number;
   deadline?: number;
   rewards?: KSReward[];
-  creator?: { name?: string; slug?: string };
+  creator?: { name?: string; slug?: string; urls?: { web?: { user?: string } } };
   photo?: {
     full?: string;
     little?: string;
@@ -50,6 +50,14 @@ interface KSProject {
     '1024x576'?: string;
     '1536x864'?: string;
   };
+}
+
+interface KicktraqSummary {
+  pledged_usd: number;
+  backers_count: number;
+  goal_usd: number;
+  currency: string | null;
+  deadline?: number | null;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -89,6 +97,83 @@ function resolveUsdAmounts(p: KSProject): { pledgedUsd: number; goalUsd: number 
 function daysToGo(deadline: number | undefined): number {
   if (!deadline) return 0;
   return Math.max(0, Math.round((deadline * 1000 - Date.now()) / 86_400_000));
+}
+
+function stripTags(value: string) {
+  return value.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function parseMoney(raw: string | undefined): { amount: number; currency: string | null } {
+  if (!raw) return { amount: 0, currency: null };
+  const lowered = raw.toLowerCase();
+  let multiplier = 1;
+  if (lowered.includes('million') || /\bm\b/.test(lowered)) multiplier = 1_000_000;
+  if (lowered.includes('thousand') || /\bk\b/.test(lowered)) multiplier = 1_000;
+  let currency: string | null = null;
+  if (/hk\$/i.test(raw)) currency = 'HKD';
+  else if (/us\$/i.test(raw) || /\busd\b/i.test(raw)) currency = 'USD';
+  else if (/a\$/i.test(raw)) currency = 'AUD';
+  else if (/c\$/i.test(raw)) currency = 'CAD';
+  else if (/[\u00a5\uffe5]|jpy/i.test(raw)) currency = 'JPY';
+  else if (/[\u00a3]|gbp/i.test(raw)) currency = 'GBP';
+  else if (/[\u20ac]|eur/i.test(raw)) currency = 'EUR';
+  else if (raw.includes('$')) currency = 'USD';
+  return { amount: (parseFloat(raw.replace(/[^\d.-]/g, '')) || 0) * multiplier, currency };
+}
+
+function parseKicktraqSummary(html: string): KicktraqSummary | null {
+  const details = stripTags(html.match(/<div class="project-details">([\s\S]*?)<\/div>/i)?.[1] ?? html);
+  const backers = parseInt(details.match(/Backers:\s*([\d,]+)/i)?.[1]?.replace(/,/g, '') ?? '0') || 0;
+  const fundingMatch = details.match(/Funding:\s*([^<]+?)\s+of\s+([^<(]+)\s*\(/i);
+  const pledged = parseMoney(fundingMatch?.[1]);
+  const goal = parseMoney(fundingMatch?.[2]);
+  if (pledged.amount <= 0 && backers <= 0) return null;
+  const currency = pledged.currency ?? goal.currency;
+  return {
+    pledged_usd: currency === 'USD' ? pledged.amount : 0,
+    backers_count: backers,
+    goal_usd: currency === 'USD' ? goal.amount : 0,
+    currency,
+  };
+}
+
+export async function scrapeKicktraqProjectSummary(creatorSlug: string, projectSlug: string): Promise<KicktraqSummary | null> {
+  const pageUrl = 'https://www.kicktraq.com/projects/' + creatorSlug + '/' + projectSlug + '/';
+  try {
+    const res = await fetch(pageUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'text/html,application/xhtml+xml',
+      },
+      signal: AbortSignal.timeout(20_000),
+      cache: 'no-store',
+    });
+    if (!res.ok) return null;
+    return parseKicktraqSummary(await res.text());
+  } catch {
+    return null;
+  }
+}
+
+export function storeKicktraqSummary(projectId: string, summary: KicktraqSummary) {
+  const now = Math.floor(Date.now() / 1000);
+  insertSnapshot({
+    project_id: projectId,
+    captured_at: now,
+    pledged_usd: summary.pledged_usd,
+    backers_count: summary.backers_count,
+    days_to_go: summary.deadline ? daysToGo(summary.deadline) : 0,
+    comments_count: 0,
+    updates_count: 0,
+    state: 'live',
+    source: 'kicktraq_summary',
+  });
+  updateProjectLiveMetadata(projectId, {
+    goal_usd: summary.goal_usd > 0 ? summary.goal_usd : null,
+    pledged_usd: summary.pledged_usd > 0 ? summary.pledged_usd : null,
+    backers_count: summary.backers_count > 0 ? summary.backers_count : null,
+  });
+  markFetched(projectId);
 }
 
 // ─── KS JSON scraper ─────────────────────────────────────────────────────────
@@ -152,6 +237,9 @@ export async function scrapeAndStore(projectId: string, jsonUrl: string, opts: S
     goal_usd: goalUsd > 0 ? goalUsd : null,
     pledged_usd: safePledgedUsd > 0 ? safePledgedUsd : null,
     backers_count: safeBackers > 0 ? safeBackers : null,
+    creator_name: p.creator?.name ?? null,
+    creator_slug: p.creator?.slug ?? null,
+    creator_url: p.creator?.urls?.web?.user ?? (p.creator?.slug ? `https://www.kickstarter.com/profile/${p.creator.slug}` : null),
     image_url: p.photo?.full ?? p.photo?.['1536x864'] ?? p.photo?.['1024x576'] ?? p.photo?.ed ?? p.photo?.med ?? p.photo?.small ?? null,
     image_thumb_url: p.photo?.little ?? p.photo?.thumb ?? p.photo?.small ?? p.photo?.ed ?? p.photo?.med ?? p.photo?.full ?? null,
   });

@@ -16,6 +16,7 @@ interface Project {
   state: string;
   country: string;
   country_name: string;
+  currency: string;
   category_parent: string;
   category_name: string;
   goal: number;
@@ -25,6 +26,9 @@ interface Project {
   staff_pick: number;
   launched_at: number;
   deadline: number;
+  creator_name?: string;
+  creator_slug?: string;
+  creator_url?: string;
   source_url: string;
   slug: string;
   data_source?: string;
@@ -46,10 +50,29 @@ const STATE_BADGE: Record<string, string> = {
   suspended: 'bg-purple-50 text-purple-600',
 };
 
-function fmtUsd(v: number) {
-  if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(1)}M`;
-  if (v >= 1_000) return `$${(v / 1_000).toFixed(1)}K`;
-  return `$${v.toFixed(0)}`;
+function fmtMoney(v: number, currency = 'USD') {
+  const symbols: Record<string, string> = { USD: '$', HKD: 'HK$', AUD: 'A$', CAD: 'C$', GBP: '£', EUR: '€', JPY: '¥' };
+  const prefix = symbols[currency] ?? `${currency} `;
+  const sign = v < 0 ? '-' : '';
+  const abs = Math.abs(v);
+  if (abs >= 1_000_000) return `${sign}${prefix}${(abs / 1_000_000).toFixed(1)}M`;
+  if (abs >= 1_000) return `${sign}${prefix}${(abs / 1_000).toFixed(1)}K`;
+  return `${sign}${prefix}${abs.toFixed(0)}`;
+}
+
+function projectMoney(p: Project) {
+  const nativeCurrency = p.currency || 'USD';
+  const looksNative = nativeCurrency !== 'USD'
+    && p.usd_pledged > 0
+    && (p.pledged <= 0 || p.usd_pledged >= p.pledged * 0.8);
+  if (looksNative) {
+    return { pledged: p.live_pledged_usd ?? p.usd_pledged, goal: p.goal, currency: nativeCurrency };
+  }
+  const pledged = p.live_pledged_usd ?? p.usd_pledged;
+  const inferredGoal = nativeCurrency !== 'USD' && p.pledged > 0 && p.usd_pledged > 0 && p.usd_pledged < p.pledged
+    ? p.goal * (p.usd_pledged / p.pledged)
+    : p.goal;
+  return { pledged, goal: inferredGoal, currency: 'USD' };
 }
 
 function fmtDate(ts: number) {
@@ -67,7 +90,8 @@ function calcDays(p: Project): number | null {
 function exportCsv(rows: Project[], filename = 'kicksonar-export.csv') {
   const headers = ['#', 'ID', 'Name', 'State', 'Category', 'Goal (USD)', 'Pledged (USD)', 'Funded %', 'Backers', 'Days', 'Country', 'Launched', 'URL'];
   const csvRows = rows.map((p, i) => {
-    const fundingRate = p.goal > 0 ? ((p.usd_pledged / p.goal) * 100).toFixed(1) : '0';
+    const money = projectMoney(p);
+    const fundingRate = money.goal > 0 ? ((money.pledged / money.goal) * 100).toFixed(1) : '0';
     const days = calcDays(p) ?? '';
     const launched = p.launched_at ? new Date(p.launched_at * 1000).toISOString().slice(0, 10) : '';
     const url = p.source_url?.startsWith('https://www.kickstarter.com/projects/') ? p.source_url : '';
@@ -75,7 +99,7 @@ function exportCsv(rows: Project[], filename = 'kicksonar-export.csv') {
       i + 1, p.id,
       `"${(p.name || '').replace(/"/g, '""')}"`,
       p.state, p.category_parent,
-      p.goal, p.usd_pledged, fundingRate,
+      money.goal, money.pledged, fundingRate,
       p.backers_count, days, p.country, launched,
       `"${url}"`,
     ].join(',');
@@ -429,11 +453,12 @@ export default function ProjectsPage() {
               </button>
             </div>
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[1580px] table-fixed text-sm">
+              <table className="w-full min-w-[1720px] table-fixed text-sm">
                 <colgroup>
                   <col className="w-12" />
                   <col className="w-14" />
                   <col className="w-[420px]" />
+                  <col className="w-36" />
                   <col className="w-28" />
                   <col className="w-40" />
                   <col className="w-28" />
@@ -458,6 +483,7 @@ export default function ProjectsPage() {
                     </th>
                     <th className="px-4 py-3 whitespace-nowrap align-middle">#</th>
                     <th className="px-4 py-3 whitespace-nowrap align-middle">{tr.colName}</th>
+                    <th className="px-4 py-3 whitespace-nowrap align-middle">Creator</th>
                     <th className="px-4 py-3 whitespace-nowrap align-middle">{tr.colStatus}</th>
                     <th className="px-4 py-3 whitespace-nowrap align-middle">{tr.colCategory}</th>
                     <SortableTh col={colSortKey['goal']} right>{tr.colGoal}</SortableTh>
@@ -474,8 +500,10 @@ export default function ProjectsPage() {
                   {currentRows.map((p, i) => {
                     const rowNum = (page - 1) * 20 + i + 1;
                     const days = calcDays(p);
+                    const money = projectMoney(p);
                     const ksUrl = p.source_url?.startsWith('https://www.kickstarter.com/projects/')
                       ? p.source_url : null;
+                    const creatorUrl = p.creator_url || (p.creator_slug ? `https://www.kickstarter.com/profile/${p.creator_slug}` : null);
                     const selected = selectedIds.has(p.id);
                     return (
                       <tr key={p.id} className={`transition-colors ${selected ? 'bg-ks-green-light/40' : 'hover:bg-gray-50/80'}`}>
@@ -496,6 +524,17 @@ export default function ProjectsPage() {
                             <div className="text-xs text-gray-400 max-w-xs truncate mt-0.5">{p.blurb}</div>
                           </Link>
                         </td>
+                        <td className="px-4 py-3">
+                          {p.creator_name && creatorUrl ? (
+                            <a href={creatorUrl} target="_blank" rel="noopener noreferrer"
+                              className="inline-flex max-w-[8rem] items-center gap-1 text-xs font-medium text-gray-600 hover:text-ks-green transition-colors">
+                              <span className="truncate">{p.creator_name}</span>
+                              <ExternalLink className="w-3 h-3 shrink-0" />
+                            </a>
+                          ) : (
+                            <span className="block max-w-[8rem] truncate text-xs text-gray-400">{p.creator_name || '-'}</span>
+                          )}
+                        </td>
                         <td className="px-4 py-3 whitespace-nowrap">
                           <span className={`px-2 py-0.5 rounded-full text-xs ${STATE_BADGE[p.state] ?? 'bg-gray-100 text-gray-600'}`}>
                             {stateTr[p.state as keyof typeof stateTr] ?? p.state}
@@ -508,10 +547,10 @@ export default function ProjectsPage() {
                           <div className="text-xs text-gray-700 font-medium">{p.category_parent}</div>
                           <div className="text-xs text-gray-400">{p.category_name}</div>
                         </td>
-                        <td className="px-4 py-3 text-right font-mono text-gray-500 text-xs">{fmtUsd(p.goal)}</td>
+                        <td className="px-4 py-3 text-right font-mono text-gray-500 text-xs">{fmtMoney(money.goal, money.currency)}</td>
                         <td className="px-4 py-3 text-right">
                           <div className="font-mono text-gray-900 font-semibold">
-                            {fmtUsd(p.live_pledged_usd ?? p.usd_pledged)}
+                            {fmtMoney(money.pledged, money.currency)}
                           </div>
                           {p.live_pledged_usd != null && p.live_captured_at && (
                             <div className="text-xs text-blue-500 mt-0.5 flex items-center justify-end gap-1">
@@ -522,8 +561,7 @@ export default function ProjectsPage() {
                         </td>
                         <td className="px-4 py-3 text-right">
                           {(() => {
-                            const pledged = p.live_pledged_usd ?? p.usd_pledged;
-                            const fundingRate = p.goal > 0 ? (pledged / p.goal) * 100 : 0;
+                            const fundingRate = money.goal > 0 ? (money.pledged / money.goal) * 100 : 0;
                             return (
                               <span className={`font-semibold text-xs ${fundingRate >= 100 ? 'text-ks-green' : 'text-gray-500'}`}>
                                 {fundingRate >= 1000 ? '>1000' : fundingRate.toFixed(0)}%

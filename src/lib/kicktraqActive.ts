@@ -83,7 +83,9 @@ function parseMoneySafe(raw: string | undefined): { amount: number; currency: st
   if (!raw) return { amount: 0, currency: null };
   const amount = parseFloat(raw.replace(/[^\d.-]/g, '')) || 0;
   let currency: string | null = null;
-  if (/A\$/i.test(raw)) currency = 'AUD';
+  if (/HK\$/i.test(raw)) currency = 'HKD';
+  else if (/US\$/i.test(raw) || /\bUSD\b/i.test(raw)) currency = 'USD';
+  else if (/A\$/i.test(raw)) currency = 'AUD';
   else if (/C\$/i.test(raw)) currency = 'CAD';
   else if (raw.includes('$')) currency = 'USD';
   else if (/[\u00a5\uffe5]|JPY|¥/i.test(raw)) currency = 'JPY';
@@ -210,6 +212,7 @@ function toProjectRows(projects: KicktraqListProject[], now: number): Record<str
     deadline: project.deadline,
     creator_name: project.creator_slug,
     creator_slug: project.creator_slug,
+    creator_url: `https://www.kickstarter.com/profile/${project.creator_slug}`,
     source_url: project.source_url,
     slug: project.slug,
     data_source: 'kicktraq_active',

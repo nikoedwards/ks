@@ -40,7 +40,7 @@ export interface KSDiscoverProject {
   backers_count?: number;
   comments_count?: number;
   updates_count?: number;
-  creator?: { name?: string; slug?: string };
+  creator?: { name?: string; slug?: string; urls?: { web?: { user?: string } } };
   category?: KSCategory;
   photo?: {
     full?: string;
@@ -144,6 +144,7 @@ function normalizeProject(project: KSDiscoverProject, now: number): Record<strin
     deadline: project.deadline ?? null,
     creator_name: project.creator?.name ?? null,
     creator_slug: project.creator?.slug ?? null,
+    creator_url: project.creator?.urls?.web?.user ?? (project.creator?.slug ? `https://www.kickstarter.com/profile/${project.creator.slug}` : null),
     source_url: sourceUrl,
     slug,
     image_url: image.image_url,

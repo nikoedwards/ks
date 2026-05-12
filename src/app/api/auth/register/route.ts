@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createUserByEmail, emailExists, createOtp } from '@/lib/auth';
+import { createPendingRegistration, deletePendingRegistration, emailExists } from '@/lib/auth';
 import { sendOtpEmail } from '@/lib/email';
 
 export const runtime = 'nodejs';
@@ -13,9 +13,15 @@ export async function POST(req: NextRequest) {
     if (password.length < 6) return NextResponse.json({ error: 'Password must be at least 6 characters.' }, { status: 400 });
     if (emailExists(email)) return NextResponse.json({ error: 'This email is already registered.' }, { status: 409 });
 
-    createUserByEmail(email, password);
-    const code = createOtp(email);
-    await sendOtpEmail(email, code);
+    const normalizedEmail = email.trim().toLowerCase();
+    const code = createPendingRegistration(normalizedEmail, password);
+    try {
+      await sendOtpEmail(normalizedEmail, code);
+    } catch (err) {
+      deletePendingRegistration(normalizedEmail);
+      const message = err instanceof Error ? err.message : String(err);
+      return NextResponse.json({ error: `Could not send verification email: ${message}` }, { status: 502 });
+    }
 
     return NextResponse.json({ ok: true, needsOtp: true });
   } catch (err) {

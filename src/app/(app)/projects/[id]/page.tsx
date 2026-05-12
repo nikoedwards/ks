@@ -23,7 +23,7 @@ interface Project {
   category_parent: string; category_name: string; category_id: number;
   goal: number; pledged: number; usd_pledged: number; backers_count: number;
   staff_pick: number; created_at: number; launched_at: number; deadline: number;
-  creator_name: string; creator_slug?: string; source_url: string; slug: string;
+  creator_name: string; creator_slug?: string; creator_url?: string; source_url: string; slug: string;
   similar?: SimilarProject[];
 }
 
@@ -71,10 +71,18 @@ type TabId = typeof TAB_IDS[number];
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
+function fmtMoney(v: number, currency = 'USD') {
+  const symbols: Record<string, string> = { USD: '$', HKD: 'HK$', AUD: 'A$', CAD: 'C$', GBP: '£', EUR: '€', JPY: '¥' };
+  const prefix = symbols[currency] ?? `${currency} `;
+  const sign = v < 0 ? '-' : '';
+  const abs = Math.abs(v);
+  if (abs >= 1_000_000) return `${sign}${prefix}${(abs / 1_000_000).toFixed(2)}M`;
+  if (abs >= 1_000) return `${sign}${prefix}${(abs / 1_000).toFixed(1)}K`;
+  return `${sign}${prefix}${abs.toLocaleString()}`;
+}
+
 function fmtUsd(v: number) {
-  if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(2)}M`;
-  if (v >= 1_000) return `$${(v / 1_000).toFixed(1)}K`;
-  return `$${v.toLocaleString()}`;
+  return fmtMoney(v, 'USD');
 }
 
 function fmtDate(ts: number | null, lang: string) {
@@ -168,6 +176,7 @@ export default function ProjectDetailPage() {
   const [scraping, setScraping] = useState(false);
   const [autoSyncAttempted, setAutoSyncAttempted] = useState(false);
   const [ktImporting, setKtImporting] = useState(false);
+  const [syncError, setSyncError] = useState('');
 
   // Snapshot data
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
@@ -199,13 +208,17 @@ export default function ProjectDetailPage() {
   };
 
   // ── Fetch project ──────────────────────────────────────────────────────────
-  useEffect(() => {
+  const loadProject = useCallback(() => {
     if (!id) return;
     fetch(`/api/projects/${id}`)
       .then(r => { if (r.status === 404) { setNotFound(true); setLoading(false); return null; } return r.json(); })
       .then(d => { if (d) setProject(d); setLoading(false); })
       .catch(() => setLoading(false));
   }, [id]);
+
+  useEffect(() => {
+    loadProject();
+  }, [loadProject]);
 
   // ── Fetch favorites ────────────────────────────────────────────────────────
   useEffect(() => {
@@ -277,18 +290,27 @@ export default function ProjectDetailPage() {
   };
 
   const triggerScrape = async () => {
-    if (!user) { showLogin(); return; }
     if (!id) return;
     setScraping(true);
-    await fetch(`/api/track/${id}`, { method: 'POST' });
-    await new Promise(r => setTimeout(r, 1500));
-    loadSnapshots();
-    await loadTracking();
+    setSyncError('');
+    try {
+      const res = await fetch(`/api/track/${id}`, { method: 'POST' });
+      const data = await res.json().catch(() => ({})) as { ok?: boolean; message?: string; error?: string };
+      if (!res.ok || !data.ok) {
+        setSyncError(data.message ?? data.error ?? 'Sync failed');
+      }
+      await new Promise(r => setTimeout(r, 500));
+      await loadProject();
+      loadSnapshots();
+      await loadTracking();
+    } catch {
+      setSyncError('Network error - please try again.');
+    }
     setScraping(false);
   };
 
   useEffect(() => {
-    if (autoSyncAttempted || !user || !project || project.state !== 'live' || scraping) return;
+    if (autoSyncAttempted || !project || project.state !== 'live' || scraping) return;
     const latestKsSnapshot = [...snapshots].reverse().find(s => s.source !== 'kicktraq_active');
     const freshEnough = latestKsSnapshot && (Date.now() / 1000 - latestKsSnapshot.captured_at) < 30 * 60;
     if (freshEnough) return;
@@ -365,17 +387,31 @@ export default function ProjectDetailPage() {
   );
   if (!project) return null;
 
-  const latestSnapshot = [...snapshots].reverse().find(s => s.pledged_usd > 0);
-  const displayPledged = latestSnapshot?.pledged_usd ?? project.usd_pledged;
-  const displayBackers = latestSnapshot?.backers_count ?? project.backers_count;
-  const displayGoal = project.goal;
-  const displayGoalText = displayGoal > 0 ? fmtUsd(displayGoal) : (lang === 'cn' ? '未知' : 'unknown');
+  const newestSnapshots = [...snapshots].reverse();
+  const nativeCurrency = project.currency || 'USD';
+  const latestNativeKicktraqSnapshot = nativeCurrency !== 'USD'
+    ? newestSnapshots.find(s => s.source === 'kicktraq_active' && s.pledged_usd > 0)
+    : null;
+  const latestUsdSnapshot = newestSnapshots.find(s => s.pledged_usd > 0 && !(s.source === 'kicktraq_active' && nativeCurrency !== 'USD'));
+  const nativeKicktraqLooksCurrent = !!latestNativeKicktraqSnapshot
+    && Math.abs(project.usd_pledged - latestNativeKicktraqSnapshot.pledged_usd) / Math.max(1, latestNativeKicktraqSnapshot.pledged_usd) < 0.02;
+  const displayCurrency = nativeKicktraqLooksCurrent ? nativeCurrency : 'USD';
+  const displayPledged = nativeKicktraqLooksCurrent
+    ? latestNativeKicktraqSnapshot!.pledged_usd
+    : latestUsdSnapshot?.pledged_usd ?? project.usd_pledged;
+  const displayBackers = (nativeKicktraqLooksCurrent ? latestNativeKicktraqSnapshot?.backers_count : latestUsdSnapshot?.backers_count) ?? project.backers_count;
+  const inferredGoalUsd = nativeCurrency !== 'USD' && project.pledged > 0 && project.usd_pledged > 0 && project.usd_pledged < project.pledged
+    ? project.goal * (project.usd_pledged / project.pledged)
+    : project.goal;
+  const displayGoal = nativeKicktraqLooksCurrent ? project.goal : inferredGoalUsd;
+  const displayGoalText = displayGoal > 0 ? fmtMoney(displayGoal, displayCurrency) : (lang === 'cn' ? '未知' : 'unknown');
   const fundingRate = displayGoal > 0 ? (displayPledged / displayGoal) * 100 : 0;
   const duration = calcDuration(project);
   const avgDailyPledged = duration && duration > 0 ? displayPledged / duration : null;
   const timeLeft = fmtTimeLeft(project.deadline, lang);
   const grade = fundingGrade(fundingRate);
   const ksUrl = project.source_url?.startsWith('https://www.kickstarter.com/projects/') ? project.source_url : null;
+  const creatorUrl = project.creator_url || (project.creator_slug ? `https://www.kickstarter.com/profile/${project.creator_slug}` : null);
   const kicktraqUrl = project.creator_slug && project.slug ? `https://www.kicktraq.com/projects/${project.creator_slug}/${project.slug}/` : null;
   const hasRealData = snapshots.length > 0;
   const sharedTrackingActive = !!platformTracking?.is_tracking;
@@ -421,7 +457,14 @@ export default function ProjectDetailPage() {
             <h1 className="text-2xl font-bold text-white leading-snug">{project.name}</h1>
             {project.blurb && <p className="text-gray-400 mt-1 text-sm leading-relaxed">{project.blurb}</p>}
             <div className="flex items-center gap-3 mt-2 text-xs text-gray-500">
-              {project.creator_name && <span className="text-gray-300 font-medium">{project.creator_name}</span>}
+              {project.creator_name && creatorUrl ? (
+                <a href={creatorUrl} target="_blank" rel="noopener noreferrer"
+                  className="text-gray-300 font-medium hover:text-ks-green transition-colors">
+                  {project.creator_name}
+                </a>
+              ) : project.creator_name ? (
+                <span className="text-gray-300 font-medium">{project.creator_name}</span>
+              ) : null}
               <span>{project.country_name || project.country}</span>
               <span>{project.currency}</span>
               {sharedLastFetched && (
@@ -465,10 +508,16 @@ export default function ProjectDetailPage() {
           </div>
         </div>
 
+        {syncError && (
+          <div className="mb-4 rounded-lg border border-amber-700/50 bg-amber-900/30 px-3 py-2 text-xs text-amber-200">
+            {syncError}
+          </div>
+        )}
+
         {/* Stats bar */}
         <div className="flex items-center gap-8 pb-0 overflow-x-auto">
           <div className="shrink-0">
-            <p className="text-3xl font-black text-white">{fmtUsd(displayPledged)}</p>
+            <p className="text-3xl font-black text-white">{fmtMoney(displayPledged, displayCurrency)}</p>
             <p className="text-xs text-gray-500">{tr.pledgedOf(displayGoalText)}</p>
           </div>
           <div className="shrink-0">
@@ -487,7 +536,7 @@ export default function ProjectDetailPage() {
           )}
           {avgDailyPledged && (
             <div className="shrink-0">
-              <p className="text-3xl font-black text-white">{fmtUsd(avgDailyPledged)}</p>
+              <p className="text-3xl font-black text-white">{fmtMoney(avgDailyPledged, displayCurrency)}</p>
               <p className="text-xs text-gray-500">{tr.avgPerDay}</p>
             </div>
           )}
@@ -531,7 +580,7 @@ export default function ProjectDetailPage() {
                 sub={fundingRate >= 100 ? tr.exceeded : tr.belowGoal} />
               <StatCard label={tr.backersLabel} value={displayBackers.toLocaleString()}
                 sub={duration ? `${(displayBackers / Math.max(1, duration)).toFixed(1)}${tr.dayAvgSuffix}` : undefined} />
-              <StatCard label={tr.totalRaisedLabel} value={fmtUsd(displayPledged)} sub={tr.goalPrefix(displayGoalText)} />
+              <StatCard label={tr.totalRaisedLabel} value={fmtMoney(displayPledged, displayCurrency)} sub={tr.goalPrefix(displayGoalText)} />
             </div>
 
             {/* Timeline */}
@@ -577,9 +626,9 @@ export default function ProjectDetailPage() {
                       {tableData.slice(0, 30).map((s, i) => (
                         <tr key={s.captured_at} className={i % 2 === 0 ? 'bg-white' : 'bg-gray-50/50'}>
                           <td className="px-4 py-2.5 text-gray-600">{fmtDateTime(s.captured_at)}</td>
-                          <td className="px-4 py-2.5 text-right font-semibold text-gray-800">{fmtUsd(s.pledged_usd)}</td>
+                          <td className="px-4 py-2.5 text-right font-semibold text-gray-800">{fmtMoney(s.pledged_usd, s.source === 'kicktraq_active' && nativeCurrency !== 'USD' ? nativeCurrency : 'USD')}</td>
                           <td className={`px-4 py-2.5 text-right font-semibold ${s.delta_pledged == null ? 'text-gray-400' : s.delta_pledged >= 0 ? 'text-ks-green' : 'text-red-500'}`}>
-                            {s.delta_pledged == null ? '—' : `${s.delta_pledged >= 0 ? '+' : ''}${fmtUsd(s.delta_pledged)}`}
+                            {s.delta_pledged == null ? '—' : `${s.delta_pledged >= 0 ? '+' : ''}${fmtMoney(s.delta_pledged, s.source === 'kicktraq_active' && nativeCurrency !== 'USD' ? nativeCurrency : 'USD')}`}
                           </td>
                           <td className="px-4 py-2.5 text-right text-gray-700">{s.backers_count.toLocaleString()}</td>
                           <td className={`px-4 py-2.5 text-right font-semibold ${s.delta_backers == null ? 'text-gray-400' : s.delta_backers >= 0 ? 'text-ks-green' : 'text-red-500'}`}>
@@ -709,8 +758,8 @@ export default function ProjectDetailPage() {
                       </defs>
                       <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
                       <XAxis dataKey="date" tick={{ fontSize: 10 }} interval="preserveStartEnd" />
-                      <YAxis tick={{ fontSize: 10 }} tickFormatter={v => fmtUsd(v as number)} width={65} />
-                      <Tooltip formatter={(v: number) => [fmtUsd(v), 'Pledged']} />
+                      <YAxis tick={{ fontSize: 10 }} tickFormatter={v => fmtMoney(v as number, displayCurrency)} width={65} />
+                      <Tooltip formatter={(v: number) => [fmtMoney(v, displayCurrency), 'Pledged']} />
                       <Area type="monotone" dataKey="pledged" stroke="#05CE78" strokeWidth={2} fill="url(#gPledged)" />
                     </AreaChart>
                   </ResponsiveContainer>

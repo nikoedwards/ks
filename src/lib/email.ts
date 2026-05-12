@@ -8,7 +8,10 @@ function getResend() {
 const FROM = process.env.FROM_EMAIL ?? 'onboarding@resend.dev';
 
 export async function sendOtpEmail(toEmail: string, code: string): Promise<void> {
-  await getResend().emails.send({
+  if (!process.env.RESEND_API_KEY) {
+    throw new Error('RESEND_API_KEY is not configured.');
+  }
+  const result = await getResend().emails.send({
     from: FROM,
     to: toEmail,
     subject: `${code} — Your Kicksonar verification code`,
@@ -23,4 +26,7 @@ export async function sendOtpEmail(toEmail: string, code: string): Promise<void>
       </div>
     `,
   });
+  if (result.error) {
+    throw new Error(result.error.message || 'Failed to send verification email.');
+  }
 }
