@@ -4,6 +4,7 @@ import {
   insertTextIfChanged,
   insertComment,
   markFetched,
+  updateProjectLiveMetadata,
   type RewardSnapshot,
 } from './db';
 
@@ -36,6 +37,12 @@ interface KSProject {
   deadline?: number;
   rewards?: KSReward[];
   creator?: { name?: string; slug?: string };
+  photo?: {
+    full?: string;
+    little?: string;
+    small?: string;
+    med?: string;
+  };
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -106,6 +113,16 @@ export async function scrapeAndStore(projectId: string, jsonUrl: string, opts: S
     comments_count: p.comments_count ?? 0,
     updates_count: p.updates_count ?? 0,
     state: p.state ?? 'unknown',
+  });
+
+  updateProjectLiveMetadata(projectId, {
+    name: p.name,
+    blurb: p.blurb ?? null,
+    state: p.state ?? null,
+    pledged_usd: pledgedUsd,
+    backers_count: p.backers_count ?? null,
+    image_url: p.photo?.full ?? p.photo?.med ?? p.photo?.small ?? null,
+    image_thumb_url: p.photo?.little ?? p.photo?.small ?? p.photo?.med ?? p.photo?.full ?? null,
   });
 
   if (opts.track_rewards && p.rewards?.length) {

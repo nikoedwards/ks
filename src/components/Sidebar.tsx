@@ -10,6 +10,7 @@ import {
   Settings,
   Info,
   Github,
+  Flame,
   Sparkles,
   Heart,
   RadioTower,
@@ -30,6 +31,7 @@ export default function Sidebar() {
   const nav = [
     { href: '/dashboard', label: tr.overview,  icon: LayoutDashboard },
     { href: '/projects',  label: tr.projects,  icon: Search },
+    { href: '/live-intel', label: lang === 'cn' ? 'Live 情报' : 'Live Intel', icon: Flame },
     { href: '/analysis',  label: tr.analysis,  icon: BarChart2 },
     { href: '/predict',   label: tr.predict,   icon: Sparkles },
     { href: '/favorites', label: lang === 'cn' ? '收藏夹' : 'Favorites', icon: Heart },

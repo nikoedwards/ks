@@ -11,8 +11,25 @@ declare global {
   var __ksDb: Database | undefined;
 }
 
+function ensureRuntimeMigrations(db: Database) {
+  try { db.exec('ALTER TABLE users ADD COLUMN email_verified INTEGER DEFAULT 1'); } catch { /* already exists */ }
+  try { db.exec('ALTER TABLE projects ADD COLUMN creator_slug TEXT'); } catch { /* already exists */ }
+  try { db.exec("ALTER TABLE projects ADD COLUMN data_source TEXT DEFAULT 'webrobots'"); } catch { /* already exists */ }
+  try { db.exec('ALTER TABLE projects ADD COLUMN first_seen_at INTEGER'); } catch { /* already exists */ }
+  try { db.exec('ALTER TABLE projects ADD COLUMN last_seen_at INTEGER'); } catch { /* already exists */ }
+  try { db.exec('ALTER TABLE projects ADD COLUMN webrobots_synced_at INTEGER'); } catch { /* already exists */ }
+  try { db.exec('ALTER TABLE projects ADD COLUMN ks_live_synced_at INTEGER'); } catch { /* already exists */ }
+  try { db.exec('ALTER TABLE projects ADD COLUMN image_url TEXT'); } catch { /* already exists */ }
+  try { db.exec('ALTER TABLE projects ADD COLUMN image_thumb_url TEXT'); } catch { /* already exists */ }
+  try { db.exec('ALTER TABLE tracking_settings ADD COLUMN subscriber_count INTEGER DEFAULT 0'); } catch { /* already exists */ }
+  try { db.exec('ALTER TABLE tracking_settings ADD COLUMN priority_score INTEGER DEFAULT 0'); } catch { /* already exists */ }
+}
+
 function getDB(): Database {
-  if (globalThis.__ksDb) return globalThis.__ksDb;
+  if (globalThis.__ksDb) {
+    ensureRuntimeMigrations(globalThis.__ksDb);
+    return globalThis.__ksDb;
+  }
 
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
@@ -44,6 +61,8 @@ function getDB(): Database {
       creator_slug TEXT,
       source_url TEXT,
       slug TEXT,
+      image_url TEXT,
+      image_thumb_url TEXT,
       data_source TEXT DEFAULT 'webrobots',
       first_seen_at INTEGER,
       last_seen_at INTEGER,
@@ -243,17 +262,7 @@ function getDB(): Database {
     CREATE INDEX IF NOT EXISTS idx_crawler_errors_source ON crawler_errors(source, occurred_at);
   `);
 
-  // Add email_verified column to existing users table if absent
-  try { db.exec('ALTER TABLE users ADD COLUMN email_verified INTEGER DEFAULT 1'); } catch { /* already exists */ }
-  // Add creator_slug column to existing projects table if absent
-  try { db.exec('ALTER TABLE projects ADD COLUMN creator_slug TEXT'); } catch { /* already exists */ }
-  try { db.exec("ALTER TABLE projects ADD COLUMN data_source TEXT DEFAULT 'webrobots'"); } catch { /* already exists */ }
-  try { db.exec('ALTER TABLE projects ADD COLUMN first_seen_at INTEGER'); } catch { /* already exists */ }
-  try { db.exec('ALTER TABLE projects ADD COLUMN last_seen_at INTEGER'); } catch { /* already exists */ }
-  try { db.exec('ALTER TABLE projects ADD COLUMN webrobots_synced_at INTEGER'); } catch { /* already exists */ }
-  try { db.exec('ALTER TABLE projects ADD COLUMN ks_live_synced_at INTEGER'); } catch { /* already exists */ }
-  try { db.exec('ALTER TABLE tracking_settings ADD COLUMN subscriber_count INTEGER DEFAULT 0'); } catch { /* already exists */ }
-  try { db.exec('ALTER TABLE tracking_settings ADD COLUMN priority_score INTEGER DEFAULT 0'); } catch { /* already exists */ }
+  ensureRuntimeMigrations(db);
 
   globalThis.__ksDb = db;
   return db;
@@ -352,7 +361,7 @@ export async function getProjects(filter: ProjectFilter = {}) {
             p.pledged, p.usd_pledged,
             COALESCE(s.snap_backers, p.backers_count) as backers_count,
             p.staff_pick, p.launched_at, p.deadline, p.source_url, p.slug,
-            p.data_source,
+            p.image_url, p.image_thumb_url, p.data_source,
             s.pledged_usd as live_pledged_usd,
             s.snap_backers as live_backers_count,
             s.captured_at as live_captured_at,
@@ -468,12 +477,12 @@ export function upsertBatch(db: Database, rows: Record<string, unknown>[]): void
       (id, name, blurb, goal, pledged, usd_pledged, state, country, country_name,
        currency, category_id, category_name, category_parent, backers_count,
        staff_pick, created_at, launched_at, deadline, creator_name, creator_slug, source_url, slug,
-       data_source, first_seen_at, last_seen_at, webrobots_synced_at, ks_live_synced_at)
+       image_url, image_thumb_url, data_source, first_seen_at, last_seen_at, webrobots_synced_at, ks_live_synced_at)
     VALUES
       (@id, @name, @blurb, @goal, @pledged, @usd_pledged, @state, @country, @country_name,
        @currency, @category_id, @category_name, @category_parent, @backers_count,
        @staff_pick, @created_at, @launched_at, @deadline, @creator_name, @creator_slug, @source_url, @slug,
-       @data_source, @first_seen_at, @last_seen_at, @webrobots_synced_at, @ks_live_synced_at)
+       @image_url, @image_thumb_url, @data_source, @first_seen_at, @last_seen_at, @webrobots_synced_at, @ks_live_synced_at)
     ON CONFLICT(id) DO UPDATE SET
       name = excluded.name,
       blurb = excluded.blurb,
@@ -496,6 +505,8 @@ export function upsertBatch(db: Database, rows: Record<string, unknown>[]): void
       creator_slug = COALESCE(excluded.creator_slug, projects.creator_slug),
       source_url = COALESCE(excluded.source_url, projects.source_url),
       slug = COALESCE(excluded.slug, projects.slug),
+      image_url = COALESCE(excluded.image_url, projects.image_url),
+      image_thumb_url = COALESCE(excluded.image_thumb_url, projects.image_thumb_url),
       data_source = CASE
         WHEN projects.data_source = excluded.data_source THEN projects.data_source
         WHEN projects.data_source IS NULL THEN excluded.data_source
@@ -519,6 +530,8 @@ export function upsertBatch(db: Database, rows: Record<string, unknown>[]): void
         last_seen_at: row.last_seen_at ?? now,
         webrobots_synced_at: row.webrobots_synced_at ?? (dataSource === 'webrobots' ? now : null),
         ks_live_synced_at: row.ks_live_synced_at ?? (dataSource === 'ks_live' ? now : null),
+        image_url: row.image_url ?? null,
+        image_thumb_url: row.image_thumb_url ?? null,
       });
     }
   });
@@ -636,6 +649,38 @@ export function recordSourcePayload(payload: {
     payload_bytes: payload.payload_bytes ?? 0,
     checksum: payload.checksum ?? null,
     payload_preview: payload.payload_preview?.slice(0, 1000) ?? null,
+  });
+}
+
+export function updateProjectLiveMetadata(projectId: string, data: {
+  name?: string | null;
+  blurb?: string | null;
+  state?: string | null;
+  pledged_usd?: number | null;
+  backers_count?: number | null;
+  image_url?: string | null;
+  image_thumb_url?: string | null;
+}) {
+  getDB().prepare(`
+    UPDATE projects SET
+      name = COALESCE(@name, name),
+      blurb = COALESCE(@blurb, blurb),
+      state = COALESCE(@state, state),
+      usd_pledged = CASE WHEN @pledged_usd IS NOT NULL THEN @pledged_usd ELSE usd_pledged END,
+      backers_count = CASE WHEN @backers_count IS NOT NULL THEN @backers_count ELSE backers_count END,
+      image_url = COALESCE(@image_url, image_url),
+      image_thumb_url = COALESCE(@image_thumb_url, image_thumb_url),
+      last_seen_at = unixepoch()
+    WHERE id = @project_id
+  `).run({
+    project_id: projectId,
+    name: data.name ?? null,
+    blurb: data.blurb ?? null,
+    state: data.state ?? null,
+    pledged_usd: data.pledged_usd ?? null,
+    backers_count: data.backers_count ?? null,
+    image_url: data.image_url ?? null,
+    image_thumb_url: data.image_thumb_url ?? null,
   });
 }
 
@@ -825,12 +870,168 @@ export async function getMeta(): Promise<{
   };
 }
 
+export function getLiveIntel(limit = 12) {
+  const db = getDB();
+  const now = Math.floor(Date.now() / 1000);
+  const cutoff24h = now - 24 * 3600;
+  const cutoff6h = now - 6 * 3600;
+  const safeLimit = Math.max(1, Math.min(limit, 50));
+
+  const baseCte = `
+    WITH latest AS (
+      SELECT project_id, MAX(captured_at) as latest_at
+      FROM project_snapshots
+      GROUP BY project_id
+    ),
+    latest_snap AS (
+      SELECT s.*
+      FROM project_snapshots s
+      JOIN latest l ON l.project_id = s.project_id AND l.latest_at = s.captured_at
+    ),
+    prior24 AS (
+      SELECT l.project_id, MAX(s.captured_at) as prior_at
+      FROM latest l
+      JOIN project_snapshots s ON s.project_id = l.project_id AND s.captured_at <= @cutoff24h
+      GROUP BY l.project_id
+    ),
+    prior24_snap AS (
+      SELECT s.*
+      FROM project_snapshots s
+      JOIN prior24 p ON p.project_id = s.project_id AND p.prior_at = s.captured_at
+    ),
+    prior6 AS (
+      SELECT l.project_id, MAX(s.captured_at) as prior_at
+      FROM latest l
+      JOIN project_snapshots s ON s.project_id = l.project_id AND s.captured_at <= @cutoff6h
+      GROUP BY l.project_id
+    ),
+    prior6_snap AS (
+      SELECT s.*
+      FROM project_snapshots s
+      JOIN prior6 p ON p.project_id = s.project_id AND p.prior_at = s.captured_at
+    ),
+    live_rows AS (
+      SELECT
+        p.id, p.name, p.blurb, p.goal, p.state, p.country, p.currency,
+        p.category_parent, p.category_name, p.backers_count, p.usd_pledged,
+        p.launched_at, p.deadline, p.source_url, p.image_url, p.image_thumb_url,
+        COALESCE(ls.pledged_usd, p.usd_pledged) as pledged_usd,
+        COALESCE(ls.backers_count, p.backers_count) as live_backers_count,
+        ls.captured_at as latest_snapshot_at,
+        COALESCE(ls.state, p.state) as live_state,
+        COALESCE(ls.pledged_usd, p.usd_pledged) - COALESCE(p24.pledged_usd, COALESCE(ls.pledged_usd, p.usd_pledged)) as pledged_delta_24h,
+        COALESCE(ls.backers_count, p.backers_count) - COALESCE(p24.backers_count, COALESCE(ls.backers_count, p.backers_count)) as backers_delta_24h,
+        COALESCE(ls.pledged_usd, p.usd_pledged) - COALESCE(p6.pledged_usd, COALESCE(ls.pledged_usd, p.usd_pledged)) as pledged_delta_6h,
+        COALESCE(ls.backers_count, p.backers_count) - COALESCE(p6.backers_count, COALESCE(ls.backers_count, p.backers_count)) as backers_delta_6h,
+        CASE WHEN p.goal > 0 THEN ROUND((COALESCE(ls.pledged_usd, p.usd_pledged) / p.goal) * 100, 1) ELSE 0 END as funded_pct,
+        CASE
+          WHEN p.deadline > @now AND p.launched_at IS NOT NULL AND p.launched_at < @now
+          THEN ROUND((COALESCE(ls.pledged_usd, p.usd_pledged) / MAX(1, @now - p.launched_at)) * (p.deadline - p.launched_at), 0)
+          ELSE COALESCE(ls.pledged_usd, p.usd_pledged)
+        END as projected_usd
+      FROM projects p
+      LEFT JOIN latest_snap ls ON ls.project_id = p.id
+      LEFT JOIN prior24_snap p24 ON p24.project_id = p.id
+      LEFT JOIN prior6_snap p6 ON p6.project_id = p.id
+      WHERE COALESCE(ls.state, p.state) = 'live'
+    )
+  `;
+
+  const params = { now, cutoff24h, cutoff6h, limit: safeLimit };
+  const selectProject = `
+    SELECT id, name, blurb, goal, state, country, currency, category_parent, category_name,
+           launched_at, deadline, source_url, image_url, image_thumb_url,
+           pledged_usd, live_backers_count, latest_snapshot_at,
+           pledged_delta_24h, backers_delta_24h, pledged_delta_6h, backers_delta_6h,
+           funded_pct, projected_usd
+    FROM live_rows
+  `;
+
+  const fastestFunding = db.prepare(`
+    ${baseCte}
+    ${selectProject}
+    WHERE pledged_delta_24h > 0
+    ORDER BY pledged_delta_24h DESC, pledged_usd DESC
+    LIMIT @limit
+  `).all(params);
+
+  const fastestBackers = db.prepare(`
+    ${baseCte}
+    ${selectProject}
+    WHERE backers_delta_24h > 0
+    ORDER BY backers_delta_24h DESC, live_backers_count DESC
+    LIMIT @limit
+  `).all(params);
+
+  const newlyLaunched = db.prepare(`
+    ${baseCte}
+    ${selectProject}
+    WHERE launched_at IS NOT NULL
+    ORDER BY launched_at DESC
+    LIMIT @limit
+  `).all(params);
+
+  const endingSoon = db.prepare(`
+    ${baseCte}
+    ${selectProject}
+    WHERE deadline > @now
+    ORDER BY deadline ASC
+    LIMIT @limit
+  `).all(params);
+
+  const overfunded = db.prepare(`
+    ${baseCte}
+    ${selectProject}
+    WHERE goal > 0 AND funded_pct >= 100
+    ORDER BY funded_pct DESC, pledged_usd DESC
+    LIMIT @limit
+  `).all(params);
+
+  const categories = db.prepare(`
+    ${baseCte}
+    SELECT
+      COALESCE(category_parent, 'Uncategorized') as category,
+      COUNT(*) as live_projects,
+      SUM(pledged_delta_24h) as pledged_delta_24h,
+      SUM(backers_delta_24h) as backers_delta_24h,
+      ROUND(AVG(funded_pct), 1) as avg_funded_pct,
+      SUM(CASE WHEN funded_pct >= 100 THEN 1 ELSE 0 END) as overfunded_projects
+    FROM live_rows
+    GROUP BY COALESCE(category_parent, 'Uncategorized')
+    ORDER BY pledged_delta_24h DESC, live_projects DESC
+    LIMIT 10
+  `).all(params);
+
+  const summary = db.prepare(`
+    ${baseCte}
+    SELECT
+      COUNT(*) as live_projects,
+      SUM(pledged_delta_24h) as pledged_delta_24h,
+      SUM(backers_delta_24h) as backers_delta_24h,
+      SUM(CASE WHEN launched_at >= @cutoff24h THEN 1 ELSE 0 END) as launched_24h,
+      SUM(CASE WHEN deadline BETWEEN @now AND @now + 86400 THEN 1 ELSE 0 END) as ending_24h,
+      SUM(CASE WHEN funded_pct >= 100 THEN 1 ELSE 0 END) as overfunded_projects
+    FROM live_rows
+  `).get(params);
+
+  return {
+    generatedAt: now,
+    summary,
+    fastestFunding,
+    fastestBackers,
+    newlyLaunched,
+    endingSoon,
+    overfunded,
+    categories,
+  };
+}
+
 export async function getProjectById(id: string) {
   return getDB().prepare(
     `SELECT id, name, blurb, state, country, country_name, currency,
             category_id, category_parent, category_name, goal, pledged, usd_pledged,
             backers_count, staff_pick, created_at, launched_at, deadline,
-            creator_name, creator_slug, source_url, slug
+            creator_name, creator_slug, source_url, slug, image_url, image_thumb_url
      FROM projects WHERE id = ?`
   ).get(id) ?? null;
 }

@@ -40,6 +40,13 @@ export interface KSDiscoverProject {
   updates_count?: number;
   creator?: { name?: string; slug?: string };
   category?: KSCategory;
+  photo?: {
+    full?: string;
+    little?: string;
+    small?: string;
+    med?: string;
+    key?: string;
+  };
   urls?: { web?: { project?: string } };
 }
 
@@ -82,12 +89,21 @@ function projectUrl(project: KSDiscoverProject): string | null {
   return null;
 }
 
+function projectImage(project: KSDiscoverProject): { image_url: string | null; image_thumb_url: string | null } {
+  const photo = project.photo;
+  return {
+    image_url: photo?.full ?? photo?.med ?? photo?.small ?? null,
+    image_thumb_url: photo?.little ?? photo?.small ?? photo?.med ?? photo?.full ?? null,
+  };
+}
+
 function normalizeProject(project: KSDiscoverProject, now: number): Record<string, unknown> | null {
   if (!project.id || !project.name) return null;
   const sourceUrl = projectUrl(project);
   const slug = project.slug ?? extractProjectSlug(sourceUrl ?? undefined);
   const pledged = parseNum(project.pledged);
   const usdPledged = parseNum(project.usd_pledged ?? project.converted_pledged_amount ?? project.pledged);
+  const image = projectImage(project);
 
   return {
     id: String(project.id),
@@ -112,6 +128,8 @@ function normalizeProject(project: KSDiscoverProject, now: number): Record<strin
     creator_slug: project.creator?.slug ?? null,
     source_url: sourceUrl,
     slug,
+    image_url: image.image_url,
+    image_thumb_url: image.image_thumb_url,
     data_source: 'ks_live',
     first_seen_at: now,
     last_seen_at: now,
