@@ -23,7 +23,7 @@ interface Project {
   category_parent: string; category_name: string; category_id: number;
   goal: number; pledged: number; usd_pledged: number; backers_count: number;
   staff_pick: number; created_at: number; launched_at: number; deadline: number;
-  creator_name: string; source_url: string; slug: string;
+  creator_name: string; creator_slug?: string; source_url: string; slug: string;
   similar?: SimilarProject[];
 }
 
@@ -347,7 +347,7 @@ export default function ProjectDetailPage() {
   const avgDailyPledged = duration && duration > 0 ? project.usd_pledged / duration : null;
   const grade = fundingGrade(fundingRate);
   const ksUrl = project.source_url?.startsWith('https://www.kickstarter.com/projects/') ? project.source_url : null;
-  const kicktraqUrl = project.slug ? `https://www.kicktraq.com/projects/${project.slug}/` : null;
+  const kicktraqUrl = project.creator_slug && project.slug ? `https://www.kicktraq.com/projects/${project.creator_slug}/${project.slug}/` : null;
   const hasRealData = snapshots.length > 0;
   const sharedTrackingActive = !!platformTracking?.is_tracking;
   const subscriberCount = platformTracking?.subscriber_count ?? 0;
@@ -415,6 +415,7 @@ export default function ProjectDetailPage() {
             </button>
 
             <button onClick={toggleTracking} disabled={trackLoading}
+              title={lang === 'cn' ? '加入平台自动追踪队列；后台会按频率持续抓取快照、奖励和文案变更。' : 'Join the shared tracking queue. The background crawler will keep collecting snapshots, rewards, and text changes.'}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
                 tracking?.is_tracking
                   ? 'bg-ks-green/20 text-ks-green border-ks-green/30 hover:bg-ks-green/30'
@@ -425,7 +426,7 @@ export default function ProjectDetailPage() {
             </button>
 
             <button onClick={triggerScrape} disabled={scraping}
-              title={tr.syncNow}
+              title={lang === 'cn' ? '立刻从 Kickstarter 项目 JSON 抓取一次最新快照和奖励，不等待后台队列。' : 'Fetch the latest Kickstarter JSON snapshot and rewards once, without waiting for the queue.'}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-800 text-gray-400 border border-gray-700 hover:bg-gray-700 text-xs font-semibold transition-colors disabled:opacity-50">
               <RefreshCw className={`w-3.5 h-3.5 ${scraping ? 'animate-spin' : ''}`} />
               {scraping ? tr.syncingBtn : tr.syncNow}
@@ -585,11 +586,13 @@ export default function ProjectDetailPage() {
                 <p className="text-gray-500 text-sm">{tr.noHistoricalData}</p>
                 <div className="flex justify-center gap-3">
                   <button onClick={triggerScrape} disabled={scraping}
+                    title={lang === 'cn' ? '立刻从 Kickstarter 项目 JSON 抓取一次最新快照和奖励。' : 'Fetch the latest Kickstarter JSON snapshot and rewards once.'}
                     className="flex items-center gap-2 px-4 py-2 bg-ks-green text-white rounded-lg text-sm font-semibold hover:bg-ks-green-dark disabled:opacity-50">
                     <RefreshCw className={`w-4 h-4 ${scraping ? 'animate-spin' : ''}`} />
                     {scraping ? tr.fetchingFromKS : tr.fetchFromKS}
                   </button>
                   <button onClick={importKicktraq} disabled={ktImporting}
+                    title={lang === 'cn' ? '尝试从 Kicktraq 的公开日图表读取历史逐日数据；不是所有项目都有可读取数据。' : 'Try to import public daily chart data from Kicktraq. Not every project exposes readable data.'}
                     className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700 disabled:opacity-50">
                     <TrendingUp className={`w-4 h-4 ${ktImporting ? 'animate-pulse' : ''}`} />
                     {ktImporting
@@ -607,7 +610,11 @@ export default function ProjectDetailPage() {
                       : 'Kicktraq chart data loads via browser-side JS and cannot be fetched server-side. Use "Fetch from Kickstarter" to start collecting daily snapshots.'}
                   </p>
                 )}
-                <p className="text-xs text-gray-400">{tr.kicktraqHint}</p>
+                <p className="text-xs text-gray-400">
+                  {lang === 'cn'
+                    ? 'Kicktraq 导入适合已经被 Kicktraq 收录并公开 dailychart 的项目；如果没有数据，按钮会返回原因。'
+                    : 'Kicktraq import works for projects indexed by Kicktraq with public dailychart data; if no data is available, the button returns the reason.'}
+                </p>
               </div>
             )}
 
@@ -674,6 +681,7 @@ export default function ProjectDetailPage() {
                 <div className="border-t border-gray-100 pt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                   <p className="text-sm text-gray-500">{detailCopy.joinTracking}</p>
                   <button onClick={toggleTracking} disabled={trackLoading}
+                    title={lang === 'cn' ? '加入平台自动追踪队列；后台会按频率持续抓取。' : 'Join the shared tracking queue for scheduled background crawling.'}
                     className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-ks-green text-white text-sm font-semibold hover:bg-ks-green-dark disabled:opacity-50">
                     <Radio className="w-4 h-4" />
                     {tr.trackBtn}

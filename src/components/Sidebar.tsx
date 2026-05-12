@@ -33,16 +33,16 @@ export default function Sidebar() {
   const [navConfig, setNavConfig] = useState<{ nav_key: string }[]>([]);
 
   const navMap = useMemo(() => ({
-    dashboard: { href: '/dashboard', label: tr.overview, icon: LayoutDashboard },
-    projects: { href: '/projects', label: tr.projects, icon: Search },
-    'live-intel': { href: '/live-intel', label: lang === 'cn' ? 'Live 情报' : 'Live Intel', icon: Flame },
-    analysis: { href: '/analysis', label: tr.analysis, icon: BarChart2 },
-    predict: { href: '/predict', label: tr.predict, icon: Sparkles },
-    favorites: { href: '/favorites', label: lang === 'cn' ? '收藏夹' : 'Favorites', icon: Heart },
-    'data-quality': { href: '/data-quality', label: lang === 'cn' ? '数据质量' : 'Data Quality', icon: RadioTower },
-    settings: { href: '/settings', label: tr.sync, icon: Settings },
-    'admin-users': { href: '/admin/users', label: lang === 'cn' ? '用户看板' : 'Users', icon: Users },
-    'admin-nav': { href: '/admin/nav', label: lang === 'cn' ? '导航配置' : 'Nav Config', icon: SlidersHorizontal },
+    dashboard: { href: '/dashboard', label: tr.overview, icon: LayoutDashboard, adminOnly: false },
+    projects: { href: '/projects', label: tr.projects, icon: Search, adminOnly: false },
+    'live-intel': { href: '/live-intel', label: lang === 'cn' ? 'Live 情报' : 'Live Intel', icon: Flame, adminOnly: false },
+    analysis: { href: '/analysis', label: tr.analysis, icon: BarChart2, adminOnly: false },
+    predict: { href: '/predict', label: tr.predict, icon: Sparkles, adminOnly: false },
+    favorites: { href: '/favorites', label: lang === 'cn' ? '收藏夹' : 'Favorites', icon: Heart, adminOnly: false },
+    'data-quality': { href: '/data-quality', label: lang === 'cn' ? '数据质量' : 'Data Quality', icon: RadioTower, adminOnly: false },
+    settings: { href: '/settings', label: tr.sync, icon: Settings, adminOnly: false },
+    'admin-users': { href: '/admin/users', label: lang === 'cn' ? '用户看板' : 'Users', icon: Users, adminOnly: true },
+    'admin-nav': { href: '/admin/nav', label: lang === 'cn' ? '导航配置' : 'Nav Config', icon: SlidersHorizontal, adminOnly: true },
   }), [lang, tr]);
 
   useEffect(() => {
@@ -58,7 +58,10 @@ export default function Sidebar() {
     { nav_key: 'favorites' },
     { nav_key: 'data-quality' },
     { nav_key: 'settings' },
-  ]).map(item => navMap[item.nav_key as keyof typeof navMap]).filter(Boolean);
+  ]).map(item => {
+    const entry = navMap[item.nav_key as keyof typeof navMap];
+    return entry ? { ...entry, key: item.nav_key } : null;
+  }).filter(Boolean);
 
   return (
     <>
@@ -76,25 +79,37 @@ export default function Sidebar() {
         </Link>
 
         <nav className="flex-1 py-3 px-2.5 space-y-0.5">
-          {nav.map(({ href, label, icon: Icon }) => {
+          {nav.map((item, index) => {
+            const { href, label, icon: Icon, adminOnly } = item!;
+            const previous = index > 0 ? nav[index - 1] : null;
+            const showAdminDivider = adminOnly && !previous?.adminOnly;
             const active = pathname === href || (href !== '/' && pathname.startsWith(href + '/'));
             const isFav = href === '/favorites';
             return (
-              <Link
-                key={href}
-                href={href}
-                onClick={isFav && !user ? (e) => { e.preventDefault(); showLogin(); } : undefined}
-                className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all ${
-                  active
-                    ? 'bg-ks-green text-white shadow-sm'
-                    : isFav
-                    ? 'text-red-400/80 hover:bg-white/8 hover:text-red-400'
-                    : 'text-white/60 hover:bg-white/8 hover:text-white'
-                }`}
-              >
-                <Icon className={`w-4 h-4 shrink-0 ${isFav && !active ? 'fill-current' : ''}`} />
-                {label}
-              </Link>
+              <div key={href}>
+                {showAdminDivider && (
+                  <div className="my-3 px-3">
+                    <div className="border-t border-white/10" />
+                    <div className="pt-2 text-[10px] font-semibold uppercase tracking-wide text-white/25">
+                      {lang === 'cn' ? '管理员视图' : 'Admin Views'}
+                    </div>
+                  </div>
+                )}
+                <Link
+                  href={href}
+                  onClick={isFav && !user ? (e) => { e.preventDefault(); showLogin(); } : undefined}
+                  className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                    active
+                      ? 'bg-ks-green text-white shadow-sm'
+                      : isFav
+                      ? 'text-red-400/80 hover:bg-white/8 hover:text-red-400'
+                      : 'text-white/60 hover:bg-white/8 hover:text-white'
+                  }`}
+                >
+                  <Icon className={`w-4 h-4 shrink-0 ${isFav && !active ? 'fill-current' : ''}`} />
+                  {label}
+                </Link>
+              </div>
             );
           })}
         </nav>

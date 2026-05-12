@@ -7,7 +7,7 @@ import {
   removeUserProjectSubscription,
   upsertUserProjectSubscription,
 } from '@/lib/db';
-import { buildKSJsonUrl, scrapeAndStore } from '@/lib/scraper';
+import { buildKSJsonUrl, extractCreatorSlug, extractProjectSlug, scrapeAndStore } from '@/lib/scraper';
 import { initTracker } from '@/lib/tracker';
 
 export const runtime = 'nodejs';
@@ -68,10 +68,20 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const user = token ? getSessionUser(token) : null;
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-  const project = await getProjectById(id) as { source_url?: string } | null;
+  const project = await getProjectById(id) as { source_url?: string; creator_slug?: string; slug?: string } | null;
   if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 });
 
-  const jsonUrl = buildKSJsonUrl(project.source_url ?? '');
+  let jsonUrl = buildKSJsonUrl(project.source_url ?? '');
+  if (!jsonUrl && project.creator_slug && project.slug) {
+    jsonUrl = buildKSJsonUrl(`https://www.kickstarter.com/projects/${project.creator_slug}/${project.slug}`);
+  }
+  if (!jsonUrl && project.source_url) {
+    const creatorSlug = extractCreatorSlug(project.source_url);
+    const projectSlug = extractProjectSlug(project.source_url);
+    if (creatorSlug && projectSlug) {
+      jsonUrl = buildKSJsonUrl(`https://www.kickstarter.com/projects/${creatorSlug}/${projectSlug}`);
+    }
+  }
   if (!jsonUrl) return NextResponse.json({ error: 'No valid KS URL for this project' }, { status: 422 });
 
   const settings = getTrackingSettings(id);

@@ -386,27 +386,31 @@ export async function getProjects(filter: ProjectFilter = {}) {
 
   const rows = db.prepare(
     `SELECT p.id, p.name, p.blurb,
-            COALESCE(s.state, p.state) as state,
+            CASE WHEN s.state IN ('live','successful','failed','canceled','suspended') THEN s.state ELSE p.state END as state,
             p.country, p.country_name, p.currency,
             p.category_parent, p.category_name, p.goal,
             p.pledged, p.usd_pledged,
             COALESCE(s.snap_backers, p.backers_count) as backers_count,
             p.staff_pick, p.launched_at, p.deadline, p.source_url, p.slug,
             p.image_url, p.image_thumb_url, p.data_source,
-            s.pledged_usd as live_pledged_usd,
+            CASE
+              WHEN s.pledged_usd IS NOT NULL AND (s.pledged_usd > 0 OR p.usd_pledged = 0) THEN s.pledged_usd
+              ELSE NULL
+            END as live_pledged_usd,
             s.snap_backers as live_backers_count,
             s.captured_at as live_captured_at,
             s.days_to_go as live_days_to_go
      FROM projects p
      LEFT JOIN (
-       SELECT project_id,
-              MAX(captured_at) as captured_at,
-              pledged_usd,
-              backers_count as snap_backers,
-              days_to_go,
-              state
-       FROM project_snapshots
-       GROUP BY project_id
+       SELECT ps.project_id, ps.captured_at, ps.pledged_usd,
+              ps.backers_count as snap_backers, ps.days_to_go, ps.state
+       FROM project_snapshots ps
+       JOIN (
+         SELECT project_id, MAX(id) as id
+         FROM project_snapshots
+         WHERE state NOT IN ('unknown', 'historical')
+         GROUP BY project_id
+       ) latest ON latest.id = ps.id
      ) s ON s.project_id = p.id
      ${where} ORDER BY ${orderBy} LIMIT @limit OFFSET @offset`
   ).all({ ...params, limit, offset });
