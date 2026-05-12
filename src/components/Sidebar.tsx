@@ -39,8 +39,8 @@ export default function Sidebar() {
     analysis: { href: '/analysis', label: tr.analysis, icon: BarChart2, adminOnly: false },
     predict: { href: '/predict', label: tr.predict, icon: Sparkles, adminOnly: false },
     favorites: { href: '/favorites', label: lang === 'cn' ? '收藏夹' : 'Favorites', icon: Heart, adminOnly: false },
-    'data-quality': { href: '/data-quality', label: lang === 'cn' ? '数据质量' : 'Data Quality', icon: RadioTower, adminOnly: false },
-    settings: { href: '/settings', label: tr.sync, icon: Settings, adminOnly: false },
+    'data-quality': { href: '/data-quality', label: lang === 'cn' ? '数据质量' : 'Data Quality', icon: RadioTower, adminOnly: true },
+    settings: { href: '/settings', label: tr.sync, icon: Settings, adminOnly: true },
     'admin-users': { href: '/admin/users', label: lang === 'cn' ? '用户看板' : 'Users', icon: Users, adminOnly: true },
     'admin-nav': { href: '/admin/nav', label: lang === 'cn' ? '导航配置' : 'Nav Config', icon: SlidersHorizontal, adminOnly: true },
   }), [lang, tr]);

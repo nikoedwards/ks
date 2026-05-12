@@ -30,6 +30,8 @@ interface KSProject {
   pledged: number | string;
   usd_pledged?: string | number;
   converted_pledged_amount?: number;
+  converted_goal_amount?: number;
+  fx_rate?: number | string;
   goal: number | string;
   backers_count: number;
   comments_count?: number;
@@ -71,6 +73,18 @@ function parseNum(v: number | string | undefined): number {
   return typeof v === 'number' ? v : parseFloat(v) || 0;
 }
 
+function resolveUsdAmounts(p: KSProject): { pledgedUsd: number; goalUsd: number } {
+  const pledgedLocal = parseNum(p.pledged);
+  const goalLocal = parseNum(p.goal);
+  const convertedPledged = parseNum(p.converted_pledged_amount);
+  const convertedGoal = parseNum(p.converted_goal_amount);
+  const explicitUsd = parseNum(p.usd_pledged);
+  const pledgedUsd = convertedPledged > 0 ? convertedPledged : explicitUsd > 0 ? explicitUsd : pledgedLocal;
+  const inferredRate = pledgedLocal > 0 && pledgedUsd > 0 ? pledgedUsd / pledgedLocal : parseNum(p.fx_rate);
+  const goalUsd = convertedGoal > 0 ? convertedGoal : inferredRate > 0 ? goalLocal * inferredRate : goalLocal;
+  return { pledgedUsd, goalUsd };
+}
+
 function daysToGo(deadline: number | undefined): number {
   if (!deadline) return 0;
   return Math.max(0, Math.round((deadline * 1000 - Date.now()) / 86_400_000));
@@ -106,7 +120,7 @@ export async function scrapeAndStore(projectId: string, jsonUrl: string, opts: S
   if (!p) return false;
 
   const now = Math.floor(Date.now() / 1000);
-  const pledgedUsd = parseNum(p.usd_pledged ?? p.converted_pledged_amount ?? p.pledged);
+  const { pledgedUsd, goalUsd } = resolveUsdAmounts(p);
 
   insertSnapshot({
     project_id: projectId,
@@ -123,6 +137,7 @@ export async function scrapeAndStore(projectId: string, jsonUrl: string, opts: S
     name: p.name,
     blurb: p.blurb ?? null,
     state: p.state ?? null,
+    goal_usd: goalUsd,
     pledged_usd: pledgedUsd,
     backers_count: p.backers_count ?? null,
     image_url: p.photo?.full ?? p.photo?.['1536x864'] ?? p.photo?.['1024x576'] ?? p.photo?.ed ?? p.photo?.med ?? p.photo?.small ?? null,
@@ -270,6 +285,11 @@ export async function scrapeKicktraq(creatorSlug: string, projectSlug: string): 
     if (ocrDays.length) return ocrDays;
   }
 
+  if (process.env.OPENAI_API_KEY) {
+    const ocrDays = await scrapeKicktraqViaOpenAI(pageUrl, cookieStr);
+    if (ocrDays.length) return ocrDays;
+  }
+
   return [];
 }
 
@@ -359,6 +379,68 @@ async function scrapeKicktraqViaOCR(pageUrl: string, cookieStr: string): Promise
       }));
   } catch (e) {
     console.log('[OCR] exception: ' + String(e));
+    return [];
+  }
+}
+
+async function scrapeKicktraqViaOpenAI(pageUrl: string, cookieStr: string): Promise<KicktraqDay[]> {
+  const imgUrl = pageUrl + 'dailychart.png';
+
+  try {
+    const imgRes = await fetch(imgUrl, {
+      headers: {
+        'Referer': pageUrl,
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'image/png,image/*,*/*',
+        ...(cookieStr ? { 'Cookie': cookieStr } : {}),
+      },
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (!imgRes.ok) return [];
+    const contentType = imgRes.headers.get('content-type') ?? '';
+    if (!contentType.includes('image')) return [];
+
+    const imgBuffer = await imgRes.arrayBuffer();
+    const base64 = Buffer.from(imgBuffer).toString('base64');
+    const prompt = 'Extract all visible Kicktraq daily chart rows from this image. ' +
+      'Return only a JSON array. Each item must be {"date":"YYYY-MM-DD","pledged_usd":number,"backers":number,"comments":number}. ' +
+      'The image may show Pledges Per Day, Backers Per Day, and Comments Per Day. Infer the year from chart context and use 0 for unreadable values.';
+
+    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: process.env.OPENAI_VISION_MODEL ?? 'gpt-4o-mini',
+        temperature: 0,
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'text', text: prompt },
+            { type: 'image_url', image_url: { url: `data:image/png;base64,${base64}` } },
+          ],
+        }],
+      }),
+      signal: AbortSignal.timeout(60_000),
+    });
+    if (!res.ok) return [];
+    const data = await res.json() as { choices?: Array<{ message?: { content?: string } }> };
+    const text = data.choices?.[0]?.message?.content ?? '';
+    const jsonMatch = text.match(/\[[\s\S]*\]/);
+    if (!jsonMatch) return [];
+    const rows = JSON.parse(jsonMatch[0]) as Array<{ date?: string; pledged_usd?: number; backers?: number; comments?: number }>;
+    return rows
+      .filter(r => r.date)
+      .map(r => ({
+        date: normalizeDate(r.date!),
+        pledged_usd: r.pledged_usd ?? 0,
+        backers: r.backers ?? 0,
+        comments: r.comments,
+      }));
+  } catch (e) {
+    console.log('[OpenAI OCR] exception: ' + String(e));
     return [];
   }
 }

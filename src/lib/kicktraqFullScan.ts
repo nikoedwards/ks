@@ -167,6 +167,19 @@ function parseMoney(raw: string | undefined): { amount: number; currency: string
   return { amount, currency: currencySymbol ? currencyMap[currencySymbol] ?? currencySymbol : null };
 }
 
+function parseMoneySafe(raw: string | undefined): { amount: number; currency: string | null } {
+  if (!raw) return { amount: 0, currency: null };
+  const amount = parseFloat(raw.replace(/[^\d.-]/g, '')) || 0;
+  let currency: string | null = null;
+  if (/A\$/i.test(raw)) currency = 'AUD';
+  else if (/C\$/i.test(raw)) currency = 'CAD';
+  else if (raw.includes('$')) currency = 'USD';
+  else if (/[\u00a5\uffe5]|JPY|¥/i.test(raw)) currency = 'JPY';
+  else if (/[\u00a3]|GBP|£/i.test(raw)) currency = 'GBP';
+  else if (/[\u20ac]|EUR|€/i.test(raw)) currency = 'EUR';
+  return { amount, currency };
+}
+
 function parseCampaignDate(monthDay: string, year: number): number | null {
   const clean = `${monthDay.replace(/(\d+)(st|nd|rd|th)/i, '$1')} ${year}`;
   const ts = Date.parse(`${clean} UTC`);
@@ -208,8 +221,8 @@ function parseProjectBlock(block: string): KicktraqListProject | null {
   const details = detailsMatch ? stripTags(detailsMatch[1]) : '';
   const backers = parseInt(details.match(/Backers:\s*([\d,]+)/i)?.[1]?.replace(/,/g, '') ?? '0') || 0;
   const fundingMatch = details.match(/Funding:\s*([^<]+?)\s+of\s+([^<(]+)\s*\(/i);
-  const pledged = parseMoney(fundingMatch?.[1]);
-  const goal = parseMoney(fundingMatch?.[2]);
+  const pledged = parseMoneySafe(fundingMatch?.[1]);
+  const goal = parseMoneySafe(fundingMatch?.[2]);
   const { category_parent, category_name } = parseCategories(block);
   const dates = parseCampaignDates(details);
   const sourceUrl = `https://www.kickstarter.com/projects/${creatorSlug}/${slug}`;
@@ -256,9 +269,9 @@ function toProjectRow(project: KicktraqListProject, now: number): Record<string,
     id: project.id,
     name: project.name,
     blurb: project.blurb,
-    goal: project.goal,
+    goal: project.currency === 'USD' ? project.goal : 0,
     pledged: project.pledged,
-    usd_pledged: project.pledged,
+    usd_pledged: project.currency === 'USD' ? project.pledged : 0,
     state: 'live',
     country: null, country_name: null,
     currency: project.currency,
@@ -292,7 +305,7 @@ async function storeProjectBatch(
     if (canonicalId) {
       mergeKicktraqIntoProject(canonicalId, {
         backers_count: project.backers_count,
-        pledged: project.pledged,
+        pledged_usd: project.currency === 'USD' ? project.pledged : null,
         launched_at: project.launched_at,
         deadline: project.deadline,
         category_parent: project.category_parent,
@@ -301,7 +314,7 @@ async function storeProjectBatch(
       insertSnapshot({
         project_id: canonicalId,
         captured_at: now,
-        pledged_usd: project.pledged,
+        pledged_usd: project.currency === 'USD' ? project.pledged : 0,
         backers_count: project.backers_count,
         days_to_go: project.deadline ? Math.max(0, Math.round((project.deadline - now) / 86400)) : 0,
         comments_count: 0, updates_count: 0,
@@ -321,7 +334,7 @@ async function storeProjectBatch(
       insertSnapshot({
         project_id: project.id,
         captured_at: now,
-        pledged_usd: project.pledged,
+        pledged_usd: project.currency === 'USD' ? project.pledged : 0,
         backers_count: project.backers_count,
         days_to_go: project.deadline ? Math.max(0, Math.round((project.deadline - now) / 86400)) : 0,
         comments_count: 0, updates_count: 0,

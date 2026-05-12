@@ -26,6 +26,8 @@ export interface KSDiscoverProject {
   pledged?: number | string;
   usd_pledged?: number | string;
   converted_pledged_amount?: number;
+  converted_goal_amount?: number;
+  fx_rate?: number | string;
   state?: string;
   slug?: string;
   country?: string;
@@ -80,6 +82,18 @@ function parseNum(v: number | string | undefined): number {
   return typeof v === 'number' ? v : parseFloat(v) || 0;
 }
 
+function resolveUsdAmounts(project: KSDiscoverProject): { pledgedUsd: number; goalUsd: number } {
+  const pledgedLocal = parseNum(project.pledged);
+  const goalLocal = parseNum(project.goal);
+  const convertedPledged = parseNum(project.converted_pledged_amount);
+  const convertedGoal = parseNum(project.converted_goal_amount);
+  const explicitUsd = parseNum(project.usd_pledged);
+  const pledgedUsd = convertedPledged > 0 ? convertedPledged : explicitUsd > 0 ? explicitUsd : pledgedLocal;
+  const inferredRate = pledgedLocal > 0 && pledgedUsd > 0 ? pledgedUsd / pledgedLocal : parseNum(project.fx_rate);
+  const goalUsd = convertedGoal > 0 ? convertedGoal : inferredRate > 0 ? goalLocal * inferredRate : goalLocal;
+  return { pledgedUsd, goalUsd };
+}
+
 function extractProjectSlug(url: string | undefined): string | null {
   const m = url?.match(/kickstarter\.com\/projects\/[^/?#]+\/([^/?#]+)/);
   return m ? decodeURIComponent(m[1]) : null;
@@ -106,16 +120,16 @@ function normalizeProject(project: KSDiscoverProject, now: number): Record<strin
   const sourceUrl = projectUrl(project);
   const slug = project.slug ?? extractProjectSlug(sourceUrl ?? undefined);
   const pledged = parseNum(project.pledged);
-  const usdPledged = parseNum(project.usd_pledged ?? project.converted_pledged_amount ?? project.pledged);
+  const { pledgedUsd, goalUsd } = resolveUsdAmounts(project);
   const image = projectImage(project);
 
   return {
     id: String(project.id),
     name: project.name.slice(0, 500),
     blurb: project.blurb?.slice(0, 1000) ?? null,
-    goal: parseNum(project.goal),
+    goal: goalUsd,
     pledged,
-    usd_pledged: usdPledged,
+    usd_pledged: pledgedUsd,
     state: project.state ?? 'unknown',
     country: project.country ?? null,
     country_name: project.country_displayable_name ?? null,

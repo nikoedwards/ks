@@ -16,6 +16,8 @@ const LABELS: Record<string, string> = {
   'admin-nav': '导航配置',
 };
 
+const ADMIN_ONLY_NAV_KEYS = new Set(['data-quality', 'settings', 'admin-users', 'admin-nav']);
+
 interface NavItem {
   nav_key: string;
   sort_order: number;
@@ -46,6 +48,7 @@ export default function AdminNavPage() {
   };
 
   const toggle = (index: number, field: 'admin_visible' | 'user_visible') => {
+    if (field === 'user_visible' && ADMIN_ONLY_NAV_KEYS.has(items[index]?.nav_key)) return;
     setItems(prev => prev.map((item, i) => i === index ? { ...item, [field]: item[field] ? 0 : 1 } : item));
   };
 
@@ -87,27 +90,29 @@ export default function AdminNavPage() {
           <div className="text-right">排序</div>
         </div>
         <div className="divide-y divide-gray-50">
-          {items.map((item, index) => (
+          {items.map((item, index) => {
+            const adminOnly = ADMIN_ONLY_NAV_KEYS.has(item.nav_key);
+            return (
             <div key={item.nav_key} className="grid grid-cols-[1fr_110px_110px_120px] gap-3 px-5 py-3 items-center">
               <div className="flex items-center gap-3 min-w-0">
                 <GripVertical className="w-4 h-4 text-gray-300" />
                 <div>
                   <p className="font-medium text-gray-900">{LABELS[item.nav_key] ?? item.nav_key}</p>
-                  <p className="text-xs text-gray-400">{item.nav_key}</p>
+                  <p className="text-xs text-gray-400">{item.nav_key}{adminOnly ? ' · admin only' : ''}</p>
                 </div>
               </div>
               <label className="flex justify-center">
                 <input type="checkbox" checked={!!item.admin_visible} onChange={() => toggle(index, 'admin_visible')} className="accent-ks-green" />
               </label>
               <label className="flex justify-center">
-                <input type="checkbox" checked={!!item.user_visible} onChange={() => toggle(index, 'user_visible')} className="accent-ks-green" />
+                <input type="checkbox" checked={adminOnly ? false : !!item.user_visible} disabled={adminOnly} onChange={() => toggle(index, 'user_visible')} className="accent-ks-green disabled:opacity-40" />
               </label>
               <div className="flex justify-end gap-1">
                 <button onClick={() => move(index, -1)} className="px-2 py-1 text-xs rounded bg-gray-100 hover:bg-gray-200">上移</button>
                 <button onClick={() => move(index, 1)} className="px-2 py-1 text-xs rounded bg-gray-100 hover:bg-gray-200">下移</button>
               </div>
             </div>
-          ))}
+          )})}
         </div>
       </div>
     </div>

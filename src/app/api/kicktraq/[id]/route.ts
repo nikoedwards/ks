@@ -29,11 +29,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
     const days = await scrapeKicktraq(creatorSlug, projectSlug);
     if (!days.length) {
+      const hasOcr = !!process.env.ANTHROPIC_API_KEY || !!process.env.OPENAI_API_KEY;
       return NextResponse.json({
         ok: false,
         noData: true,
         _v: 'ocr-v1',
-        message: `No chart data found on Kicktraq for this project.`,
+        message: hasOcr
+          ? 'Kicktraq page was found, but no daily chart rows could be parsed.'
+          : 'Kicktraq exposes this project daily data as chart images. Configure OPENAI_API_KEY or ANTHROPIC_API_KEY on Railway to OCR dailychart.png, then import again.',
       });
     }
 

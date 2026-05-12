@@ -95,6 +95,16 @@ function calcDuration(p: Project): number | null {
   return Math.round((p.deadline - p.launched_at) / 86400);
 }
 
+function fmtTimeLeft(deadline: number | null, lang: string) {
+  if (!deadline) return null;
+  const seconds = deadline - Math.floor(Date.now() / 1000);
+  if (seconds <= 0) return lang === 'cn' ? '已结束' : 'Ended';
+  const days = Math.floor(seconds / 86400);
+  if (days >= 1) return lang === 'cn' ? `${days} 天` : `${days}d`;
+  const hours = Math.max(1, Math.floor(seconds / 3600));
+  return lang === 'cn' ? `${hours} 小时` : `${hours}h`;
+}
+
 function fundingGrade(rate: number): { grade: string; color: string } {
   if (rate >= 1000) return { grade: 'A++', color: 'bg-emerald-600' };
   if (rate >= 500) return { grade: 'A+', color: 'bg-emerald-500' };
@@ -157,6 +167,7 @@ export default function ProjectDetailPage() {
   const [platformTracking, setPlatformTracking] = useState<TrackingSettings | null>(null);
   const [trackLoading, setTrackLoading] = useState(false);
   const [scraping, setScraping] = useState(false);
+  const [autoSyncAttempted, setAutoSyncAttempted] = useState(false);
   const [ktImporting, setKtImporting] = useState(false);
 
   // Snapshot data
@@ -277,14 +288,26 @@ export default function ProjectDetailPage() {
     setScraping(false);
   };
 
+  useEffect(() => {
+    if (autoSyncAttempted || !user || !project || project.state !== 'live' || scraping) return;
+    const latestKsSnapshot = [...snapshots].reverse().find(s => s.source !== 'kicktraq_active');
+    const freshEnough = latestKsSnapshot && (Date.now() / 1000 - latestKsSnapshot.captured_at) < 30 * 60;
+    if (freshEnough) return;
+    setAutoSyncAttempted(true);
+    triggerScrape();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoSyncAttempted, user, project?.id, project?.state, snapshots.length, scraping]);
+
   const [ktError, setKtError] = useState('');
   const [ktNoData, setKtNoData] = useState(false);
+  const [ktNoDataMessage, setKtNoDataMessage] = useState('');
   const importKicktraq = async () => {
     if (!user) { showLogin(); return; }
     if (!id) return;
     setKtImporting(true);
     setKtError('');
     setKtNoData(false);
+    setKtNoDataMessage('');
     try {
       const res = await fetch(`/api/kicktraq/${id}`, { method: 'POST' });
       const data = await res.json() as { ok: boolean; noData?: boolean; days?: number; message?: string };
@@ -292,6 +315,7 @@ export default function ProjectDetailPage() {
         loadSnapshots();
       } else if (data.noData) {
         setKtNoData(true);
+        setKtNoDataMessage(data.message ?? '');
       } else {
         setKtError(data.message ?? 'Import failed');
       }
@@ -342,9 +366,14 @@ export default function ProjectDetailPage() {
   );
   if (!project) return null;
 
-  const fundingRate = project.goal > 0 ? (project.usd_pledged / project.goal) * 100 : 0;
+  const latestSnapshot = [...snapshots].reverse().find(s => s.pledged_usd > 0);
+  const displayPledged = latestSnapshot?.pledged_usd ?? project.usd_pledged;
+  const displayBackers = latestSnapshot?.backers_count ?? project.backers_count;
+  const displayGoal = project.goal;
+  const fundingRate = displayGoal > 0 ? (displayPledged / displayGoal) * 100 : 0;
   const duration = calcDuration(project);
-  const avgDailyPledged = duration && duration > 0 ? project.usd_pledged / duration : null;
+  const avgDailyPledged = duration && duration > 0 ? displayPledged / duration : null;
+  const timeLeft = fmtTimeLeft(project.deadline, lang);
   const grade = fundingGrade(fundingRate);
   const ksUrl = project.source_url?.startsWith('https://www.kickstarter.com/projects/') ? project.source_url : null;
   const kicktraqUrl = project.creator_slug && project.slug ? `https://www.kicktraq.com/projects/${project.creator_slug}/${project.slug}/` : null;
@@ -414,17 +443,6 @@ export default function ProjectDetailPage() {
               {isFavorited ? tr.saved : tr.saveBtn}
             </button>
 
-            <button onClick={toggleTracking} disabled={trackLoading}
-              title={lang === 'cn' ? '加入平台自动追踪队列；后台会按频率持续抓取快照、奖励和文案变更。' : 'Join the shared tracking queue. The background crawler will keep collecting snapshots, rewards, and text changes.'}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
-                tracking?.is_tracking
-                  ? 'bg-ks-green/20 text-ks-green border-ks-green/30 hover:bg-ks-green/30'
-                  : 'bg-gray-800 text-gray-400 border-gray-700 hover:bg-ks-green/10 hover:text-ks-green'
-              }`}>
-              <Radio className={`w-3.5 h-3.5 ${tracking?.is_tracking ? 'animate-pulse' : ''}`} />
-              {tracking?.is_tracking ? tr.trackingBtn : tr.trackBtn}
-            </button>
-
             <button onClick={triggerScrape} disabled={scraping}
               title={lang === 'cn' ? '立刻从 Kickstarter 项目 JSON 抓取一次最新快照和奖励，不等待后台队列。' : 'Fetch the latest Kickstarter JSON snapshot and rewards once, without waiting for the queue.'}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-800 text-gray-400 border border-gray-700 hover:bg-gray-700 text-xs font-semibold transition-colors disabled:opacity-50">
@@ -450,21 +468,21 @@ export default function ProjectDetailPage() {
         {/* Stats bar */}
         <div className="flex items-center gap-8 pb-0 overflow-x-auto">
           <div className="shrink-0">
-            <p className="text-3xl font-black text-white">{fmtUsd(project.usd_pledged)}</p>
-            <p className="text-xs text-gray-500">{tr.pledgedOf(fmtUsd(project.goal))}</p>
+            <p className="text-3xl font-black text-white">{fmtUsd(displayPledged)}</p>
+            <p className="text-xs text-gray-500">{tr.pledgedOf(fmtUsd(displayGoal))}</p>
           </div>
           <div className="shrink-0">
             <p className="text-3xl font-black text-white">{fundingRate >= 10000 ? '>10K' : fundingRate.toFixed(0)}%</p>
             <p className="text-xs text-gray-500">{tr.fundedLabel}</p>
           </div>
           <div className="shrink-0">
-            <p className="text-3xl font-black text-white">{project.backers_count.toLocaleString()}</p>
+            <p className="text-3xl font-black text-white">{displayBackers.toLocaleString()}</p>
             <p className="text-xs text-gray-500">{tr.backersLabel}</p>
           </div>
-          {duration && (
+          {timeLeft && (
             <div className="shrink-0">
-              <p className="text-3xl font-black text-white">{duration}</p>
-              <p className="text-xs text-gray-500">{tr.dayCampaign}</p>
+              <p className="text-3xl font-black text-white">{timeLeft}</p>
+              <p className="text-xs text-gray-500">{lang === 'cn' ? '剩余时间' : 'time left'}</p>
             </div>
           )}
           {avgDailyPledged && (
@@ -511,9 +529,9 @@ export default function ProjectDetailPage() {
               </div>
               <StatCard label={tr.fundingRateLabel} value={`${fundingRate >= 10000 ? '>10,000' : fundingRate.toFixed(0)}%`}
                 sub={fundingRate >= 100 ? tr.exceeded : tr.belowGoal} />
-              <StatCard label={tr.backersLabel} value={project.backers_count.toLocaleString()}
-                sub={avgDailyPledged ? `${(project.backers_count / (duration ?? 1)).toFixed(1)}${tr.dayAvgSuffix}` : undefined} />
-              <StatCard label={tr.totalRaisedLabel} value={fmtUsd(project.usd_pledged)} sub={tr.goalPrefix(fmtUsd(project.goal))} />
+              <StatCard label={tr.backersLabel} value={displayBackers.toLocaleString()}
+                sub={duration ? `${(displayBackers / Math.max(1, duration)).toFixed(1)}${tr.dayAvgSuffix}` : undefined} />
+              <StatCard label={tr.totalRaisedLabel} value={fmtUsd(displayPledged)} sub={tr.goalPrefix(fmtUsd(displayGoal))} />
             </div>
 
             {/* Timeline */}
@@ -606,7 +624,7 @@ export default function ProjectDetailPage() {
                 {ktNoData && (
                   <p className="text-xs text-gray-400 bg-gray-50 rounded-lg px-3 py-2 max-w-md mx-auto">
                     {lang === 'cn'
-                      ? 'Kicktraq 的图表数据通过浏览器端 JS 加载，服务器无法直接获取。点击"从 Kickstarter 获取"开始积累逐日数据。'
+                      ? (ktNoDataMessage || 'Kicktraq 的逐日图表没有可解析数据；如果页面只有图片图表，需要配置 OCR key 后再导入。')
                       : 'Kicktraq chart data loads via browser-side JS and cannot be fetched server-side. Use "Fetch from Kickstarter" to start collecting daily snapshots.'}
                   </p>
                 )}
@@ -643,51 +661,13 @@ export default function ProjectDetailPage() {
                 </div>
               </div>
 
-              {tracking?.is_tracking ? (
-                <div className="border-t border-gray-100 pt-5">
-                  <h4 className="font-semibold text-gray-700 text-sm mb-4">{detailCopy.personalTitle}</h4>
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-                    {[
-                      { key: 'track_rewards', label: tr.trackRewardsLabel },
-                      { key: 'track_text_diff', label: tr.trackTextDiffLabel },
-                      { key: 'track_comments', label: tr.trackCommentsLabel },
-                      { key: 'analyze_comments', label: tr.trackAILabel },
-                    ].map(({ key, label }) => (
-                      <label key={key} className="flex items-center gap-2 cursor-pointer select-none">
-                        <div className="relative">
-                          <input type="checkbox"
-                            checked={!!(tracking[key as keyof TrackingSettings])}
-                            onChange={e => updateTrackSetting(key, e.target.checked ? 1 : 0)}
-                            className="sr-only peer" />
-                          <div className="w-9 h-5 bg-gray-200 rounded-full peer-checked:bg-ks-green transition-colors" />
-                          <div className="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow peer-checked:translate-x-4 transition-transform" />
-                        </div>
-                        <span className="text-sm text-gray-700">{label}</span>
-                      </label>
-                    ))}
-                  </div>
-                  <div className="mt-4 flex flex-wrap items-center gap-3">
-                    <span className="text-sm text-gray-600">{tr.updateFreq}</span>
-                    {[{ v: 1, label: tr.every4h }, { v: 2, label: tr.every1h }].map(({ v, label }) => (
-                      <button key={v} onClick={() => updateTrackSetting('priority', v)}
-                        className={`px-3 py-1 rounded-lg text-xs font-semibold border ${tracking.priority === v ? 'bg-ks-green text-white border-ks-green' : 'bg-white text-gray-600 border-gray-200'}`}>
-                        {label}
-                      </button>
-                    ))}
-                    <span className="text-xs text-gray-400">{detailCopy.nextCadence(cadenceLabel)}</span>
-                  </div>
-                </div>
-              ) : (
-                <div className="border-t border-gray-100 pt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                  <p className="text-sm text-gray-500">{detailCopy.joinTracking}</p>
-                  <button onClick={toggleTracking} disabled={trackLoading}
-                    title={lang === 'cn' ? '加入平台自动追踪队列；后台会按频率持续抓取。' : 'Join the shared tracking queue for scheduled background crawling.'}
-                    className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-ks-green text-white text-sm font-semibold hover:bg-ks-green-dark disabled:opacity-50">
-                    <Radio className="w-4 h-4" />
-                    {tr.trackBtn}
-                  </button>
-                </div>
-              )}
+              <div className="border-t border-gray-100 pt-4">
+                <p className="text-sm text-gray-500">
+                  {lang === 'cn'
+                    ? '进行中的项目会自动进入平台追踪队列，后台会持续同步快照、奖励和文案变化。'
+                    : 'Live projects enter the shared tracking queue automatically. The crawler keeps syncing snapshots, rewards, and text changes in the background.'}
+                </p>
+              </div>
             </div>
 
             <DataSource />

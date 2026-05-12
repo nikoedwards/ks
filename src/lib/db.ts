@@ -394,6 +394,7 @@ export async function getProjects(filter: ProjectFilter = {}) {
             p.staff_pick, p.launched_at, p.deadline, p.source_url, p.slug,
             p.image_url, p.image_thumb_url, p.data_source,
             CASE
+              WHEN s.source = 'kicktraq_active' AND COALESCE(p.currency, 'USD') <> 'USD' THEN NULL
               WHEN s.pledged_usd IS NOT NULL AND (s.pledged_usd > 0 OR p.usd_pledged = 0) THEN s.pledged_usd
               ELSE NULL
             END as live_pledged_usd,
@@ -403,7 +404,7 @@ export async function getProjects(filter: ProjectFilter = {}) {
      FROM projects p
      LEFT JOIN (
        SELECT ps.project_id, ps.captured_at, ps.pledged_usd,
-              ps.backers_count as snap_backers, ps.days_to_go, ps.state
+              ps.backers_count as snap_backers, ps.days_to_go, ps.state, ps.source
        FROM project_snapshots ps
        JOIN (
          SELECT project_id, MAX(id) as id
@@ -691,6 +692,7 @@ export function updateProjectLiveMetadata(projectId: string, data: {
   name?: string | null;
   blurb?: string | null;
   state?: string | null;
+  goal_usd?: number | null;
   pledged_usd?: number | null;
   backers_count?: number | null;
   image_url?: string | null;
@@ -701,6 +703,7 @@ export function updateProjectLiveMetadata(projectId: string, data: {
       name = COALESCE(@name, name),
       blurb = COALESCE(@blurb, blurb),
       state = COALESCE(@state, state),
+      goal = CASE WHEN @goal_usd IS NOT NULL THEN @goal_usd ELSE goal END,
       usd_pledged = CASE WHEN @pledged_usd IS NOT NULL THEN @pledged_usd ELSE usd_pledged END,
       backers_count = CASE WHEN @backers_count IS NOT NULL THEN @backers_count ELSE backers_count END,
       image_url = COALESCE(@image_url, image_url),
@@ -712,6 +715,7 @@ export function updateProjectLiveMetadata(projectId: string, data: {
     name: data.name ?? null,
     blurb: data.blurb ?? null,
     state: data.state ?? null,
+    goal_usd: data.goal_usd ?? null,
     pledged_usd: data.pledged_usd ?? null,
     backers_count: data.backers_count ?? null,
     image_url: data.image_url ?? null,
@@ -734,6 +738,13 @@ export const DEFAULT_NAV_ITEMS = [
 
 export type NavKey = typeof DEFAULT_NAV_ITEMS[number];
 
+const ADMIN_ONLY_NAV_ITEMS = new Set<NavKey>([
+  'data-quality',
+  'settings',
+  'admin-users',
+  'admin-nav',
+]);
+
 export function ensureDefaultNavSettings() {
   const db = getDB();
   const stmt = db.prepare(`
@@ -742,7 +753,7 @@ export function ensureDefaultNavSettings() {
   `);
   const tx = db.transaction(() => {
     DEFAULT_NAV_ITEMS.forEach((key, index) => {
-      const adminOnly = key === 'admin-users' || key === 'admin-nav';
+      const adminOnly = ADMIN_ONLY_NAV_ITEMS.has(key);
       const hiddenByDefault = key === 'dashboard';
       stmt.run({
         nav_key: key,
@@ -751,6 +762,11 @@ export function ensureDefaultNavSettings() {
         user_visible: adminOnly || hiddenByDefault ? 0 : 1,
       });
     });
+    db.prepare(`
+      UPDATE nav_settings
+      SET user_visible = 0
+      WHERE nav_key IN ('data-quality', 'settings', 'admin-users', 'admin-nav')
+    `).run();
   });
   tx();
 }
@@ -789,11 +805,12 @@ export function updateNavSettings(items: { nav_key: string; sort_order: number; 
   const tx = getDB().transaction(() => {
     for (const item of items) {
       if (!allowed.has(item.nav_key as NavKey)) continue;
+      const adminOnly = ADMIN_ONLY_NAV_ITEMS.has(item.nav_key as NavKey);
       stmt.run({
         nav_key: item.nav_key,
         sort_order: item.sort_order,
         admin_visible: item.admin_visible ? 1 : 0,
-        user_visible: item.user_visible ? 1 : 0,
+        user_visible: adminOnly ? 0 : (item.user_visible ? 1 : 0),
       });
     }
   });
@@ -1204,7 +1221,7 @@ export function getProjectIdBySlug(creatorSlug: string, projectSlug: string): st
  */
 export function mergeKicktraqIntoProject(canonicalId: string, ktData: {
   backers_count?: number;
-  pledged?: number;
+  pledged_usd?: number | null;
   launched_at?: number | null;
   deadline?: number | null;
   category_parent?: string | null;
@@ -1215,7 +1232,7 @@ export function mergeKicktraqIntoProject(canonicalId: string, ktData: {
   db.prepare(`
     UPDATE projects SET
       backers_count = MAX(backers_count, @backers_count),
-      usd_pledged   = CASE WHEN @pledged > usd_pledged THEN @pledged ELSE usd_pledged END,
+      usd_pledged   = CASE WHEN @pledged_usd IS NOT NULL AND @pledged_usd > 0 THEN @pledged_usd ELSE usd_pledged END,
       launched_at   = COALESCE(launched_at, @launched_at),
       deadline      = COALESCE(deadline, @deadline),
       category_parent = COALESCE(category_parent, @category_parent),
@@ -1229,7 +1246,7 @@ export function mergeKicktraqIntoProject(canonicalId: string, ktData: {
   `).run({
     id: canonicalId,
     backers_count: ktData.backers_count ?? 0,
-    pledged: ktData.pledged ?? 0,
+    pledged_usd: ktData.pledged_usd ?? null,
     launched_at: ktData.launched_at ?? null,
     deadline: ktData.deadline ?? null,
     category_parent: ktData.category_parent ?? null,
@@ -1542,8 +1559,13 @@ export function insertSnapshot(snap: Omit<Snapshot, 'source'> & { project_id: st
 
 export function getSnapshots(projectId: string, limitRows = 500): Snapshot[] {
   return getDB().prepare(`
-    SELECT captured_at, pledged_usd, backers_count, days_to_go, comments_count, updates_count, state, source
-    FROM project_snapshots WHERE project_id = ? ORDER BY captured_at ASC LIMIT ?
+    SELECT s.captured_at, s.pledged_usd, s.backers_count, s.days_to_go,
+           s.comments_count, s.updates_count, s.state, s.source
+    FROM project_snapshots s
+    JOIN projects p ON p.id = s.project_id
+    WHERE s.project_id = ?
+      AND NOT (s.source = 'kicktraq_active' AND COALESCE(p.currency, 'USD') <> 'USD')
+    ORDER BY s.captured_at ASC LIMIT ?
   `).all(projectId, limitRows) as Snapshot[];
 }
 
