@@ -1,4 +1,5 @@
 import {
+  getProjectById,
   insertSnapshot,
   insertRewardSnapshots,
   insertTextIfChanged,
@@ -121,12 +122,23 @@ export async function scrapeAndStore(projectId: string, jsonUrl: string, opts: S
 
   const now = Math.floor(Date.now() / 1000);
   const { pledgedUsd, goalUsd } = resolveUsdAmounts(p);
+  const existing = await getProjectById(projectId) as { usd_pledged?: number; backers_count?: number } | null;
+  const existingPledged = Number(existing?.usd_pledged ?? 0);
+  const existingBackers = Number(existing?.backers_count ?? 0);
+  const fetchedBackers = Number(p.backers_count ?? 0);
+
+  if (pledgedUsd <= 0 && fetchedBackers <= 0 && (existingPledged > 0 || existingBackers > 0)) {
+    return false;
+  }
+
+  const safePledgedUsd = pledgedUsd > 0 ? pledgedUsd : existingPledged;
+  const safeBackers = fetchedBackers > 0 ? fetchedBackers : existingBackers;
 
   insertSnapshot({
     project_id: projectId,
     captured_at: now,
-    pledged_usd: pledgedUsd,
-    backers_count: p.backers_count ?? 0,
+    pledged_usd: safePledgedUsd,
+    backers_count: safeBackers,
     days_to_go: daysToGo(p.deadline),
     comments_count: p.comments_count ?? 0,
     updates_count: p.updates_count ?? 0,
@@ -137,9 +149,9 @@ export async function scrapeAndStore(projectId: string, jsonUrl: string, opts: S
     name: p.name,
     blurb: p.blurb ?? null,
     state: p.state ?? null,
-    goal_usd: goalUsd,
-    pledged_usd: pledgedUsd,
-    backers_count: p.backers_count ?? null,
+    goal_usd: goalUsd > 0 ? goalUsd : null,
+    pledged_usd: safePledgedUsd > 0 ? safePledgedUsd : null,
+    backers_count: safeBackers > 0 ? safeBackers : null,
     image_url: p.photo?.full ?? p.photo?.['1536x864'] ?? p.photo?.['1024x576'] ?? p.photo?.ed ?? p.photo?.med ?? p.photo?.small ?? null,
     image_thumb_url: p.photo?.little ?? p.photo?.thumb ?? p.photo?.small ?? p.photo?.ed ?? p.photo?.med ?? p.photo?.full ?? null,
   });

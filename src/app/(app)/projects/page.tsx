@@ -297,10 +297,10 @@ export default function ProjectsPage() {
 
   const SortableTh = ({ col, children, right }: { col: SortableCol; children: React.ReactNode; right?: boolean }) => (
     <th
-      className={`px-4 py-3 ${right ? 'text-right' : ''} cursor-pointer select-none hover:text-gray-600 transition-colors`}
+      className={`px-4 py-3 whitespace-nowrap align-middle ${right ? 'text-right' : 'text-left'} cursor-pointer select-none hover:text-gray-600 transition-colors`}
       onClick={() => gate(() => handleColumnSort(col))}
     >
-      <span className="inline-flex items-center gap-0.5">
+      <span className={`inline-flex items-center gap-1 ${right ? 'justify-end w-full' : ''}`}>
         {children}
         <SortIcon col={col} sort={sort} sortDir={sortDir} />
       </span>
@@ -429,10 +429,25 @@ export default function ProjectsPage() {
               </button>
             </div>
             <div className="overflow-x-auto">
-              <table className="w-full text-sm">
+              <table className="w-full min-w-[1580px] table-fixed text-sm">
+                <colgroup>
+                  <col className="w-12" />
+                  <col className="w-14" />
+                  <col className="w-[420px]" />
+                  <col className="w-28" />
+                  <col className="w-40" />
+                  <col className="w-28" />
+                  <col className="w-32" />
+                  <col className="w-24" />
+                  <col className="w-24" />
+                  <col className="w-24" />
+                  <col className="w-20" />
+                  <col className="w-32" />
+                  <col className="w-20" />
+                </colgroup>
                 <thead>
                   <tr className="bg-gray-50 text-left text-xs font-semibold text-gray-400 uppercase tracking-wide">
-                    <th className="px-4 py-3 w-8">
+                    <th className="px-4 py-3 whitespace-nowrap align-middle">
                       <input
                         type="checkbox"
                         checked={allPageSelected}
@@ -441,18 +456,18 @@ export default function ProjectsPage() {
                         className="rounded border-gray-300 accent-ks-green cursor-pointer"
                       />
                     </th>
-                    <th className="px-4 py-3 w-10">#</th>
-                    <th className="px-4 py-3">{tr.colName}</th>
-                    <th className="px-4 py-3">{tr.colStatus}</th>
-                    <th className="px-4 py-3">{tr.colCategory}</th>
+                    <th className="px-4 py-3 whitespace-nowrap align-middle">#</th>
+                    <th className="px-4 py-3 whitespace-nowrap align-middle">{tr.colName}</th>
+                    <th className="px-4 py-3 whitespace-nowrap align-middle">{tr.colStatus}</th>
+                    <th className="px-4 py-3 whitespace-nowrap align-middle">{tr.colCategory}</th>
                     <SortableTh col={colSortKey['goal']} right>{tr.colGoal}</SortableTh>
                     <SortableTh col={colSortKey['usd_pledged']} right>{tr.colPledged}</SortableTh>
                     <SortableTh col={colSortKey['funding_rate']} right>{tr.colFunded}</SortableTh>
                     <SortableTh col={colSortKey['backers']} right>{tr.colBackers}</SortableTh>
-                    <th className="px-4 py-3 text-right">{tr.colDays}</th>
-                    <th className="px-4 py-3">{tr.colCountry}</th>
+                    <th className="px-4 py-3 text-right whitespace-nowrap align-middle">{tr.colDays}</th>
+                    <th className="px-4 py-3 whitespace-nowrap align-middle">{tr.colCountry}</th>
                     <SortableTh col={colSortKey['launched']}>{tr.colLaunch}</SortableTh>
-                    <th className="px-4 py-3"></th>
+                    <th className="px-4 py-3 whitespace-nowrap align-middle"></th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-50">

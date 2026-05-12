@@ -162,7 +162,6 @@ export default function ProjectDetailPage() {
 
   const [activeTab, setActiveTab] = useState<TabId>('overview');
 
-  // Tracking
   const [tracking, setTracking] = useState<TrackingSettings | null>(null);
   const [platformTracking, setPlatformTracking] = useState<TrackingSettings | null>(null);
   const [trackLoading, setTrackLoading] = useState(false);
@@ -370,6 +369,7 @@ export default function ProjectDetailPage() {
   const displayPledged = latestSnapshot?.pledged_usd ?? project.usd_pledged;
   const displayBackers = latestSnapshot?.backers_count ?? project.backers_count;
   const displayGoal = project.goal;
+  const displayGoalText = displayGoal > 0 ? fmtUsd(displayGoal) : (lang === 'cn' ? '未知' : 'unknown');
   const fundingRate = displayGoal > 0 ? (displayPledged / displayGoal) * 100 : 0;
   const duration = calcDuration(project);
   const avgDailyPledged = duration && duration > 0 ? displayPledged / duration : null;
@@ -469,7 +469,7 @@ export default function ProjectDetailPage() {
         <div className="flex items-center gap-8 pb-0 overflow-x-auto">
           <div className="shrink-0">
             <p className="text-3xl font-black text-white">{fmtUsd(displayPledged)}</p>
-            <p className="text-xs text-gray-500">{tr.pledgedOf(fmtUsd(displayGoal))}</p>
+            <p className="text-xs text-gray-500">{tr.pledgedOf(displayGoalText)}</p>
           </div>
           <div className="shrink-0">
             <p className="text-3xl font-black text-white">{fundingRate >= 10000 ? '>10K' : fundingRate.toFixed(0)}%</p>
@@ -531,7 +531,7 @@ export default function ProjectDetailPage() {
                 sub={fundingRate >= 100 ? tr.exceeded : tr.belowGoal} />
               <StatCard label={tr.backersLabel} value={displayBackers.toLocaleString()}
                 sub={duration ? `${(displayBackers / Math.max(1, duration)).toFixed(1)}${tr.dayAvgSuffix}` : undefined} />
-              <StatCard label={tr.totalRaisedLabel} value={fmtUsd(displayPledged)} sub={tr.goalPrefix(fmtUsd(displayGoal))} />
+              <StatCard label={tr.totalRaisedLabel} value={fmtUsd(displayPledged)} sub={tr.goalPrefix(displayGoalText)} />
             </div>
 
             {/* Timeline */}
@@ -637,7 +637,7 @@ export default function ProjectDetailPage() {
             )}
 
             {/* Tracking settings panel */}
-            <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5 space-y-5">
+            <div className="hidden">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                 <div>
                   <div className="flex items-center gap-2">
