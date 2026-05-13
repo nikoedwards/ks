@@ -1329,7 +1329,8 @@ export function getLandingData() {
   const latestMonth = db.prepare(`
     ${select}
     WHERE launched_at >= @monthAgo
-    ORDER BY launched_at DESC, usd_pledged DESC
+      AND COALESCE(usd_pledged, 0) > 0
+    ORDER BY usd_pledged DESC, backers_count DESC
     LIMIT 5
   `).all({ monthAgo });
   const topPledged = db.prepare(`

@@ -11,6 +11,7 @@ import {
   ResponsiveContainer, LineChart, Line, Legend,
 } from 'recharts';
 import DataSource from '@/components/DataSource';
+import ImagePreview from '@/components/ImagePreview';
 import { useLanguage } from '@/hooks/useLanguage';
 import { t } from '@/lib/i18n';
 import { useAuth } from '@/contexts/AuthContext';
@@ -427,6 +428,7 @@ export default function ProjectDetailPage() {
   const ksUrl = project.source_url?.startsWith('https://www.kickstarter.com/projects/') ? project.source_url : null;
   const creatorUrl = project.creator_url || (project.creator_slug ? `https://www.kickstarter.com/profile/${project.creator_slug}` : null);
   const kicktraqUrl = project.creator_slug && project.slug ? `https://www.kicktraq.com/projects/${project.creator_slug}/${project.slug}/` : null;
+  const heroImage = project.image_url || project.image_thumb_url;
   const hasRealData = snapshots.length > 0;
   const sharedTrackingActive = !!platformTracking?.is_tracking;
   const subscriberCount = platformTracking?.subscriber_count ?? 0;
@@ -455,7 +457,7 @@ export default function ProjectDetailPage() {
       {/* ── Hero header (Social Blade style) ───────────────────────────────── */}
       <div className="bg-gray-900 rounded-t-2xl px-6 pt-6 pb-0">
         {/* Top row */}
-        <div className="flex items-start justify-between gap-4 mb-4">
+        <div className="flex flex-col items-start justify-between gap-4 mb-4 lg:flex-row">
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 flex-wrap mb-2">
               <span className={`px-2.5 py-1 rounded-full text-xs font-semibold ${STATE_COLOR[project.state] ?? 'bg-gray-700 text-gray-300'}`}>
@@ -489,16 +491,25 @@ export default function ProjectDetailPage() {
             </div>
           </div>
 
-          {/* Action buttons */}
-          <div className="flex gap-2 shrink-0 flex-wrap justify-end">
-            <button onClick={toggleFavorite}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
-                isFavorited ? 'bg-red-900/40 text-red-400 border-red-800/40 hover:bg-red-900/60'
-                  : 'bg-gray-800 text-gray-400 border-gray-700 hover:bg-red-900/30 hover:text-red-400'
-              }`}>
-              <Heart className={`w-3.5 h-3.5 ${isFavorited ? 'fill-current' : ''}`} />
-              {isFavorited ? tr.saved : tr.saveBtn}
-            </button>
+          <div className="w-full shrink-0 space-y-3 lg:w-[420px]">
+            {heroImage && (
+              <div className="overflow-hidden rounded-xl border border-white/10 bg-gray-800 shadow-lg">
+                <ImagePreview src={heroImage} className="block h-full w-full">
+                  <img src={heroImage} alt={project.name} className="aspect-video w-full object-cover" loading="lazy" referrerPolicy="no-referrer" />
+                </ImagePreview>
+              </div>
+            )}
+
+            {/* Action buttons */}
+            <div className="flex gap-2 flex-wrap justify-end">
+              <button onClick={toggleFavorite}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
+                  isFavorited ? 'bg-red-900/40 text-red-400 border-red-800/40 hover:bg-red-900/60'
+                    : 'bg-gray-800 text-gray-400 border-gray-700 hover:bg-red-900/30 hover:text-red-400'
+                }`}>
+                <Heart className={`w-3.5 h-3.5 ${isFavorited ? 'fill-current' : ''}`} />
+                {isFavorited ? tr.saved : tr.saveBtn}
+              </button>
 
             <button onClick={triggerScrape} disabled={scraping}
               title={lang === 'cn' ? '立刻从 Kickstarter 项目 JSON 抓取一次最新快照和奖励，不等待后台队列。' : 'Fetch the latest Kickstarter JSON snapshot and rewards once, without waiting for the queue.'}
@@ -526,6 +537,7 @@ export default function ProjectDetailPage() {
                 <TrendingUp className="w-3.5 h-3.5" /> Kicktraq
               </a>
             )}
+            </div>
           </div>
         </div>
 

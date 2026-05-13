@@ -487,15 +487,6 @@ export default function ProjectsPage() {
             </select>
           </div>
 
-          <div>
-            <label className="text-xs font-medium text-gray-400 mb-1 block">{tr.sortLabel}</label>
-            <select value={sort} onChange={e => gate(() => { setSort(e.target.value); setSortDir('desc'); setPage(1); })} className={selectCls}>
-              {(Object.keys(tr.sorts) as (keyof typeof tr.sorts)[]).map(k => (
-                <option key={k} value={k}>{tr.sorts[k]}</option>
-              ))}
-            </select>
-          </div>
-
           <button type="submit"
             className="bg-ks-green hover:bg-ks-green-dark text-white px-4 py-2 rounded-lg text-sm font-semibold transition-colors shadow-sm">
             {tr.searchBtn}

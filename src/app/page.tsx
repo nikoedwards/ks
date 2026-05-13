@@ -11,7 +11,17 @@ import { t } from '@/lib/i18n';
 import LoginModal from '@/components/LoginModal';
 
 interface PlatformStats { total: number; success_rate: number; total_pledged_usd: number; category_count?: number; }
-interface SearchHit { id: string; name: string; category_parent: string; state: string; usd_pledged?: number; launched_at?: number; }
+interface LiveSummary { pledged_delta_24h?: number; launched_24h?: number; }
+interface SearchHit {
+  id: string;
+  name: string;
+  category_parent: string;
+  state: string;
+  usd_pledged?: number;
+  launched_at?: number;
+  image_url?: string | null;
+  image_thumb_url?: string | null;
+}
 interface LandingProject extends SearchHit { backers_count?: number; goal?: number; }
 
 function fmtMoneyCompact(value: number) {
@@ -189,26 +199,45 @@ export default function LandingPage() {
   const router = useRouter();
 
   const [stats, setStats] = useState<PlatformStats | null>(null);
+  const [liveSummary, setLiveSummary] = useState<LiveSummary | null>(null);
+  const [statsFetchedAt, setStatsFetchedAt] = useState<number | null>(null);
+  const [clock, setClock] = useState(Date.now());
   const [top2026, setTop2026] = useState<LandingProject[]>([]);
-  const [defaultSuggestions, setDefaultSuggestions] = useState<{ latestMonth: SearchHit[]; topPledged: SearchHit[] }>({ latestMonth: [], topPledged: [] });
+  const [defaultSuggestions, setDefaultSuggestions] = useState<{ latestMonth: SearchHit[] }>({ latestMonth: [] });
   const [navSearch, setNavSearch] = useState('');
   const [suggestions, setSuggestions] = useState<SearchHit[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const suggestRef = useRef<HTMLDivElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  useEffect(() => {
+  const loadStats = useCallback(() => {
     fetch('/api/stats').then(r => r.json()).then(d => {
       if (d.stats) setStats(d.stats);
+      if (d.liveSummary) {
+        setLiveSummary({
+          pledged_delta_24h: Number(d.liveSummary.pledged_delta_24h ?? 0),
+          launched_24h: Number(d.liveSummary.launched_24h ?? 0),
+        });
+        setStatsFetchedAt(Date.now());
+      }
       if (d.landing) {
         setTop2026(d.landing.top2026 ?? []);
         setDefaultSuggestions({
           latestMonth: d.landing.latestMonth ?? [],
-          topPledged: d.landing.topPledged ?? [],
         });
       }
     }).catch(() => {});
   }, []);
+
+  useEffect(() => {
+    loadStats();
+    const poll = window.setInterval(loadStats, 15000);
+    const tick = window.setInterval(() => setClock(Date.now()), 1000);
+    return () => {
+      window.clearInterval(poll);
+      window.clearInterval(tick);
+    };
+  }, [loadStats]);
 
   const fetchSuggestions = useCallback((q: string) => {
     if (!q.trim()) {
@@ -259,10 +288,18 @@ export default function LandingPage() {
     return String(n);
   };
 
+  const elapsedSeconds = statsFetchedAt ? Math.max(0, (clock - statsFetchedAt) / 1000) : 0;
+  const projectedPledgedM = stats
+    ? stats.total_pledged_usd + ((liveSummary?.pledged_delta_24h ?? 0) / 1_000_000 / 86400) * elapsedSeconds
+    : 0;
+  const projectedProjectTotal = stats
+    ? stats.total + Math.floor(((liveSummary?.launched_24h ?? 0) / 86400) * elapsedSeconds)
+    : 0;
+
   const platformStats = [
-    { label: tr.stats.projects,   value: stats ? fmtNum(stats.total)            : '200K+', color: 'text-ks-green' },
+    { label: tr.stats.projects,   value: stats ? fmtNum(projectedProjectTotal)  : '200K+', color: 'text-ks-green' },
     { label: tr.stats.rate,       value: stats ? `${stats.success_rate}%`        : '35%',   color: 'text-white' },
-    { label: tr.stats.raised,     value: stats ? `$${stats.total_pledged_usd}M`  : '$2B+',  color: 'text-white' },
+    { label: tr.stats.raised,     value: stats ? `$${projectedPledgedM.toFixed(2)}M` : '$2B+',  color: 'text-white' },
     { label: tr.stats.categories, value: stats?.category_count ? String(stats.category_count) : '18', color: 'text-white' },
   ];
 
@@ -388,25 +425,22 @@ export default function LandingPage() {
                       </div>
                     </button>
                   )) : (
-                    <div className="grid grid-cols-1 gap-0 md:grid-cols-2">
-                      <div className="border-b border-gray-50 md:border-b-0 md:border-r">
-                        <p className="px-4 py-2 text-xs font-bold text-gray-400">{lang === 'cn' ? '近一个月新发起 Top 5' : 'Newest launches in 30 days'}</p>
-                        {defaultSuggestions.latestMonth.slice(0, 5).map(s => (
-                          <button key={s.id} className="w-full px-4 py-2 text-left hover:bg-gray-50" onClick={() => { router.push(`/projects/${s.id}`); setShowSuggestions(false); }}>
-                            <div className="truncate text-sm font-semibold text-gray-800">{s.name}</div>
-                            <div className="text-xs text-gray-400">{s.category_parent} · {fmtMoneyCompact(s.usd_pledged ?? 0)}</div>
+                    <div>
+                      <p className="px-4 py-2 text-xs font-bold text-gray-400">{lang === 'cn' ? '近一个月新发起金额 Top 5' : 'Top funded launches in 30 days'}</p>
+                      {defaultSuggestions.latestMonth.slice(0, 5).map(s => {
+                        const img = s.image_thumb_url || s.image_url;
+                        return (
+                          <button key={s.id} className="flex w-full items-center gap-3 px-4 py-2 text-left hover:bg-gray-50" onClick={() => { router.push(`/projects/${s.id}`); setShowSuggestions(false); }}>
+                            <span className="h-10 w-16 shrink-0 overflow-hidden rounded-md bg-gray-100">
+                              {img ? <img src={img} alt="" className="h-full w-full object-cover" loading="lazy" referrerPolicy="no-referrer" /> : null}
+                            </span>
+                            <span className="min-w-0">
+                              <span className="block truncate text-sm font-semibold text-gray-800">{s.name}</span>
+                              <span className="block text-xs text-gray-400">{s.category_parent} · {fmtMoneyCompact(s.usd_pledged ?? 0)}</span>
+                            </span>
                           </button>
-                        ))}
-                      </div>
-                      <div>
-                        <p className="px-4 py-2 text-xs font-bold text-gray-400">{lang === 'cn' ? '金额排名 Top 5' : 'Top pledged campaigns'}</p>
-                        {defaultSuggestions.topPledged.slice(0, 5).map(s => (
-                          <button key={s.id} className="w-full px-4 py-2 text-left hover:bg-gray-50" onClick={() => { router.push(`/projects/${s.id}`); setShowSuggestions(false); }}>
-                            <div className="truncate text-sm font-semibold text-gray-800">{s.name}</div>
-                            <div className="text-xs text-gray-400">{s.category_parent} · {fmtMoneyCompact(s.usd_pledged ?? 0)}</div>
-                          </button>
-                        ))}
-                      </div>
+                        );
+                      })}
                     </div>
                   )}
                   {navSearch.trim() && <button

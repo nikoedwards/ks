@@ -20,8 +20,9 @@ export async function POST(req: NextRequest) {
     } catch (err) {
       deletePendingRegistration(normalizedEmail);
       console.error('[auth/register] Could not send verification email:', err);
+      const detail = err instanceof Error ? err.message : String(err);
       return NextResponse.json({
-        error: 'Could not send verification email. Please check the email address or try again later.',
+        error: `Could not send verification email: ${detail}`,
       }, { status: 502 });
     }
 

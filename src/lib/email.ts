@@ -11,6 +11,9 @@ export async function sendOtpEmail(toEmail: string, code: string): Promise<void>
   if (!process.env.RESEND_API_KEY) {
     throw new Error('RESEND_API_KEY is not configured.');
   }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(FROM)) {
+    throw new Error('FROM_EMAIL must be a complete sender address on your verified Resend domain, for example no-reply@kicksonar.com.');
+  }
   const result = await getResend().emails.send({
     from: FROM,
     to: toEmail,
@@ -27,6 +30,6 @@ export async function sendOtpEmail(toEmail: string, code: string): Promise<void>
     `,
   });
   if (result.error) {
-    throw new Error(result.error.message || 'Failed to send verification email.');
+    throw new Error(result.error.message || 'Resend rejected the verification email.');
   }
 }
