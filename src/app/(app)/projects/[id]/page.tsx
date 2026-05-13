@@ -427,7 +427,6 @@ export default function ProjectDetailPage() {
   const ksUrl = project.source_url?.startsWith('https://www.kickstarter.com/projects/') ? project.source_url : null;
   const creatorUrl = project.creator_url || (project.creator_slug ? `https://www.kickstarter.com/profile/${project.creator_slug}` : null);
   const kicktraqUrl = project.creator_slug && project.slug ? `https://www.kicktraq.com/projects/${project.creator_slug}/${project.slug}/` : null;
-  const projectImage = project.image_url || project.image_thumb_url;
   const hasRealData = snapshots.length > 0;
   const sharedTrackingActive = !!platformTracking?.is_tracking;
   const subscriberCount = platformTracking?.subscriber_count ?? 0;
@@ -455,12 +454,6 @@ export default function ProjectDetailPage() {
 
       {/* ── Hero header (Social Blade style) ───────────────────────────────── */}
       <div className="bg-gray-900 rounded-t-2xl px-6 pt-6 pb-0">
-        {projectImage && (
-          <div className="mb-5 aspect-[16/5] overflow-hidden rounded-xl border border-white/10 bg-gray-800 shadow-lg">
-            <img src={projectImage} alt="" className="h-full w-full object-cover" loading="lazy" referrerPolicy="no-referrer" />
-          </div>
-        )}
-
         {/* Top row */}
         <div className="flex items-start justify-between gap-4 mb-4">
           <div className="flex-1 min-w-0">

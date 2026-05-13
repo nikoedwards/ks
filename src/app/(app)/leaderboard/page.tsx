@@ -16,6 +16,7 @@ import {
   Users,
 } from 'lucide-react';
 import { useLanguage } from '@/hooks/useLanguage';
+import ImagePreview from '@/components/ImagePreview';
 
 interface LeaderboardProject {
   id: string;
@@ -34,6 +35,22 @@ interface LeaderboardProject {
   funded_pct: number;
 }
 
+interface LeaderboardCreator {
+  creator_key: string;
+  creator_name: string;
+  creator_slug: string | null;
+  project_count: number;
+  total_pledged_usd: number;
+  avg_pledged_usd: number;
+  total_backers: number;
+  best_project_id: string | null;
+  best_project_name: string | null;
+  best_project_image_url: string | null;
+  best_project_thumb_url: string | null;
+  category_parent: string | null;
+  country: string | null;
+}
+
 interface CategoryOption {
   category_parent: string;
   category_name: string | null;
@@ -43,6 +60,9 @@ interface CategoryOption {
 interface LeaderboardData {
   byPledged: LeaderboardProject[];
   byBackers: LeaderboardProject[];
+  creatorsByPledged: LeaderboardCreator[];
+  creatorsByCount: LeaderboardCreator[];
+  creatorsByAverage: LeaderboardCreator[];
   categories: CategoryOption[];
   generatedAt: number;
   summary: {
@@ -53,7 +73,7 @@ interface LeaderboardData {
   };
 }
 
-type Metric = 'pledged' | 'backers';
+type Metric = 'pledged' | 'backers' | 'creator-pledged' | 'creator-count' | 'creator-average';
 
 const PAGE_SIZE = 20;
 
@@ -126,7 +146,11 @@ function toTs(date: string, end = false) {
 
 function Thumb({ project }: { project: LeaderboardProject }) {
   const src = project.image_thumb_url ?? project.image_url;
-  if (src) return <img src={src} alt="" className="h-full w-full object-cover" loading="lazy" referrerPolicy="no-referrer" />;
+  if (src) return (
+    <ImagePreview src={src} className="block h-full w-full">
+      <img src={src} alt="" className="h-full w-full object-cover" loading="lazy" referrerPolicy="no-referrer" />
+    </ImagePreview>
+  );
   return <div className="h-full w-full bg-gray-100" />;
 }
 
@@ -162,7 +186,7 @@ export default function LeaderboardPage() {
     const params = new URLSearchParams(window.location.search);
     const metricParam = params.get('metric');
     const yearParam = params.get('year');
-    if (metricParam === 'backers') setMetric('backers');
+    if (metricParam === 'backers' || metricParam === 'creator-pledged' || metricParam === 'creator-count' || metricParam === 'creator-average') setMetric(metricParam);
     if (yearParam && /^\d{4}$/.test(yearParam)) {
       const y = Number(yearParam);
       const range = yearRange(y);
@@ -193,13 +217,22 @@ export default function LeaderboardPage() {
     return (data?.categories ?? []).filter(c => !categoryParent || c.category_parent === categoryParent);
   }, [data, categoryParent]);
 
-  const projects = metric === 'pledged' ? data?.byPledged ?? [] : data?.byBackers ?? [];
-  const totalPages = Math.max(1, Math.ceil(projects.length / PAGE_SIZE));
+  const creatorMetrics = metric === 'creator-pledged' || metric === 'creator-count' || metric === 'creator-average';
+  const projects = metric === 'backers' ? data?.byBackers ?? [] : data?.byPledged ?? [];
+  const creators = metric === 'creator-count'
+    ? data?.creatorsByCount ?? []
+    : metric === 'creator-average'
+    ? data?.creatorsByAverage ?? []
+    : data?.creatorsByPledged ?? [];
+  const rows = creatorMetrics ? creators : projects;
+  const totalPages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
   const pageProjects = projects.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  const pageCreators = creators.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
   const categoryLabel = categoryNameForShare(categoryName || categoryParent, cn);
+  const titleKind = creatorMetrics ? (cn ? 'Creator 榜单' : 'Creator Leaderboard') : (cn ? '项目榜单' : 'Projects');
   const title = cn
-    ? `${activeYear === 'custom' ? '自定义区间' : `${activeYear}年`} ${categoryLabel} Kickstarter TOP100 项目榜单`
-    : `${activeYear === 'custom' ? 'Custom Range' : activeYear} ${categoryLabel} Kickstarter Top 100`;
+    ? `${activeYear === 'custom' ? '自定义区间' : `${activeYear}年`} ${categoryLabel} Kickstarter TOP100 ${titleKind}`
+    : `${activeYear === 'custom' ? 'Custom Range' : activeYear} ${categoryLabel} Kickstarter Top 100 ${titleKind}`;
   const dataDate = data?.generatedAt
     ? new Date(data.generatedAt * 1000).toLocaleString(cn ? 'zh-CN' : 'en-US', { year: 'numeric', month: 'short', day: 'numeric' })
     : new Date().toLocaleDateString(cn ? 'zh-CN' : 'en-US');
@@ -295,12 +328,8 @@ export default function LeaderboardPage() {
     ctx.fillStyle = '#09351f';
     ctx.font = '700 34px Arial, sans-serif';
     ctx.fillText('Kicksonar x', 64, 78);
-    ctx.fillStyle = '#ffffff';
-    ctx.beginPath();
-    ctx.roundRect(248, 34, 282, 82, 16);
-    ctx.fill();
     if (kickstarterLogo) {
-      ctx.drawImage(kickstarterLogo, 268, 42, 240, 66);
+      ctx.drawImage(kickstarterLogo, 260, 30, 300, 84);
     } else {
       ctx.fillStyle = '#05ce78';
       ctx.font = '900 26px Arial, sans-serif';
@@ -461,18 +490,67 @@ export default function LeaderboardPage() {
             <h2 className="text-lg font-black text-gray-900">{title}</h2>
             <p className="text-xs text-gray-400">{cn ? '最多显示前 100 名，每页 20 个项目。' : 'Up to 100 projects, 20 per page.'}</p>
           </div>
-          <div className="flex rounded-lg bg-gray-100 p-1">
+          <div className="flex flex-wrap rounded-lg bg-gray-100 p-1">
             <button onClick={() => { setMetric('pledged'); setPage(1); }} className={`inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-sm font-bold ${metric === 'pledged' ? 'bg-white text-ks-green shadow-sm' : 'text-gray-500'}`}>
               <DollarSign className="h-4 w-4" />{cn ? '总金额' : 'Pledged'}
             </button>
             <button onClick={() => { setMetric('backers'); setPage(1); }} className={`inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-sm font-bold ${metric === 'backers' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500'}`}>
               <Users className="h-4 w-4" />{cn ? '支持者' : 'Backers'}
             </button>
+            <button onClick={() => { setMetric('creator-pledged'); setPage(1); }} className={`inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-sm font-bold ${metric === 'creator-pledged' ? 'bg-white text-ks-green shadow-sm' : 'text-gray-500'}`}>
+              <DollarSign className="h-4 w-4" />{cn ? 'Creator 总额' : 'Creator total'}
+            </button>
+            <button onClick={() => { setMetric('creator-count'); setPage(1); }} className={`inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-sm font-bold ${metric === 'creator-count' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500'}`}>
+              <Users className="h-4 w-4" />{cn ? 'Creator 次数' : 'Creator count'}
+            </button>
+            <button onClick={() => { setMetric('creator-average'); setPage(1); }} className={`inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-sm font-bold ${metric === 'creator-average' ? 'bg-white text-amber-600 shadow-sm' : 'text-gray-500'}`}>
+              <DollarSign className="h-4 w-4" />{cn ? '单次均额' : 'Avg per launch'}
+            </button>
           </div>
         </div>
 
         {loading ? (
           <div className="p-12 text-center text-gray-400">{cn ? '加载中...' : 'Loading...'}</div>
+        ) : creatorMetrics ? (
+          <div className="divide-y divide-gray-50">
+            {pageCreators.map((creator, index) => {
+              const rank = (page - 1) * PAGE_SIZE + index + 1;
+              const preview = creator.best_project_thumb_url ?? creator.best_project_image_url;
+              return (
+                <div key={creator.creator_key} className={`grid grid-cols-[44px_88px_1fr_auto] items-center gap-4 px-5 py-4 transition-colors hover:bg-gray-50 ${rank <= 3 ? 'bg-amber-50/30' : ''}`}>
+                  <span className={`flex h-9 min-w-9 items-center justify-center rounded-full px-2 text-sm font-black ${rankClass(rank)}`}>{rank}</span>
+                  <Link href={creator.best_project_id ? `/projects/${creator.best_project_id}` : '/projects'} className="h-16 w-24 overflow-hidden rounded-md bg-gray-100">
+                    {preview ? (
+                      <ImagePreview src={preview} className="block h-full w-full">
+                        <img src={preview} alt="" className="h-full w-full object-cover" loading="lazy" referrerPolicy="no-referrer" />
+                      </ImagePreview>
+                    ) : <div className="h-full w-full bg-gray-100" />}
+                  </Link>
+                  <span className="min-w-0">
+                    <span className="flex items-start gap-2">
+                      <span className="line-clamp-1 text-sm font-bold text-gray-900">{creator.creator_name}</span>
+                    </span>
+                    <span className="mt-1 block truncate text-xs text-gray-400">
+                      {creator.best_project_name ?? (cn ? '代表项目未知' : 'Representative project unknown')} / {creator.category_parent ?? 'Uncategorized'} / {creator.country ?? '--'}
+                    </span>
+                    <span className="mt-2 flex flex-wrap gap-2 text-xs">
+                      <span className="rounded-md bg-ks-green-light px-2 py-1 font-bold text-ks-green-dark">{fmtUsd(creator.total_pledged_usd)}</span>
+                      <span className="rounded-md bg-blue-50 px-2 py-1 font-semibold text-blue-600">{fmtNum(creator.project_count)} {cn ? '次众筹' : 'projects'}</span>
+                      <span className="rounded-md bg-amber-50 px-2 py-1 font-semibold text-amber-700">{fmtUsd(creator.avg_pledged_usd)} {cn ? '单次均额' : 'avg'}</span>
+                    </span>
+                  </span>
+                  <span className="w-32 text-right">
+                    <span className="block text-xl font-black tabular-nums text-gray-900">
+                      {metric === 'creator-count' ? fmtNum(creator.project_count) : metric === 'creator-average' ? fmtUsd(creator.avg_pledged_usd) : fmtUsd(creator.total_pledged_usd)}
+                    </span>
+                    <span className="text-xs text-gray-400">
+                      {metric === 'creator-count' ? (cn ? '众筹次数' : 'launches') : metric === 'creator-average' ? (cn ? '单次均额' : 'avg pledged') : (cn ? '累计金额' : 'total pledged')}
+                    </span>
+                  </span>
+                </div>
+              );
+            })}
+          </div>
         ) : (
           <div className="divide-y divide-gray-50">
             {pageProjects.map((project, index) => {

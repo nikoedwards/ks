@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { Activity, ArrowUpRight, Clock3, Filter, Flame, Gauge, RefreshCw, Rocket, TrendingUp, Users, type LucideIcon } from 'lucide-react';
 import { useLanguage } from '@/hooks/useLanguage';
+import ImagePreview from '@/components/ImagePreview';
 
 interface LiveProject {
   id: string;
@@ -110,13 +111,15 @@ function Thumb({ project }: { project: LiveProject }) {
   const src = project.image_thumb_url ?? project.image_url;
   if (src) {
     return (
-      <img
-        src={src}
-        alt=""
-        className="w-full h-full object-cover bg-gray-100"
-        loading="lazy"
-        referrerPolicy="no-referrer"
-      />
+      <ImagePreview src={src} className="block h-full w-full">
+        <img
+          src={src}
+          alt=""
+          className="w-full h-full object-cover bg-gray-100"
+          loading="lazy"
+          referrerPolicy="no-referrer"
+        />
+      </ImagePreview>
     );
   }
   return (

@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { Search, ExternalLink, ChevronLeft, ChevronRight, Download, ArrowUp, ArrowDown, ArrowUpDown, Heart, SlidersHorizontal, X } from 'lucide-react';
 import EmptyState from '@/components/EmptyState';
 import DataSource from '@/components/DataSource';
+import ImagePreview from '@/components/ImagePreview';
 import { useLanguage } from '@/hooks/useLanguage';
 import { t } from '@/lib/i18n';
 import { useAuth } from '@/contexts/AuthContext';
@@ -598,7 +599,9 @@ export default function ProjectsPage() {
                           <td className="px-4 py-3">
                             <Link href={`/projects/${p.id}`} className="block h-10 w-16 overflow-hidden rounded-md bg-gray-100">
                               {p.image_thumb_url || p.image_url ? (
-                                <img src={p.image_thumb_url || p.image_url || ''} alt="" className="h-full w-full object-cover" />
+                                <ImagePreview src={p.image_thumb_url || p.image_url} className="block h-full w-full">
+                                  <img src={p.image_thumb_url || p.image_url || ''} alt="" className="h-full w-full object-cover" />
+                                </ImagePreview>
                               ) : (
                                 <div className="h-full w-full bg-gray-100" />
                               )}

@@ -35,10 +35,41 @@ function ensureRuntimeMigrations(db: Database) {
   try { db.exec('ALTER TABLE projects ADD COLUMN image_thumb_url TEXT'); } catch { /* already exists */ }
   try { db.exec('ALTER TABLE tracking_settings ADD COLUMN subscriber_count INTEGER DEFAULT 0'); } catch { /* already exists */ }
   try { db.exec('ALTER TABLE tracking_settings ADD COLUMN priority_score INTEGER DEFAULT 0'); } catch { /* already exists */ }
+  ensureAnnouncementTables(db);
   const adminEmail = process.env.ADMIN_EMAIL?.trim().toLowerCase();
   if (adminEmail) db.prepare("UPDATE users SET role = 'admin' WHERE lower(email) = ?").run(adminEmail);
   const admin = db.prepare("SELECT id FROM users WHERE role = 'admin' LIMIT 1").get();
   if (!admin) db.prepare("UPDATE users SET role = 'admin' WHERE id = (SELECT id FROM users ORDER BY id ASC LIMIT 1)").run();
+}
+
+function ensureAnnouncementTables(db: Database) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS announcements (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      title TEXT NOT NULL,
+      body TEXT NOT NULL,
+      image_url TEXT,
+      cta_label TEXT,
+      cta_url TEXT,
+      audience TEXT DEFAULT 'all',
+      frequency TEXT DEFAULT 'daily',
+      active INTEGER DEFAULT 0,
+      start_at INTEGER,
+      end_at INTEGER,
+      created_at INTEGER DEFAULT (unixepoch()),
+      updated_at INTEGER DEFAULT (unixepoch())
+    );
+    CREATE TABLE IF NOT EXISTS announcement_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      announcement_id INTEGER NOT NULL,
+      user_id INTEGER,
+      event_type TEXT NOT NULL,
+      duration_ms INTEGER DEFAULT 0,
+      created_at INTEGER DEFAULT (unixepoch()),
+      FOREIGN KEY (announcement_id) REFERENCES announcements(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_announcement_events_user ON announcement_events(user_id, announcement_id, event_type, created_at);
+  `);
 }
 
 function getDB(): Database {
@@ -295,6 +326,7 @@ function getDB(): Database {
       updated_at INTEGER DEFAULT (unixepoch())
     );
   `);
+  ensureAnnouncementTables(db);
 
   ensureRuntimeMigrations(db);
 
@@ -525,6 +557,7 @@ export interface LeaderboardProject {
   blurb: string | null;
   state: string;
   slug: string | null;
+  creator_name: string | null;
   creator_slug: string | null;
   category_parent: string | null;
   category_name: string | null;
@@ -539,6 +572,22 @@ export interface LeaderboardProject {
   backers_count: number;
   goal: number;
   funded_pct: number;
+}
+
+export interface LeaderboardCreator {
+  creator_key: string;
+  creator_name: string;
+  creator_slug: string | null;
+  project_count: number;
+  total_pledged_usd: number;
+  avg_pledged_usd: number;
+  total_backers: number;
+  best_project_id: string | null;
+  best_project_name: string | null;
+  best_project_image_url: string | null;
+  best_project_thumb_url: string | null;
+  category_parent: string | null;
+  country: string | null;
 }
 
 function leaderboardWhere(filter: LeaderboardFilter) {
@@ -566,7 +615,7 @@ function leaderboardBaseSql(where: string) {
     ),
     raw_rows AS (
       SELECT
-        p.id, p.name, p.blurb, p.state, p.slug, p.creator_slug,
+        p.id, p.name, p.blurb, p.state, p.slug, p.creator_name, p.creator_slug,
         p.category_parent, p.category_name, p.country, p.country_name,
         p.launched_at, p.deadline, p.source_url, p.image_url, p.image_thumb_url,
         MAX(COALESCE(p.usd_pledged, 0), COALESCE(l.pledged_usd, 0)) as pledged_usd,
@@ -594,7 +643,7 @@ function leaderboardBaseSql(where: string) {
     )
     SELECT
       p.id, p.name, p.blurb, p.state,
-      p.slug, p.creator_slug,
+      p.slug, p.creator_name, p.creator_slug,
       p.category_parent, p.category_name, p.country, p.country_name,
       p.launched_at, p.deadline, p.source_url, p.image_url, p.image_thumb_url,
       p.pledged_usd, p.backers_count, p.goal, p.funded_pct
@@ -631,7 +680,59 @@ export function getLeaderboard(filter: LeaderboardFilter = {}) {
     total_backers: number;
     avg_funded_pct: number;
   };
-  return { byPledged, byBackers, summary };
+  const creatorBase = `
+    WITH ranked AS (${base}),
+    creator_rows AS (
+      SELECT *,
+        COALESCE(NULLIF(creator_slug, ''), lower(trim(COALESCE(creator_name, 'unknown')))) as creator_key
+      FROM ranked
+      WHERE COALESCE(creator_name, creator_slug) IS NOT NULL
+    ),
+    grouped AS (
+      SELECT
+        creator_key,
+        COALESCE(MAX(NULLIF(creator_name, '')), MAX(NULLIF(creator_slug, '')), 'Unknown creator') as creator_name,
+        MAX(NULLIF(creator_slug, '')) as creator_slug,
+        COUNT(*) as project_count,
+        SUM(pledged_usd) as total_pledged_usd,
+        AVG(pledged_usd) as avg_pledged_usd,
+        SUM(backers_count) as total_backers,
+        MAX(category_parent) as category_parent,
+        MAX(country) as country
+      FROM creator_rows
+      GROUP BY creator_key
+    ),
+    best_projects AS (
+      SELECT creator_key, id, name, image_url, image_thumb_url,
+        ROW_NUMBER() OVER (PARTITION BY creator_key ORDER BY pledged_usd DESC, backers_count DESC) as rn
+      FROM creator_rows
+    )
+    SELECT
+      g.creator_key, g.creator_name, g.creator_slug, g.project_count,
+      g.total_pledged_usd, g.avg_pledged_usd, g.total_backers,
+      b.id as best_project_id, b.name as best_project_name,
+      b.image_url as best_project_image_url, b.image_thumb_url as best_project_thumb_url,
+      g.category_parent, g.country
+    FROM grouped g
+    LEFT JOIN best_projects b ON b.creator_key = g.creator_key AND b.rn = 1
+  `;
+  const creatorsByPledged = getDB().prepare(`
+    ${creatorBase}
+    ORDER BY total_pledged_usd DESC, project_count DESC
+    LIMIT @limit
+  `).all({ ...params, limit }) as LeaderboardCreator[];
+  const creatorsByCount = getDB().prepare(`
+    ${creatorBase}
+    ORDER BY project_count DESC, total_pledged_usd DESC
+    LIMIT @limit
+  `).all({ ...params, limit }) as LeaderboardCreator[];
+  const creatorsByAverage = getDB().prepare(`
+    ${creatorBase}
+    WHERE project_count > 0
+    ORDER BY avg_pledged_usd DESC, total_pledged_usd DESC
+    LIMIT @limit
+  `).all({ ...params, limit }) as LeaderboardCreator[];
+  return { byPledged, byBackers, creatorsByPledged, creatorsByCount, creatorsByAverage, summary };
 }
 
 export function getLeaderboardCategoryOptions(filter: { dateFrom?: number; dateTo?: number } = {}) {
@@ -905,6 +1006,7 @@ export const DEFAULT_NAV_ITEMS = [
   'data-quality',
   'settings',
   'admin-users',
+  'admin-updates',
   'admin-nav',
 ] as const;
 
@@ -914,6 +1016,7 @@ const ADMIN_ONLY_NAV_ITEMS = new Set<NavKey>([
   'data-quality',
   'settings',
   'admin-users',
+  'admin-updates',
   'admin-nav',
 ]);
 
@@ -937,7 +1040,7 @@ export function ensureDefaultNavSettings() {
     db.prepare(`
       UPDATE nav_settings
       SET user_visible = 0
-      WHERE nav_key IN ('data-quality', 'settings', 'admin-users', 'admin-nav')
+      WHERE nav_key IN ('data-quality', 'settings', 'admin-users', 'admin-updates', 'admin-nav')
     `).run();
   });
   tx();
@@ -1018,6 +1121,119 @@ export function getUserAdminDashboard() {
 
 export function updateUserRole(userId: number, role: 'admin' | 'user') {
   getDB().prepare("UPDATE users SET role = ? WHERE id = ?").run(role, userId);
+}
+
+export interface AnnouncementInput {
+  id?: number;
+  title: string;
+  body: string;
+  image_url?: string | null;
+  cta_label?: string | null;
+  cta_url?: string | null;
+  audience?: 'all' | 'new_users';
+  frequency?: 'daily' | 'once' | 'always';
+  active?: number;
+  start_at?: number | null;
+  end_at?: number | null;
+}
+
+export function listAnnouncements() {
+  return getDB().prepare(`
+    SELECT
+      a.*,
+      COUNT(CASE WHEN e.event_type = 'view' THEN 1 END) as views,
+      COUNT(CASE WHEN e.event_type = 'click' THEN 1 END) as clicks,
+      COUNT(CASE WHEN e.event_type = 'dismiss' THEN 1 END) as dismissals,
+      ROUND(AVG(CASE WHEN e.duration_ms > 0 THEN e.duration_ms END), 0) as avg_duration_ms
+    FROM announcements a
+    LEFT JOIN announcement_events e ON e.announcement_id = a.id
+    GROUP BY a.id
+    ORDER BY a.updated_at DESC, a.id DESC
+  `).all();
+}
+
+export function saveAnnouncement(input: AnnouncementInput) {
+  const db = getDB();
+  const payload = {
+    title: input.title.trim(),
+    body: input.body.trim(),
+    image_url: input.image_url?.trim() || null,
+    cta_label: input.cta_label?.trim() || null,
+    cta_url: input.cta_url?.trim() || null,
+    audience: input.audience ?? 'all',
+    frequency: input.frequency ?? 'daily',
+    active: input.active ? 1 : 0,
+    start_at: input.start_at ?? null,
+    end_at: input.end_at ?? null,
+  };
+  if (input.id) {
+    db.prepare(`
+      UPDATE announcements
+      SET title=@title, body=@body, image_url=@image_url, cta_label=@cta_label, cta_url=@cta_url,
+          audience=@audience, frequency=@frequency, active=@active, start_at=@start_at, end_at=@end_at,
+          updated_at=unixepoch()
+      WHERE id=@id
+    `).run({ ...payload, id: input.id });
+    return input.id;
+  }
+  const result = db.prepare(`
+    INSERT INTO announcements
+      (title, body, image_url, cta_label, cta_url, audience, frequency, active, start_at, end_at)
+    VALUES
+      (@title, @body, @image_url, @cta_label, @cta_url, @audience, @frequency, @active, @start_at, @end_at)
+  `).run(payload);
+  return Number(result.lastInsertRowid);
+}
+
+export function deleteAnnouncement(id: number) {
+  getDB().prepare('DELETE FROM announcements WHERE id = ?').run(id);
+}
+
+export function getActiveAnnouncementForUser(userId?: number | null) {
+  const db = getDB();
+  const now = Math.floor(Date.now() / 1000);
+  const todayStart = Math.floor(new Date().setHours(0, 0, 0, 0) / 1000);
+  const user = userId
+    ? db.prepare('SELECT id, created_at FROM users WHERE id = ?').get(userId) as { id: number; created_at: number } | undefined
+    : undefined;
+  const rows = db.prepare(`
+    SELECT *
+    FROM announcements
+    WHERE active = 1
+      AND (start_at IS NULL OR start_at <= @now)
+      AND (end_at IS NULL OR end_at >= @now)
+    ORDER BY audience = 'new_users' DESC, updated_at DESC, id DESC
+    LIMIT 10
+  `).all({ now }) as Array<Record<string, unknown> & { id: number; audience: string; frequency: string; created_at: number }>;
+  for (const row of rows) {
+    if (row.audience === 'new_users') {
+      if (!user) continue;
+      if (Number(user.created_at ?? 0) < Number(row.created_at ?? 0)) continue;
+    }
+    const seen = db.prepare(`
+      SELECT 1 FROM announcement_events
+      WHERE announcement_id = @id
+        AND user_id ${userId ? '= @userId' : 'IS NULL'}
+        AND event_type IN ('view', 'dismiss')
+        ${row.frequency === 'daily' ? 'AND created_at >= @todayStart' : row.frequency === 'once' ? '' : 'AND 0'}
+      LIMIT 1
+    `).get({ id: row.id, userId, todayStart });
+    if (row.frequency !== 'always' && seen) continue;
+    return row;
+  }
+  return null;
+}
+
+export function recordAnnouncementEvent(input: { announcementId: number; userId?: number | null; eventType: 'view' | 'dismiss' | 'click'; durationMs?: number }) {
+  getDB().prepare(`
+    INSERT INTO announcement_events (announcement_id, user_id, event_type, duration_ms)
+    VALUES (@announcementId, @userId, @eventType, @durationMs)
+  `).run({
+    announcementId: input.announcementId,
+    userId: input.userId ?? null,
+    eventType: input.eventType,
+    durationMs: Math.max(0, Math.floor(input.durationMs ?? 0)),
+  });
 }
 
 export async function getLastSync() {
