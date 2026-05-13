@@ -306,6 +306,15 @@ type KicktraqOcrRow = {
   comments?: number | string;
 };
 
+type KicktraqChartImage = {
+  kind: 'pledges' | 'backers' | 'comments';
+  url: string;
+  base64: string;
+  bytes: number;
+  contentType: string;
+  status: number;
+};
+
 export interface KicktraqScrapeDiagnostics {
   pageStatus?: number;
   jsonStatus?: number;
@@ -353,7 +362,7 @@ function parseOcrNumber(value: number | string | undefined, integerOnly = false)
 }
 
 function kicktraqVisionPrompt(mode: 'exact' | 'estimate' = 'exact') {
-  const base = 'You are reading a Kicktraq Daily Data tab chart image for a Kickstarter project. This is a vision chart extraction task, not plain text OCR. It contains up to three separate bar charts: Pledges Per Day, Backers Per Day, and Comments Per Day. ' +
+  const base = 'You are reading Kicktraq Daily Data tab chart images for a Kickstarter project. This is a vision chart extraction task, not plain text OCR. The images are provided in this order when available: Pledges Per Day, Backers Per Day, Comments Per Day. ' +
     'Extract the per-day values printed vertically on each bar. Do NOT extract the Funding Progress cumulative line chart. ' +
     'Use the x-axis MM-DD labels to assign dates to bars. Infer missing dates between visible tick labels sequentially and infer the year from the copyright/header context. ' +
     'Normalize money labels such as $6.7m, $469k, $20,249 into numeric USD amounts. ' +
@@ -364,6 +373,50 @@ function kicktraqVisionPrompt(mode: 'exact' | 'estimate' = 'exact') {
   }
   return base +
     'Only include dates where you can read at least one numeric value from a bar. Omit any unreadable date or unreadable field; do not invent zeros. If no bar values are readable, return [].';
+}
+
+async function fetchKicktraqChartImage(url: string, pageUrl: string, cookieStr: string, kind: KicktraqChartImage['kind']): Promise<KicktraqChartImage | null> {
+  const imgRes = await fetch(url, {
+    headers: {
+      'Referer': pageUrl,
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      'Accept': 'image/png,image/*,*/*',
+      ...(cookieStr ? { 'Cookie': cookieStr } : {}),
+    },
+    signal: AbortSignal.timeout(20_000),
+  });
+  const contentType = imgRes.headers.get('content-type') ?? '';
+  if (!imgRes.ok || !contentType.includes('image')) return null;
+  const imgBuffer = await imgRes.arrayBuffer();
+  return {
+    kind,
+    url,
+    base64: Buffer.from(imgBuffer).toString('base64'),
+    bytes: imgBuffer.byteLength,
+    contentType,
+    status: imgRes.status,
+  };
+}
+
+async function fetchKicktraqDailyImages(pageUrl: string, cookieStr: string, diagnostics?: KicktraqScrapeDiagnostics): Promise<KicktraqChartImage[]> {
+  const specs: Array<{ kind: KicktraqChartImage['kind']; file: string }> = [
+    { kind: 'pledges', file: 'dailypledges.png' },
+    { kind: 'backers', file: 'dailybackers.png' },
+    { kind: 'comments', file: 'dailycomments.png' },
+  ];
+  const images: KicktraqChartImage[] = [];
+  for (const spec of specs) {
+    const image = await fetchKicktraqChartImage(pageUrl + spec.file, pageUrl, cookieStr, spec.kind).catch(() => null);
+    if (image) images.push(image);
+  }
+
+  if (diagnostics && images.length) {
+    diagnostics.imageStatus = images.every(img => img.status === 200) ? 200 : images[0].status;
+    diagnostics.imageContentType = images.map(img => `${img.kind}:${img.contentType}`).join(',');
+    diagnostics.imageBytes = images.reduce((sum, img) => sum + img.bytes, 0);
+  }
+
+  return images;
 }
 
 function usableKicktraqDays(
@@ -617,7 +670,6 @@ async function scrapeKicktraqViaOCR(pageUrl: string, cookieStr: string, diagnost
 }
 
 async function scrapeKicktraqViaQwen(pageUrl: string, cookieStr: string, diagnostics?: KicktraqScrapeDiagnostics): Promise<KicktraqDay[]> {
-  const imgUrl = pageUrl + 'dailychart.png';
   const qwenKey = getOptionalEnv('QWEN_API_KEY');
   const qwenModel = getOptionalEnv('QWEN_VISION_MODEL') || 'qwen-vl-plus';
   const qwenBaseUrl = (getOptionalEnv('QWEN_BASE_URL') || 'https://dashscope.aliyuncs.com/compatible-mode/v1').replace(/\/+$/, '');
@@ -628,26 +680,8 @@ async function scrapeKicktraqViaQwen(pageUrl: string, cookieStr: string, diagnos
   if (diagnostics) diagnostics.ocrTimeoutMs = qwenTimeoutMs;
 
   try {
-    const imgRes = await fetch(imgUrl, {
-      headers: {
-        'Referer': pageUrl,
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Accept': 'image/png,image/*,*/*',
-        ...(cookieStr ? { 'Cookie': cookieStr } : {}),
-      },
-      signal: AbortSignal.timeout(20_000),
-    });
-    if (diagnostics) {
-      diagnostics.imageStatus = imgRes.status;
-      diagnostics.imageContentType = imgRes.headers.get('content-type') ?? '';
-    }
-    if (!imgRes.ok) return [];
-    const contentType = imgRes.headers.get('content-type') ?? '';
-    if (!contentType.includes('image')) return [];
-
-    const imgBuffer = await imgRes.arrayBuffer();
-    if (diagnostics) diagnostics.imageBytes = imgBuffer.byteLength;
-    const base64 = Buffer.from(imgBuffer).toString('base64');
+    const images = await fetchKicktraqDailyImages(pageUrl, cookieStr, diagnostics);
+    if (!images.length) return [];
 
     const callQwen = async (prompt: string) => {
       const body = JSON.stringify({
@@ -658,7 +692,10 @@ async function scrapeKicktraqViaQwen(pageUrl: string, cookieStr: string, diagnos
           role: 'user',
           content: [
             { type: 'text', text: prompt },
-            { type: 'image_url', image_url: { url: `data:image/png;base64,${base64}` } },
+            ...images.flatMap(image => [
+              { type: 'text', text: `Image: ${image.kind}` },
+              { type: 'image_url', image_url: { url: `data:image/png;base64,${image.base64}` } },
+            ]),
           ],
         }],
       });
