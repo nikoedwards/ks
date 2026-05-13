@@ -1,17 +1,17 @@
+import cron from 'node-cron';
+import { runSync, getLatestDatasetUrl } from './lib/sync';
+import { getSyncState } from './lib/syncState';
+import { getLastSync } from './lib/db';
+import { initTracker } from './lib/tracker';
+
 export async function register() {
   if (process.env.NEXT_RUNTIME === 'nodejs') {
-    const cron = await import('node-cron');
-    const { runSync, getLatestDatasetUrl } = await import('./lib/sync');
-    const { getSyncState } = await import('./lib/syncState');
-    const { getLastSync } = await import('./lib/db');
-    const { initTracker } = await import('./lib/tracker');
-
     // ── Start background tracker immediately on server boot ──────────────────
     initTracker();
     console.log('[Kicksonar] Background tracker initialized');
 
     // ── Monthly webrobots sync: 15th of each month at 3:00 AM ───────────────
-    cron.default.schedule('0 3 15 * *', async () => {
+    cron.schedule('0 3 15 * *', async () => {
       const state = getSyncState();
       if (state.status === 'running') return;
       console.log('[Kicksonar] Running scheduled monthly webrobots sync...');

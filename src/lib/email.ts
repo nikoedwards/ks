@@ -5,7 +5,7 @@ function getResend() {
   if (!_resend) _resend = new Resend(process.env.RESEND_API_KEY);
   return _resend;
 }
-const FROM = process.env.FROM_EMAIL ?? 'onboarding@resend.dev';
+const FROM = process.env.FROM_EMAIL ?? 'no-reply@kicksonar.com';
 
 export async function sendOtpEmail(toEmail: string, code: string): Promise<void> {
   if (!process.env.RESEND_API_KEY) {

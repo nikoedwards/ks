@@ -12,6 +12,7 @@ import {
   Info,
   Github,
   Flame,
+  Trophy,
   Sparkles,
   Heart,
   RadioTower,
@@ -36,6 +37,7 @@ export default function Sidebar() {
   const navMap = useMemo(() => ({
     dashboard: { href: '/dashboard', label: tr.overview, icon: LayoutDashboard, adminOnly: false },
     projects: { href: '/projects', label: tr.projects, icon: Search, adminOnly: false },
+    leaderboard: { href: '/leaderboard', label: lang === 'cn' ? '排行榜' : 'Leaderboard', icon: Trophy, adminOnly: false },
     'live-intel': { href: '/live-intel', label: lang === 'cn' ? 'Live 情报' : 'Live Intel', icon: Flame, adminOnly: false },
     analysis: { href: '/analysis', label: tr.analysis, icon: BarChart2, adminOnly: false },
     predict: { href: '/predict', label: tr.predict, icon: Sparkles, adminOnly: false },
@@ -61,6 +63,7 @@ export default function Sidebar() {
   const nav = (navConfig.length ? navConfig : [
     { nav_key: 'dashboard' },
     { nav_key: 'projects' },
+    { nav_key: 'leaderboard' },
     { nav_key: 'live-intel' },
     { nav_key: 'analysis' },
     { nav_key: 'predict' },

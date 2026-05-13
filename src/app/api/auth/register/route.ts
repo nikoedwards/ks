@@ -19,8 +19,10 @@ export async function POST(req: NextRequest) {
       await sendOtpEmail(normalizedEmail, code);
     } catch (err) {
       deletePendingRegistration(normalizedEmail);
-      const message = err instanceof Error ? err.message : String(err);
-      return NextResponse.json({ error: `Could not send verification email: ${message}` }, { status: 502 });
+      console.error('[auth/register] Could not send verification email:', err);
+      return NextResponse.json({
+        error: 'Could not send verification email. Please check the email address or try again later.',
+      }, { status: 502 });
     }
 
     return NextResponse.json({ ok: true, needsOtp: true });

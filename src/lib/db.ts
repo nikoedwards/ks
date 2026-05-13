@@ -511,6 +511,119 @@ export async function getCountries(filter: { dateFrom?: number; dateTo?: number 
   `).all(params);
 }
 
+export interface LeaderboardFilter {
+  dateFrom?: number;
+  dateTo?: number;
+  categoryParent?: string;
+  categoryName?: string;
+  limit?: number;
+}
+
+export interface LeaderboardProject {
+  id: string;
+  name: string;
+  blurb: string | null;
+  state: string;
+  category_parent: string | null;
+  category_name: string | null;
+  country: string | null;
+  country_name: string | null;
+  launched_at: number | null;
+  deadline: number | null;
+  source_url: string | null;
+  image_url: string | null;
+  image_thumb_url: string | null;
+  pledged_usd: number;
+  backers_count: number;
+  goal: number;
+  funded_pct: number;
+}
+
+function leaderboardWhere(filter: LeaderboardFilter) {
+  const clauses = ['p.launched_at IS NOT NULL'];
+  const params: Record<string, unknown> = {};
+  if (filter.dateFrom) { clauses.push('p.launched_at >= @dateFrom'); params.dateFrom = filter.dateFrom; }
+  if (filter.dateTo) { clauses.push('p.launched_at <= @dateTo'); params.dateTo = filter.dateTo; }
+  if (filter.categoryParent) { clauses.push('p.category_parent = @categoryParent'); params.categoryParent = filter.categoryParent; }
+  if (filter.categoryName) { clauses.push('p.category_name = @categoryName'); params.categoryName = filter.categoryName; }
+  return { where: `WHERE ${clauses.join(' AND ')}`, params };
+}
+
+function leaderboardBaseSql(where: string) {
+  return `
+    WITH latest AS (
+      SELECT ps.project_id, ps.pledged_usd, ps.backers_count
+      FROM project_snapshots ps
+      JOIN (
+        SELECT project_id, MAX(id) as id
+        FROM project_snapshots
+        WHERE state NOT IN ('unknown', 'historical')
+          AND NOT (COALESCE(pledged_usd, 0) = 0 AND COALESCE(backers_count, 0) = 0)
+        GROUP BY project_id
+      ) x ON x.id = ps.id
+    )
+    SELECT
+      p.id, p.name, p.blurb, p.state,
+      p.category_parent, p.category_name, p.country, p.country_name,
+      p.launched_at, p.deadline, p.source_url, p.image_url, p.image_thumb_url,
+      MAX(COALESCE(p.usd_pledged, 0), COALESCE(l.pledged_usd, 0)) as pledged_usd,
+      MAX(COALESCE(p.backers_count, 0), COALESCE(l.backers_count, 0)) as backers_count,
+      COALESCE(p.goal, 0) as goal,
+      CASE WHEN COALESCE(p.goal, 0) > 0
+        THEN ROUND((MAX(COALESCE(p.usd_pledged, 0), COALESCE(l.pledged_usd, 0)) / p.goal) * 100, 1)
+        ELSE 0
+      END as funded_pct
+    FROM projects p
+    LEFT JOIN latest l ON l.project_id = p.id
+    ${where}
+  `;
+}
+
+export function getLeaderboard(filter: LeaderboardFilter = {}) {
+  const limit = Math.max(1, Math.min(filter.limit ?? 25, 100));
+  const { where, params } = leaderboardWhere(filter);
+  const base = leaderboardBaseSql(where);
+  const byPledged = getDB().prepare(`
+    ${base}
+    ORDER BY pledged_usd DESC, backers_count DESC
+    LIMIT @limit
+  `).all({ ...params, limit }) as LeaderboardProject[];
+  const byBackers = getDB().prepare(`
+    ${base}
+    ORDER BY backers_count DESC, pledged_usd DESC
+    LIMIT @limit
+  `).all({ ...params, limit }) as LeaderboardProject[];
+  const summary = getDB().prepare(`
+    WITH ranked AS (${base})
+    SELECT
+      COUNT(*) as total_projects,
+      SUM(pledged_usd) as total_pledged_usd,
+      SUM(backers_count) as total_backers,
+      AVG(funded_pct) as avg_funded_pct
+    FROM ranked
+  `).get(params) as {
+    total_projects: number;
+    total_pledged_usd: number;
+    total_backers: number;
+    avg_funded_pct: number;
+  };
+  return { byPledged, byBackers, summary };
+}
+
+export function getLeaderboardCategoryOptions(filter: { dateFrom?: number; dateTo?: number } = {}) {
+  const clauses = ['category_parent IS NOT NULL'];
+  const params: Record<string, unknown> = {};
+  if (filter.dateFrom) { clauses.push('launched_at >= @dateFrom'); params.dateFrom = filter.dateFrom; }
+  if (filter.dateTo) { clauses.push('launched_at <= @dateTo'); params.dateTo = filter.dateTo; }
+  return getDB().prepare(`
+    SELECT category_parent, category_name, COUNT(*) as total
+    FROM projects
+    WHERE ${clauses.join(' AND ')}
+    GROUP BY category_parent, category_name
+    ORDER BY category_parent ASC, total DESC, category_name ASC
+  `).all(params) as { category_parent: string; category_name: string | null; total: number }[];
+}
+
 export async function getCategoryList(): Promise<string[]> {
   const rows = getDB().prepare(
     `SELECT DISTINCT category_parent FROM projects WHERE category_parent IS NOT NULL ORDER BY category_parent`
@@ -760,6 +873,7 @@ export function updateProjectLiveMetadata(projectId: string, data: {
 export const DEFAULT_NAV_ITEMS = [
   'dashboard',
   'projects',
+  'leaderboard',
   'live-intel',
   'analysis',
   'predict',

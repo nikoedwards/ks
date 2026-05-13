@@ -6,6 +6,7 @@ import { GripVertical, Save } from 'lucide-react';
 const LABELS: Record<string, string> = {
   dashboard: '数据概览（已并入分析）',
   projects: '项目列表',
+  leaderboard: '排行榜',
   'live-intel': 'Live 情报',
   analysis: '数据分析',
   predict: '项目预测',
