@@ -1206,12 +1206,13 @@ export async function getMeta(): Promise<{
   };
 }
 
-export function getLiveIntel(limit = 12) {
+export function getLiveIntel(limit = 12, filter: { categoryParent?: string } = {}) {
   const db = getDB();
   const now = Math.floor(Date.now() / 1000);
   const cutoff24h = now - 24 * 3600;
   const cutoff6h = now - 6 * 3600;
   const safeLimit = Math.max(1, Math.min(limit, 50));
+  const categoryClause = filter.categoryParent ? 'AND p.category_parent = @categoryParent' : '';
 
   const baseCte = `
     WITH latest AS (
@@ -1270,10 +1271,11 @@ export function getLiveIntel(limit = 12) {
       LEFT JOIN prior24_snap p24 ON p24.project_id = p.id
       LEFT JOIN prior6_snap p6 ON p6.project_id = p.id
       WHERE COALESCE(ls.state, p.state) = 'live'
+        ${categoryClause}
     )
   `;
 
-  const params = { now, cutoff24h, cutoff6h, limit: safeLimit };
+  const params = { now, cutoff24h, cutoff6h, limit: safeLimit, categoryParent: filter.categoryParent };
   const selectProject = `
     SELECT id, name, blurb, goal, state, country, currency, category_parent, category_name,
            launched_at, deadline, source_url, image_url, image_thumb_url,
@@ -1338,6 +1340,13 @@ export function getLiveIntel(limit = 12) {
     LIMIT 10
   `).all(params);
 
+  const allCategories = db.prepare(`
+    ${baseCte}
+    SELECT DISTINCT COALESCE(category_parent, 'Uncategorized') as category
+    FROM live_rows
+    ORDER BY category ASC
+  `).all(params);
+
   const summary = db.prepare(`
     ${baseCte}
     SELECT
@@ -1359,6 +1368,7 @@ export function getLiveIntel(limit = 12) {
     endingSoon,
     overfunded,
     categories,
+    allCategories,
   };
 }
 

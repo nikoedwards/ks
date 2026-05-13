@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { Activity, ArrowUpRight, Clock3, Flame, Gauge, RefreshCw, Rocket, TrendingUp, Users, type LucideIcon } from 'lucide-react';
+import { Activity, ArrowUpRight, Clock3, Filter, Flame, Gauge, RefreshCw, Rocket, TrendingUp, Users, type LucideIcon } from 'lucide-react';
 import { useLanguage } from '@/hooks/useLanguage';
 
 interface LiveProject {
@@ -55,6 +55,7 @@ interface LiveIntel {
   endingSoon: LiveProject[];
   overfunded: LiveProject[];
   categories: CategoryIntel[];
+  allCategories?: { category: string }[];
 }
 
 function fmtUsd(value: number | null | undefined) {
@@ -183,12 +184,26 @@ export default function LiveIntelPage() {
   const cn = lang === 'cn';
   const [data, setData] = useState<LiveIntel | null>(null);
   const [loading, setLoading] = useState(true);
+  const [categoryParent, setCategoryParent] = useState('');
+  const [categoryOptions, setCategoryOptions] = useState<string[]>([]);
 
   const load = async () => {
     setLoading(true);
     try {
-      const res = await fetch('/api/live-intel?limit=12', { cache: 'no-store' });
-      setData(await res.json());
+      const params = new URLSearchParams({
+        limit: '12',
+        ...(categoryParent ? { categoryParent } : {}),
+      });
+      const res = await fetch(`/api/live-intel?${params.toString()}`, { cache: 'no-store' });
+      const json = await res.json() as LiveIntel;
+      setData(json);
+      const options = (json.allCategories?.length ? json.allCategories.map(c => c.category) : json.categories.map(c => c.category)).filter(Boolean);
+      setCategoryOptions(prev => {
+        const next = new Set(prev);
+        for (const option of options) next.add(option);
+        if (categoryParent) next.add(categoryParent);
+        return [...next].sort((a, b) => a.localeCompare(b));
+      });
     } finally {
       setLoading(false);
     }
@@ -198,7 +213,7 @@ export default function LiveIntelPage() {
     load();
     const id = setInterval(load, 60_000);
     return () => clearInterval(id);
-  }, []);
+  }, [categoryParent]);
 
   const featured = useMemo(() => {
     const seen = new Set<string>();
@@ -230,14 +245,29 @@ export default function LiveIntelPage() {
             {cn ? '实时发现正在起量、刚上线、即将结束和类目升温的 Kickstarter 项目。' : 'Spot Kickstarter projects that are rising, launching, ending, and heating up by category.'}
           </p>
         </div>
-        <button
-          onClick={load}
-          disabled={loading}
-          className="inline-flex items-center gap-2 rounded-lg bg-gray-900 px-4 py-2 text-sm font-semibold text-white hover:bg-gray-800 disabled:opacity-50"
-        >
-          <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-          {cn ? '刷新' : 'Refresh'}
-        </button>
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <label className="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-600">
+            <Filter className="h-4 w-4 text-gray-400" />
+            <select
+              value={categoryParent}
+              onChange={(e) => setCategoryParent(e.target.value)}
+              className="bg-transparent text-sm font-semibold outline-none"
+            >
+              <option value="">{cn ? '全部类目' : 'All categories'}</option>
+              {categoryOptions.map(category => (
+                <option key={category} value={category}>{category}</option>
+              ))}
+            </select>
+          </label>
+          <button
+            onClick={load}
+            disabled={loading}
+            className="inline-flex items-center gap-2 rounded-lg bg-gray-900 px-4 py-2 text-sm font-semibold text-white hover:bg-gray-800 disabled:opacity-50"
+          >
+            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+            {cn ? '刷新' : 'Refresh'}
+          </button>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-6 gap-4">

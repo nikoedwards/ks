@@ -455,8 +455,14 @@ export default function ProjectDetailPage() {
 
       {/* ── Hero header (Social Blade style) ───────────────────────────────── */}
       <div className="bg-gray-900 rounded-t-2xl px-6 pt-6 pb-0">
+        {projectImage && (
+          <div className="mb-5 aspect-[16/5] overflow-hidden rounded-xl border border-white/10 bg-gray-800 shadow-lg">
+            <img src={projectImage} alt="" className="h-full w-full object-cover" loading="lazy" referrerPolicy="no-referrer" />
+          </div>
+        )}
+
         {/* Top row */}
-        <div className="flex flex-col gap-4 mb-4 lg:flex-row lg:items-start lg:justify-between">
+        <div className="flex items-start justify-between gap-4 mb-4">
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 flex-wrap mb-2">
               <span className={`px-2.5 py-1 rounded-full text-xs font-semibold ${STATE_COLOR[project.state] ?? 'bg-gray-700 text-gray-300'}`}>
@@ -491,21 +497,7 @@ export default function ProjectDetailPage() {
           </div>
 
           {/* Action buttons */}
-          <div className="w-full shrink-0 space-y-3 lg:w-[320px]">
-            <div className="aspect-[16/9] overflow-hidden rounded-xl border border-white/10 bg-gray-800 shadow-lg">
-              {projectImage ? (
-                <img src={projectImage} alt="" className="h-full w-full object-cover" loading="lazy" referrerPolicy="no-referrer" />
-              ) : (
-                <div className="flex h-full w-full flex-col justify-between bg-gradient-to-br from-emerald-500/25 via-gray-800 to-blue-500/20 p-4">
-                  <div className="text-xs font-semibold uppercase tracking-wide text-white/45">{project.category_parent ?? 'Kickstarter'}</div>
-                  <div>
-                    <div className="mb-2 h-8 w-8 rounded-lg bg-ks-green/80" />
-                    <p className="line-clamp-2 text-sm font-bold leading-snug text-white">{project.name}</p>
-                  </div>
-                </div>
-              )}
-            </div>
-            <div className="flex gap-2 flex-wrap justify-start lg:justify-end">
+          <div className="flex gap-2 shrink-0 flex-wrap justify-end">
             <button onClick={toggleFavorite}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
                 isFavorited ? 'bg-red-900/40 text-red-400 border-red-800/40 hover:bg-red-900/60'
@@ -541,7 +533,6 @@ export default function ProjectDetailPage() {
                 <TrendingUp className="w-3.5 h-3.5" /> Kicktraq
               </a>
             )}
-            </div>
           </div>
         </div>
 

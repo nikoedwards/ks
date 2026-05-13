@@ -105,7 +105,7 @@ export default function FavoritesPage() {
                 {projects.map(p => (
                   <tr key={p.id} className="hover:bg-gray-50/80">
                     <td className="px-5 py-3">
-                      <Link href={`/projects/${p.id}`} className="block h-12 w-12 overflow-hidden rounded-md bg-gray-100">
+                      <Link href={`/projects/${p.id}`} className="block h-12 w-20 overflow-hidden rounded-md bg-gray-100">
                         {p.image_thumb_url || p.image_url ? (
                           <img src={p.image_thumb_url || p.image_url || ''} alt="" className="h-full w-full object-cover" />
                         ) : (

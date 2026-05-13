@@ -7,7 +7,8 @@ export const dynamic = 'force-dynamic';
 export async function GET(req: NextRequest) {
   try {
     const limit = parseInt(req.nextUrl.searchParams.get('limit') ?? '12');
-    return NextResponse.json(getLiveIntel(limit));
+    const categoryParent = req.nextUrl.searchParams.get('categoryParent')?.trim() || undefined;
+    return NextResponse.json(getLiveIntel(limit, { categoryParent }));
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }

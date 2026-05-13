@@ -57,6 +57,47 @@ type Metric = 'pledged' | 'backers';
 
 const PAGE_SIZE = 20;
 
+const CATEGORY_CN: Record<string, string> = {
+  Art: '艺术',
+  Comics: '漫画',
+  Crafts: '手工',
+  Dance: '舞蹈',
+  Design: '设计',
+  Fashion: '时尚',
+  Film: '电影',
+  Food: '食品',
+  Games: '游戏',
+  Journalism: '新闻',
+  Music: '音乐',
+  Photography: '摄影',
+  Publishing: '出版',
+  Technology: '科技',
+  Theater: '剧场',
+  Hardware: '硬件',
+  '3D Printing': '3D 打印',
+  'DIY Electronics': 'DIY 电子',
+  Gadgets: '智能硬件',
+  'Tabletop Games': '桌游',
+  'Video Games': '电子游戏',
+  'Graphic Novels': '图像小说',
+  Anthologies: '合集',
+};
+
+function categoryNameForShare(name: string | null | undefined, cn: boolean) {
+  const label = name?.trim();
+  if (!label) return cn ? '全类目' : 'All Categories';
+  return cn ? CATEGORY_CN[label] ?? label : label;
+}
+
+function loadCanvasImage(src: string) {
+  return new Promise<HTMLImageElement | null>(resolve => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => resolve(null);
+    img.src = src;
+  });
+}
+
 function fmtUsd(value: number) {
   const v = Number(value ?? 0);
   if (v >= 1_000_000_000) return `$${(v / 1_000_000_000).toFixed(2)}B`;
@@ -155,7 +196,7 @@ export default function LeaderboardPage() {
   const projects = metric === 'pledged' ? data?.byPledged ?? [] : data?.byBackers ?? [];
   const totalPages = Math.max(1, Math.ceil(projects.length / PAGE_SIZE));
   const pageProjects = projects.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
-  const categoryLabel = categoryName || categoryParent || (cn ? '全类目' : 'All Categories');
+  const categoryLabel = categoryNameForShare(categoryName || categoryParent, cn);
   const title = cn
     ? `${activeYear === 'custom' ? '自定义区间' : `${activeYear}年`} ${categoryLabel} Kickstarter TOP100 项目榜单`
     : `${activeYear === 'custom' ? 'Custom Range' : activeYear} ${categoryLabel} Kickstarter Top 100`;
@@ -235,9 +276,10 @@ export default function LeaderboardPage() {
     const names = await translateTitles(rows, langOverride);
     const canvas = document.createElement('canvas');
     canvas.width = 1080;
-    canvas.height = 1540;
+    canvas.height = 1680;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
+    const kickstarterLogo = await loadCanvasImage('/kickstarter-logo.svg');
 
     ctx.fillStyle = '#51d88a';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -247,19 +289,23 @@ export default function LeaderboardPage() {
     ctx.fill();
 
     const isCnShare = langOverride === 'cn';
-    const shareCategory = categoryName || categoryParent || (isCnShare ? '全类目' : 'All Categories');
+    const shareCategory = categoryNameForShare(categoryName || categoryParent, isCnShare);
     const generatedLabel = isCnShare ? `数据时间：${dataDate}` : `Data as of ${dataDate}`;
 
     ctx.fillStyle = '#09351f';
     ctx.font = '700 34px Arial, sans-serif';
     ctx.fillText('Kicksonar x', 64, 78);
-    ctx.fillStyle = '#05ce78';
-    ctx.beginPath();
-    ctx.roundRect(260, 42, 240, 48, 16);
-    ctx.fill();
     ctx.fillStyle = '#ffffff';
-    ctx.font = '900 26px Arial, sans-serif';
-    ctx.fillText('KICKSTARTER', 286, 76);
+    ctx.beginPath();
+    ctx.roundRect(248, 34, 282, 82, 16);
+    ctx.fill();
+    if (kickstarterLogo) {
+      ctx.drawImage(kickstarterLogo, 268, 42, 240, 66);
+    } else {
+      ctx.fillStyle = '#05ce78';
+      ctx.font = '900 26px Arial, sans-serif';
+      ctx.fillText('KICKSTARTER', 286, 76);
+    }
     ctx.font = '900 82px Arial, sans-serif';
     ctx.fillText(activeYear === 'custom' ? 'CUSTOM' : `${activeYear}`, 64, 190);
     ctx.font = '900 62px Arial, sans-serif';
@@ -279,7 +325,7 @@ export default function LeaderboardPage() {
     const tableX = 54;
     const tableY = 500;
     const tableW = 972;
-    const rowH = 46;
+    const rowH = 48;
     ctx.beginPath();
     ctx.roundRect(tableX, tableY, tableW, rowH * 21 + 70, 18);
     ctx.fill();
@@ -302,7 +348,8 @@ export default function LeaderboardPage() {
       ctx.font = '500 22px Arial, sans-serif';
       ctx.fillText(String(i + 1), 92, y);
       const translatedName = names[i] || project.name;
-      const name = translatedName.length > 32 ? `${translatedName.slice(0, 31)}...` : translatedName;
+      const maxNameLength = isCnShare ? 24 : 32;
+      const name = translatedName.length > maxNameLength ? `${translatedName.slice(0, maxNameLength - 1)}...` : translatedName;
       ctx.fillText(name, 175, y);
       ctx.textAlign = 'right';
       ctx.fillText(fmtUsd(project.pledged_usd), 805, y);
@@ -315,7 +362,7 @@ export default function LeaderboardPage() {
     const note = isCnShare
       ? '注：金额已统一换算为美元，包含全球 Kickstarter 公开项目。'
       : 'Note: Amounts are normalized to USD for public Kickstarter projects.';
-    ctx.fillText(note, 64, 1480);
+    ctx.fillText(note, 64, 1620);
     setShareImage(canvas.toDataURL('image/png'));
     setShareGenerating(false);
   };
@@ -408,7 +455,7 @@ export default function LeaderboardPage() {
         </div>
       </div>
 
-      <section className="mx-3 overflow-hidden rounded-lg border border-gray-100 bg-white shadow-sm sm:mx-4">
+      <section className="overflow-hidden rounded-lg border border-gray-100 bg-white shadow-sm">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-100 px-5 py-4">
           <div>
             <h2 className="text-lg font-black text-gray-900">{title}</h2>

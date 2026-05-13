@@ -531,7 +531,7 @@ export default function ProjectsPage() {
                 <colgroup>
                   <col className="w-12" />
                   <col className="w-14" />
-                  {showCol('thumbnail') && <col className="w-16" />}
+                  {showCol('thumbnail') && <col className="w-24" />}
                   <col className="w-[420px]" />
                   {showCol('creator') && <col className="w-36" />}
                   {showCol('status') && <col className="w-28" />}
@@ -596,7 +596,7 @@ export default function ProjectsPage() {
                         </td>
                         {showCol('thumbnail') && (
                           <td className="px-4 py-3">
-                            <Link href={`/projects/${p.id}`} className="block h-10 w-10 overflow-hidden rounded-md bg-gray-100">
+                            <Link href={`/projects/${p.id}`} className="block h-10 w-16 overflow-hidden rounded-md bg-gray-100">
                               {p.image_thumb_url || p.image_url ? (
                                 <img src={p.image_thumb_url || p.image_url || ''} alt="" className="h-full w-full object-cover" />
                               ) : (

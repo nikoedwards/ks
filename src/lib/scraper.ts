@@ -10,6 +10,13 @@ import {
   type RewardSnapshot,
 } from './db';
 
+export function getOptionalEnv(name: string) {
+  const direct = process.env[name]?.trim();
+  if (direct) return direct;
+  const match = Object.entries(process.env).find(([key]) => key.trim() === name);
+  return match?.[1]?.trim() ?? '';
+}
+
 // ─── KS JSON API types ────────────────────────────────────────────────────────
 
 interface KSReward {
@@ -385,13 +392,13 @@ export async function scrapeKicktraq(creatorSlug: string, projectSlug: string): 
   const htmlDays = parseKicktraqHtml(html);
   if (htmlDays.length) return htmlDays;
 
-  // Step 4: OCR the dailychart.png via Claude Vision
-  if (process.env.ANTHROPIC_API_KEY) {
+  // Step 4: OCR the dailychart.png via Claude/OpenAI Vision.
+  if (getOptionalEnv('ANTHROPIC_API_KEY')) {
     const ocrDays = await scrapeKicktraqViaOCR(pageUrl, cookieStr);
     if (ocrDays.length) return ocrDays;
   }
 
-  if (process.env.OPENAI_API_KEY) {
+  if (getOptionalEnv('OPENAI_API_KEY')) {
     const ocrDays = await scrapeKicktraqViaOpenAI(pageUrl, cookieStr);
     if (ocrDays.length) return ocrDays;
   }
@@ -403,6 +410,7 @@ export async function scrapeKicktraq(creatorSlug: string, projectSlug: string): 
 
 async function scrapeKicktraqViaOCR(pageUrl: string, cookieStr: string): Promise<KicktraqDay[]> {
   const imgUrl = pageUrl + 'dailychart.png';
+  const anthropicKey = getOptionalEnv('ANTHROPIC_API_KEY');
 
   try {
     const imgRes = await fetch(imgUrl, {
@@ -452,7 +460,7 @@ async function scrapeKicktraqViaOCR(pageUrl: string, cookieStr: string): Promise
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': process.env.ANTHROPIC_API_KEY!,
+        'x-api-key': anthropicKey,
         'anthropic-version': '2023-06-01',
       },
       body: claudeBody,
@@ -491,6 +499,8 @@ async function scrapeKicktraqViaOCR(pageUrl: string, cookieStr: string): Promise
 
 async function scrapeKicktraqViaOpenAI(pageUrl: string, cookieStr: string): Promise<KicktraqDay[]> {
   const imgUrl = pageUrl + 'dailychart.png';
+  const openAIKey = getOptionalEnv('OPENAI_API_KEY');
+  const openAIModel = getOptionalEnv('OPENAI_VISION_MODEL') || 'gpt-4o-mini';
 
   try {
     const imgRes = await fetch(imgUrl, {
@@ -516,10 +526,10 @@ async function scrapeKicktraqViaOpenAI(pageUrl: string, cookieStr: string): Prom
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Authorization': `Bearer ${openAIKey}`,
       },
       body: JSON.stringify({
-        model: process.env.OPENAI_VISION_MODEL ?? 'gpt-4o-mini',
+        model: openAIModel,
         temperature: 0,
         messages: [{
           role: 'user',

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSessionUser, SESSION_COOKIE } from '@/lib/auth';
 import { getProjectById } from '@/lib/db';
-import { extractCreatorSlug, extractProjectSlug, scrapeKicktraq, storeKicktraqDays } from '@/lib/scraper';
+import { extractCreatorSlug, extractProjectSlug, getOptionalEnv, scrapeKicktraq, storeKicktraqDays } from '@/lib/scraper';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -29,8 +29,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
     const days = await scrapeKicktraq(creatorSlug, projectSlug);
     if (!days.length) {
-      const hasOpenAI = !!process.env.OPENAI_API_KEY?.trim();
-      const hasAnthropic = !!process.env.ANTHROPIC_API_KEY?.trim();
+      const hasOpenAI = !!getOptionalEnv('OPENAI_API_KEY');
+      const hasAnthropic = !!getOptionalEnv('ANTHROPIC_API_KEY');
       const hasOcr = hasOpenAI || hasAnthropic;
       return NextResponse.json({
         ok: false,

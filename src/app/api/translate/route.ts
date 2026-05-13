@@ -3,22 +3,30 @@ import { NextRequest, NextResponse } from 'next/server';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
+function getOptionalEnv(name: string) {
+  const direct = process.env[name]?.trim();
+  if (direct) return direct;
+  const match = Object.entries(process.env).find(([key]) => key.trim() === name);
+  return match?.[1]?.trim() ?? '';
+}
+
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json() as { texts?: string[]; target?: string };
     const texts = (body.texts ?? []).filter(t => typeof t === 'string').slice(0, 30);
     const target = body.target === 'zh-CN' ? 'Simplified Chinese' : 'English';
     if (!texts.length) return NextResponse.json({ translations: [] });
-    if (!process.env.OPENAI_API_KEY?.trim()) return NextResponse.json({ translations: texts });
+    const openAIKey = getOptionalEnv('OPENAI_API_KEY');
+    if (!openAIKey) return NextResponse.json({ translations: texts });
 
     const res = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Authorization': `Bearer ${openAIKey}`,
       },
       body: JSON.stringify({
-        model: process.env.OPENAI_TEXT_MODEL ?? 'gpt-4o-mini',
+        model: getOptionalEnv('OPENAI_TEXT_MODEL') || 'gpt-4o-mini',
         temperature: 0.2,
         messages: [
           {
