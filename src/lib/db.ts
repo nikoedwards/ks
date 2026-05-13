@@ -2057,6 +2057,14 @@ export function insertSnapshot(snap: Omit<Snapshot, 'source'> & { project_id: st
   `).run({ source: 'ks', ...snap });
 }
 
+export function deleteKicktraqSnapshots(projectId: string) {
+  getDB().prepare(`
+    DELETE FROM project_snapshots
+    WHERE project_id = ?
+      AND source = 'kicktraq'
+  `).run(projectId);
+}
+
 export function getSnapshots(projectId: string, limitRows = 500): Snapshot[] {
   return getDB().prepare(`
     SELECT s.captured_at, s.pledged_usd, s.backers_count, s.days_to_go,

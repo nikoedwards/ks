@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSessionUser, SESSION_COOKIE } from '@/lib/auth';
-import { getProjectById } from '@/lib/db';
+import { deleteKicktraqSnapshots, getProjectById } from '@/lib/db';
 import { extractCreatorSlug, extractProjectSlug, getOptionalEnv, scrapeKicktraqDetailed, storeKicktraqDays } from '@/lib/scraper';
 
 export const runtime = 'nodejs';
@@ -29,6 +29,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
     const { days, diagnostics } = await scrapeKicktraqDetailed(creatorSlug, projectSlug);
     if (!days.length) {
+      if ((diagnostics.zeroRowsRejected ?? 0) > 0) {
+        deleteKicktraqSnapshots(id);
+      }
       const hasOpenAI = !!getOptionalEnv('OPENAI_API_KEY');
       const hasQwen = !!getOptionalEnv('QWEN_API_KEY');
       const hasAnthropic = !!getOptionalEnv('ANTHROPIC_API_KEY');
@@ -41,7 +44,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         noData: true,
         _v: 'ocr-v1',
         message: hasOcr
-          ? `OCR is enabled, but no usable Daily Data rows were parsed. ${ocrHint} Diagnostics: page=${diagnostics.pageStatus ?? '-'}, json=${diagnostics.jsonStatus ?? '-'}, htmlRows=${diagnostics.htmlRows ?? 0}, image=${diagnostics.imageStatus ?? '-'} ${diagnostics.imageContentType ?? ''}, imageBytes=${diagnostics.imageBytes ?? '-'}, ocr=${diagnostics.ocrProvider ?? '-'} ${diagnostics.ocrStatus ?? '-'}, endpoint=${diagnostics.ocrEndpoint ?? '-'}, timeoutMs=${diagnostics.ocrTimeoutMs ?? '-'}, ocrRows=${diagnostics.ocrRows ?? 0}. ${diagnostics.ocrError ? `OCR error: ${diagnostics.ocrError}.` : ''}${diagnostics.ocrPreview ? ` OCR preview: ${diagnostics.ocrPreview}.` : ''} ${diagnostics.reason ?? ''}`
+          ? `OCR is enabled, but no usable Daily Data rows were parsed. ${ocrHint} Diagnostics: page=${diagnostics.pageStatus ?? '-'}, json=${diagnostics.jsonStatus ?? '-'}, htmlRows=${diagnostics.htmlRows ?? 0}, image=${diagnostics.imageStatus ?? '-'} ${diagnostics.imageContentType ?? ''}, imageBytes=${diagnostics.imageBytes ?? '-'}, ocr=${diagnostics.ocrProvider ?? '-'} ${diagnostics.ocrStatus ?? '-'}, endpoint=${diagnostics.ocrEndpoint ?? '-'}, timeoutMs=${diagnostics.ocrTimeoutMs ?? '-'}, ocrRows=${diagnostics.ocrRows ?? 0}, zeroRowsRejected=${diagnostics.zeroRowsRejected ?? 0}. ${diagnostics.ocrError ? `OCR error: ${diagnostics.ocrError}.` : ''}${diagnostics.ocrPreview ? ` OCR preview: ${diagnostics.ocrPreview}.` : ''} ${diagnostics.reason ?? ''}`
           : 'The running Railway service cannot read QWEN_API_KEY, OPENAI_API_KEY, or ANTHROPIC_API_KEY. If you already added it in Railway, redeploy or restart this same service/environment, then import again.',
         diagnostics,
       });

@@ -1,4 +1,5 @@
 import {
+  deleteKicktraqSnapshots,
   getProjectById,
   getSnapshots,
   insertSnapshot,
@@ -313,6 +314,7 @@ export interface KicktraqScrapeDiagnostics {
   ocrError?: string;
   ocrEndpoint?: string;
   ocrTimeoutMs?: number;
+  zeroRowsRejected?: number;
   reason?: string;
 }
 
@@ -327,6 +329,36 @@ function extractOpenAIErrorMessage(raw: string): string {
   } catch {
     return raw.slice(0, 200);
   }
+}
+
+function kicktraqVisionPrompt() {
+  return 'You are reading a Kicktraq Daily Data tab chart image for a Kickstarter project. This is a vision chart extraction task, not plain text OCR. It contains up to three separate bar charts: Pledges Per Day, Backers Per Day, and Comments Per Day. ' +
+    'Extract the per-day values printed vertically on each bar. Do NOT extract the Funding Progress cumulative line chart. ' +
+    'Use the x-axis MM-DD labels to assign dates to bars. Infer missing dates between visible tick labels sequentially and infer the year from the copyright/header context. ' +
+    'Normalize money labels such as $6.7m, $469k, $20,249 into numeric USD amounts. ' +
+    'Return ONLY a JSON array. Each item must be {"date":"YYYY-MM-DD","pledged_usd":number,"backers":number,"comments":number}. ' +
+    'Only include dates where you can read at least one numeric value from a bar. Omit any unreadable date or unreadable field; do not invent zeros. If no bar values are readable, return [].';
+}
+
+function usableKicktraqDays(
+  rows: Array<{ date?: string; pledged_usd?: number; backers?: number; comments?: number }>,
+  diagnostics?: KicktraqScrapeDiagnostics
+): KicktraqDay[] {
+  const parsed = rows
+    .filter(r => r.date)
+    .map(r => ({
+      date: normalizeDate(r.date!),
+      pledged_usd: Number(r.pledged_usd ?? 0) || 0,
+      backers: Number(r.backers ?? 0) || 0,
+      comments: r.comments === undefined || r.comments === null ? undefined : Number(r.comments) || 0,
+    }));
+
+  const usable = parsed.filter(d => d.pledged_usd > 0 || d.backers > 0 || (d.comments ?? 0) > 0);
+  const rejected = parsed.length - usable.length;
+  if (diagnostics && rejected > 0) {
+    diagnostics.zeroRowsRejected = (diagnostics.zeroRowsRejected ?? 0) + rejected;
+  }
+  return usable;
 }
 
 function rowsFromOcrText(text: string): Array<{ date?: string; pledged_usd?: number; backers?: number; comments?: number }> {
@@ -506,12 +538,7 @@ async function scrapeKicktraqViaOCR(pageUrl: string, cookieStr: string, diagnost
     if (diagnostics) diagnostics.imageBytes = imgBuffer.byteLength;
     const base64 = Buffer.from(imgBuffer).toString('base64');
 
-    const ocrPrompt = 'This is the Kicktraq Daily Data tab image for a Kickstarter project. It contains up to three separate bar charts: Pledges Per Day, Backers Per Day, and Comments Per Day.\n' +
-      'Extract the per-day values from the vertical labels on each bar. Do NOT extract the Funding Progress cumulative line chart.\n' +
-      'Use the x-axis MM-DD labels to assign dates to bars. Infer missing dates between visible tick labels sequentially and infer the year from the copyright/header context.\n' +
-      'Normalize money labels such as $6.7m, $469k, $20,249 into numeric USD amounts.\n' +
-      'Return ONLY a JSON array. Each element must be {"date":"YYYY-MM-DD","pledged_usd":NUMBER,"backers":NUMBER,"comments":NUMBER}.\n' +
-      'If one chart is missing or unreadable for a date, use 0 for that field.';
+    const ocrPrompt = kicktraqVisionPrompt();
 
     const claudeBody = JSON.stringify({
       model: 'claude-sonnet-4-6',
@@ -556,14 +583,7 @@ async function scrapeKicktraqViaOCR(pageUrl: string, cookieStr: string, diagnost
     console.log('[OCR] parsed rows=' + rows.length);
     if (diagnostics) diagnostics.ocrRows = rows.length;
 
-    return rows
-      .filter(r => r.date)
-      .map(r => ({
-        date: normalizeDate(r.date!),
-        pledged_usd: r.pledged_usd ?? 0,
-        backers: r.backers ?? 0,
-        comments: r.comments,
-      }));
+    return usableKicktraqDays(rows, diagnostics);
   } catch (e) {
     console.log('[OCR] exception: ' + String(e));
     return [];
@@ -602,12 +622,7 @@ async function scrapeKicktraqViaQwen(pageUrl: string, cookieStr: string, diagnos
     const imgBuffer = await imgRes.arrayBuffer();
     if (diagnostics) diagnostics.imageBytes = imgBuffer.byteLength;
     const base64 = Buffer.from(imgBuffer).toString('base64');
-    const prompt = 'This is the Kicktraq Daily Data tab image for a Kickstarter project. It contains up to three separate bar charts: Pledges Per Day, Backers Per Day, and Comments Per Day. ' +
-      'Extract the per-day values from the vertical labels on each bar. Do NOT extract the Funding Progress cumulative line chart. ' +
-      'Use the x-axis MM-DD labels to assign dates to bars. Infer missing dates between visible tick labels sequentially and infer the year from the copyright/header context. ' +
-      'Normalize money labels such as $6.7m, $469k, $20,249 into numeric USD amounts. ' +
-      'Return ONLY a JSON array. Each item must be {"date":"YYYY-MM-DD","pledged_usd":number,"backers":number,"comments":number}. ' +
-      'If one chart is missing or unreadable for a date, use 0 for that field.';
+    const prompt = kicktraqVisionPrompt();
 
     const body = JSON.stringify({
       model: qwenModel,
@@ -659,14 +674,7 @@ async function scrapeKicktraqViaQwen(pageUrl: string, cookieStr: string, diagnos
     if (diagnostics) diagnostics.ocrPreview = text.slice(0, 200);
     const rows = rowsFromOcrText(text);
     if (diagnostics) diagnostics.ocrRows = rows.length;
-    return rows
-      .filter(r => r.date)
-      .map(r => ({
-        date: normalizeDate(r.date!),
-        pledged_usd: r.pledged_usd ?? 0,
-        backers: r.backers ?? 0,
-        comments: r.comments,
-      }));
+    return usableKicktraqDays(rows, diagnostics);
   } catch (e) {
     console.log('[Qwen OCR] exception: ' + String(e));
     if (diagnostics) {
@@ -704,12 +712,7 @@ async function scrapeKicktraqViaOpenAI(pageUrl: string, cookieStr: string, diagn
     const imgBuffer = await imgRes.arrayBuffer();
     if (diagnostics) diagnostics.imageBytes = imgBuffer.byteLength;
     const base64 = Buffer.from(imgBuffer).toString('base64');
-    const prompt = 'This is the Kicktraq Daily Data tab image for a Kickstarter project. It contains up to three separate bar charts: Pledges Per Day, Backers Per Day, and Comments Per Day. ' +
-      'Extract the per-day values from the vertical labels on each bar. Do NOT extract the Funding Progress cumulative line chart. ' +
-      'Use the x-axis MM-DD labels to assign dates to bars. Infer missing dates between visible tick labels sequentially and infer the year from the copyright/header context. ' +
-      'Normalize money labels such as $6.7m, $469k, $20,249 into numeric USD amounts. ' +
-      'Return ONLY a JSON array. Each item must be {"date":"YYYY-MM-DD","pledged_usd":number,"backers":number,"comments":number}. ' +
-      'If one chart is missing or unreadable for a date, use 0 for that field.';
+    const prompt = kicktraqVisionPrompt();
 
     const body = JSON.stringify({
       model: openAIModel,
@@ -755,14 +758,7 @@ async function scrapeKicktraqViaOpenAI(pageUrl: string, cookieStr: string, diagn
     if (diagnostics) diagnostics.ocrPreview = text.slice(0, 200);
     const rows = rowsFromOcrText(text);
     if (diagnostics) diagnostics.ocrRows = rows.length;
-    return rows
-      .filter(r => r.date)
-      .map(r => ({
-        date: normalizeDate(r.date!),
-        pledged_usd: r.pledged_usd ?? 0,
-        backers: r.backers ?? 0,
-        comments: r.comments,
-      }));
+    return usableKicktraqDays(rows, diagnostics);
   } catch (e) {
     console.log('[OpenAI OCR] exception: ' + String(e));
     return [];
@@ -832,15 +828,30 @@ function normalizeDate(raw: string): string {
 }
 
 export function storeKicktraqDays(projectId: string, days: KicktraqDay[]) {
-  for (const d of days) {
+  const validDays = days
+    .filter(d => d.pledged_usd > 0 || d.backers > 0 || (d.comments ?? 0) > 0)
+    .sort((a, b) => a.date.localeCompare(b.date));
+
+  if (!validDays.length) return;
+
+  deleteKicktraqSnapshots(projectId);
+
+  let pledgedTotal = 0;
+  let backersTotal = 0;
+  let commentsTotal = 0;
+
+  for (const d of validDays) {
+    pledgedTotal += d.pledged_usd;
+    backersTotal += d.backers;
+    commentsTotal += d.comments ?? 0;
     const capturedAt = Math.floor(new Date(d.date + 'T12:00:00Z').getTime() / 1000);
     insertSnapshot({
       project_id: projectId,
       captured_at: capturedAt,
-      pledged_usd: d.pledged_usd,
-      backers_count: d.backers,
+      pledged_usd: pledgedTotal,
+      backers_count: backersTotal,
       days_to_go: 0,
-      comments_count: d.comments ?? 0,
+      comments_count: commentsTotal,
       updates_count: 0,
       state: 'historical',
       source: 'kicktraq',
