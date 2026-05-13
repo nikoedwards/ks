@@ -311,6 +311,7 @@ export interface KicktraqScrapeDiagnostics {
   ocrRows?: number;
   ocrPreview?: string;
   ocrError?: string;
+  ocrEndpoint?: string;
   reason?: string;
 }
 
@@ -558,7 +559,10 @@ async function scrapeKicktraqViaQwen(pageUrl: string, cookieStr: string, diagnos
   const imgUrl = pageUrl + 'dailychart.png';
   const qwenKey = getOptionalEnv('QWEN_API_KEY');
   const qwenModel = getOptionalEnv('QWEN_VISION_MODEL') || 'qwen-vl-plus';
+  const qwenBaseUrl = (getOptionalEnv('QWEN_BASE_URL') || 'https://dashscope.aliyuncs.com/compatible-mode/v1').replace(/\/+$/, '');
+  const qwenEndpoint = `${qwenBaseUrl}/chat/completions`;
   if (diagnostics) diagnostics.ocrProvider = 'qwen';
+  if (diagnostics) diagnostics.ocrEndpoint = qwenEndpoint;
 
   try {
     const imgRes = await fetch(imgUrl, {
@@ -602,7 +606,7 @@ async function scrapeKicktraqViaQwen(pageUrl: string, cookieStr: string, diagnos
 
     let res: Response | null = null;
     for (let attempt = 0; attempt < 3; attempt++) {
-      res = await fetch('https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions', {
+      res = await fetch(qwenEndpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -647,6 +651,10 @@ async function scrapeKicktraqViaQwen(pageUrl: string, cookieStr: string, diagnos
       }));
   } catch (e) {
     console.log('[Qwen OCR] exception: ' + String(e));
+    if (diagnostics) {
+      diagnostics.ocrError = String(e);
+      diagnostics.reason = `Qwen OCR request failed before receiving an HTTP response.`;
+    }
     return [];
   }
 }
