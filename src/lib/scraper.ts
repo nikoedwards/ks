@@ -404,11 +404,9 @@ async function fetchKicktraqDailyImages(pageUrl: string, cookieStr: string, diag
     { kind: 'backers', file: 'dailybackers.png' },
     { kind: 'comments', file: 'dailycomments.png' },
   ];
-  const images: KicktraqChartImage[] = [];
-  for (const spec of specs) {
-    const image = await fetchKicktraqChartImage(pageUrl + spec.file, pageUrl, cookieStr, spec.kind).catch(() => null);
-    if (image) images.push(image);
-  }
+  const images = (await Promise.all(
+    specs.map(spec => fetchKicktraqChartImage(pageUrl + spec.file, pageUrl, cookieStr, spec.kind).catch(() => null))
+  )).filter(Boolean) as KicktraqChartImage[];
 
   if (diagnostics && images.length) {
     diagnostics.imageStatus = images.every(img => img.status === 200) ? 200 : images[0].status;
@@ -733,37 +731,20 @@ async function scrapeKicktraqViaQwen(pageUrl: string, cookieStr: string, diagnos
       return { ok: true, status: res.status, text: data.choices?.[0]?.message?.content ?? '' };
     };
 
-    const exact = await callQwen(kicktraqVisionPrompt('exact'));
-    if (!exact.ok) {
+    const result = await callQwen(kicktraqVisionPrompt('estimate'));
+    if (!result.ok) {
       if (diagnostics) {
-        diagnostics.ocrStatus = exact.status;
-        diagnostics.ocrPreview = exact.text.slice(0, 200);
-        diagnostics.ocrError = extractOpenAIErrorMessage(exact.text);
+        diagnostics.ocrStatus = result.status;
+        diagnostics.ocrPreview = result.text.slice(0, 200);
+        diagnostics.ocrError = extractOpenAIErrorMessage(result.text);
       }
       return [];
     }
 
-    if (diagnostics) diagnostics.ocrStatus = exact.status;
-    if (diagnostics) diagnostics.ocrPreview = exact.text.slice(0, 200);
-    const rows = rowsFromOcrText(exact.text);
-    if (diagnostics) diagnostics.ocrRows = rows.length;
-    const exactDays = usableKicktraqDays(rows, diagnostics);
-    if (exactDays.length) return exactDays;
-
-    const estimated = await callQwen(kicktraqVisionPrompt('estimate'));
-    if (!estimated.ok) {
-      if (diagnostics) {
-        diagnostics.ocrStatus = estimated.status;
-        diagnostics.ocrPreview = estimated.text.slice(0, 200);
-        diagnostics.ocrError = extractOpenAIErrorMessage(estimated.text);
-      }
-      return [];
-    }
-
-    const estimatedRows = rowsFromOcrText(estimated.text);
+    const estimatedRows = rowsFromOcrText(result.text);
     if (diagnostics) {
-      diagnostics.ocrStatus = estimated.status;
-      diagnostics.ocrPreview = estimated.text.slice(0, 200);
+      diagnostics.ocrStatus = result.status;
+      diagnostics.ocrPreview = result.text.slice(0, 200);
       diagnostics.ocrFallbackRows = estimatedRows.length;
       diagnostics.ocrRows = estimatedRows.length;
     }
