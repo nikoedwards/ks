@@ -2,6 +2,7 @@ import BetterSqlite3 from 'better-sqlite3';
 import type { Database } from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
+import { createHash } from 'crypto';
 
 const DATA_DIR = process.env.DATA_DIR ?? path.join(process.cwd(), 'data');
 const DB_PATH = path.join(DATA_DIR, 'kickstarter.db');
@@ -351,6 +352,7 @@ export interface DashboardStats {
   total_pledged_usd: number;
   avg_backers: number;
   avg_goal: number;
+  category_count?: number;
 }
 
 function dateWhere(alias = '') {
@@ -378,7 +380,8 @@ export async function getStats(filter: { dateFrom?: number; dateTo?: number } = 
         THEN (CASE WHEN state='successful' THEN 1.0 ELSE 0.0 END) END)*100, 1) as success_rate,
       ROUND(SUM(usd_pledged)/1000000.0, 2) as total_pledged_usd,
       ROUND(AVG(backers_count), 1) as avg_backers,
-      ROUND(AVG(goal), 0) as avg_goal
+      ROUND(AVG(goal), 0) as avg_goal,
+      COUNT(DISTINCT category_parent) as category_count
     FROM projects
     ${where}
   `).get(w.params) as DashboardStats;
@@ -397,6 +400,7 @@ export async function getStateDistribution(filter: { dateFrom?: number; dateTo?:
 export interface ProjectFilter {
   state?: string;
   category?: string;
+  categoryName?: string;
   country?: string;
   search?: string;
   sort?: string;
@@ -409,13 +413,14 @@ export interface ProjectFilter {
 
 export async function getProjects(filter: ProjectFilter = {}) {
   const db = getDB();
-  const { state, category, country, search, sort = 'usd_pledged', sortDir = 'desc', page = 1, limit = 20, dateFrom, dateTo } = filter;
+  const { state, category, categoryName, country, search, sort = 'usd_pledged', sortDir = 'desc', page = 1, limit = 20, dateFrom, dateTo } = filter;
 
   const conditions: string[] = [];
   const params: Record<string, unknown> = {};
 
   if (state && state !== 'all') { conditions.push('p.state = @state'); params.state = state; }
   if (category) { conditions.push('p.category_parent = @category'); params.category = category; }
+  if (categoryName) { conditions.push('p.category_name = @categoryName'); params.categoryName = categoryName; }
   if (country) { conditions.push('p.country = @country'); params.country = country; }
   if (search) { conditions.push('(p.name LIKE @search OR p.blurb LIKE @search)'); params.search = `%${search}%`; }
   if (dateFrom) { conditions.push('p.launched_at >= @dateFrom'); params.dateFrom = dateFrom; }
@@ -1123,6 +1128,62 @@ export function updateUserRole(userId: number, role: 'admin' | 'user') {
   getDB().prepare("UPDATE users SET role = ? WHERE id = ?").run(role, userId);
 }
 
+function adminHashPassword(password: string) {
+  return createHash('sha256').update('ks:' + password).digest('hex');
+}
+
+export function adminCreateUser(input: {
+  username: string;
+  email?: string | null;
+  password: string;
+  role?: 'admin' | 'user';
+  email_verified?: number;
+}) {
+  const db = getDB();
+  const result = db.prepare(`
+    INSERT INTO users (username, email, password_hash, email_verified, role)
+    VALUES (@username, @email, @password_hash, @email_verified, @role)
+  `).run({
+    username: input.username.trim(),
+    email: input.email?.trim().toLowerCase() || null,
+    password_hash: adminHashPassword(input.password),
+    email_verified: input.email_verified ? 1 : 0,
+    role: input.role ?? 'user',
+  });
+  return Number(result.lastInsertRowid);
+}
+
+export function adminUpdateUser(input: {
+  id: number;
+  username?: string;
+  email?: string | null;
+  password?: string;
+  role?: 'admin' | 'user';
+  email_verified?: number;
+}) {
+  const fields: string[] = [];
+  const params: Record<string, unknown> = { id: input.id };
+  if (input.username !== undefined) { fields.push('username = @username'); params.username = input.username.trim(); }
+  if (input.email !== undefined) { fields.push('email = @email'); params.email = input.email?.trim().toLowerCase() || null; }
+  if (input.password) { fields.push('password_hash = @password_hash'); params.password_hash = adminHashPassword(input.password); }
+  if (input.role) { fields.push('role = @role'); params.role = input.role; }
+  if (input.email_verified !== undefined) { fields.push('email_verified = @email_verified'); params.email_verified = input.email_verified ? 1 : 0; }
+  if (!fields.length) return;
+  getDB().prepare(`UPDATE users SET ${fields.join(', ')} WHERE id = @id`).run(params);
+}
+
+export function adminDeleteUser(userId: number) {
+  const db = getDB();
+  const tx = db.transaction(() => {
+    db.prepare('DELETE FROM sessions WHERE user_id = ?').run(userId);
+    db.prepare('DELETE FROM favorites WHERE user_id = ?').run(userId);
+    db.prepare('DELETE FROM user_project_subscriptions WHERE user_id = ?').run(userId);
+    db.prepare('DELETE FROM announcement_events WHERE user_id = ?').run(userId);
+    db.prepare('DELETE FROM users WHERE id = ?').run(userId);
+  });
+  tx();
+}
+
 export interface AnnouncementInput {
   id?: number;
   title: string;
@@ -1247,6 +1308,36 @@ export async function getSyncHistory() {
 export async function getProjectCount(): Promise<number> {
   const row = getDB().prepare('SELECT COUNT(*) as c FROM projects').get() as { c: number };
   return row?.c ?? 0;
+}
+
+export function getLandingData() {
+  const db = getDB();
+  const yearStart = Math.floor(new Date('2026-01-01T00:00:00').getTime() / 1000);
+  const yearEnd = Math.floor(new Date('2026-12-31T23:59:59').getTime() / 1000);
+  const monthAgo = Math.floor(Date.now() / 1000) - 30 * 86400;
+  const select = `
+    SELECT id, name, blurb, state, category_parent, category_name, country, usd_pledged, backers_count,
+           goal, launched_at, source_url, image_url, image_thumb_url
+    FROM projects
+  `;
+  const top2026 = db.prepare(`
+    ${select}
+    WHERE launched_at BETWEEN @yearStart AND @yearEnd
+    ORDER BY usd_pledged DESC, backers_count DESC
+    LIMIT 3
+  `).all({ yearStart, yearEnd });
+  const latestMonth = db.prepare(`
+    ${select}
+    WHERE launched_at >= @monthAgo
+    ORDER BY launched_at DESC, usd_pledged DESC
+    LIMIT 5
+  `).all({ monthAgo });
+  const topPledged = db.prepare(`
+    ${select}
+    ORDER BY usd_pledged DESC, backers_count DESC
+    LIMIT 5
+  `).all();
+  return { top2026, latestMonth, topPledged };
 }
 
 export function getDataQualityReport() {

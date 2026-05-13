@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getProjects, getCategoryList, getCountryList } from '@/lib/db';
+import { getProjects, getCategoryList, getCountryList, getLeaderboardCategoryOptions } from '@/lib/db';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -10,6 +10,7 @@ export async function GET(req: NextRequest) {
     const result = await getProjects({
       state: sp.get('state') ?? undefined,
       category: sp.get('category') ?? undefined,
+      categoryName: sp.get('categoryName') ?? undefined,
       country: sp.get('country') ?? undefined,
       search: sp.get('search') ?? undefined,
       sort: sp.get('sort') ?? undefined,
@@ -21,7 +22,8 @@ export async function GET(req: NextRequest) {
     });
     const categories = await getCategoryList();
     const countries = await getCountryList();
-    return NextResponse.json({ ...result, categories, countries });
+    const categoryOptions = getLeaderboardCategoryOptions();
+    return NextResponse.json({ ...result, categories, categoryOptions, countries });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }

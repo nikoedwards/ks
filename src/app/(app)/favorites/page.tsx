@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { ChevronDown, ChevronRight, Heart, ExternalLink, Loader2 } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
@@ -14,6 +14,8 @@ interface Project {
   blurb: string;
   state: string;
   category_parent: string;
+  category_name?: string | null;
+  currency?: string | null;
   usd_pledged: number;
   backers_count: number;
   goal?: number;
@@ -32,7 +34,7 @@ export default function FavoritesPage() {
 
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading]   = useState(true);
-  const [collapsed, setCollapsed] = useState(false);
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
 
   const loadFavorites = () => {
     if (!user) { setLoading(false); return; }
@@ -43,14 +45,19 @@ export default function FavoritesPage() {
   };
 
   useEffect(() => {
-    setCollapsed(localStorage.getItem('ks:favorites:detailsCollapsed') === '1');
+    try {
+      setExpandedIds(new Set(JSON.parse(localStorage.getItem('ks:favorites:expandedRows') || '[]') as string[]));
+    } catch { /* ignore */ }
     loadFavorites();
   }, [user]);
 
-  const toggleCollapsed = () => {
-    setCollapsed(prev => {
-      localStorage.setItem('ks:favorites:detailsCollapsed', prev ? '0' : '1');
-      return !prev;
+  const toggleExpanded = (projectId: string) => {
+    setExpandedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(projectId)) next.delete(projectId);
+      else next.add(projectId);
+      localStorage.setItem('ks:favorites:expandedRows', JSON.stringify([...next]));
+      return next;
     });
   };
 
@@ -118,8 +125,12 @@ export default function FavoritesPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50">
-                {projects.map(p => (
-                  <tr key={p.id} className="hover:bg-gray-50/80">
+                {projects.map(p => {
+                  const expanded = expandedIds.has(p.id);
+                  const pct = p.goal ? Math.round((Number(p.usd_pledged ?? 0) / Math.max(1, Number(p.goal))) * 100) : null;
+                  return (
+                  <Fragment key={p.id}>
+                  <tr className="hover:bg-gray-50/80">
                     <td className="px-5 py-3">
                       <Link href={`/projects/${p.id}`} className="block h-12 w-20 overflow-hidden rounded-md bg-gray-100">
                         {p.image_thumb_url || p.image_url ? (
@@ -164,52 +175,55 @@ export default function FavoritesPage() {
                         >
                           <Heart className="w-3.5 h-3.5 fill-current" />
                         </button>
+                        <button
+                          onClick={() => toggleExpanded(p.id)}
+                          className="p-1.5 text-gray-400 hover:text-gray-700 transition-colors"
+                          title={expanded ? (lang === 'cn' ? '收起详情' : 'Collapse') : (lang === 'cn' ? '展开详情' : 'Expand')}
+                        >
+                          {expanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                        </button>
                       </div>
                     </td>
                   </tr>
-                ))}
+                  {expanded && (
+                    <tr key={`${p.id}-details`} className="bg-gray-50/60">
+                      <td />
+                      <td colSpan={6} className="px-5 py-4">
+                        <div className="grid grid-cols-2 gap-3 text-xs md:grid-cols-6">
+                          <div>
+                            <p className="font-semibold text-gray-400">{lang === 'cn' ? '二级类目' : 'Subcategory'}</p>
+                            <p className="mt-1 text-gray-800">{p.category_name || '-'}</p>
+                          </div>
+                          <div>
+                            <p className="font-semibold text-gray-400">{lang === 'cn' ? '国家' : 'Country'}</p>
+                            <p className="mt-1 text-gray-800">{p.country || '-'}</p>
+                          </div>
+                          <div>
+                            <p className="font-semibold text-gray-400">{lang === 'cn' ? '目标' : 'Goal'}</p>
+                            <p className="mt-1 text-gray-800">${Number(p.goal ?? 0).toLocaleString()}</p>
+                          </div>
+                          <div>
+                            <p className="font-semibold text-gray-400">{lang === 'cn' ? '完成率' : 'Funded'}</p>
+                            <p className="mt-1 text-gray-800">{pct !== null ? `${pct}%` : '-'}</p>
+                          </div>
+                          <div>
+                            <p className="font-semibold text-gray-400">{lang === 'cn' ? '截止时间' : 'Deadline'}</p>
+                            <p className="mt-1 text-gray-800">{p.deadline ? new Date(p.deadline * 1000).toLocaleDateString('zh-CN') : '-'}</p>
+                          </div>
+                          <div>
+                            <p className="font-semibold text-gray-400">{lang === 'cn' ? '项目 ID' : 'Project ID'}</p>
+                            <p className="mt-1 truncate text-gray-800">{p.id}</p>
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                  </Fragment>
+                );})}
               </tbody>
               </table>
             </div>
           </div>
-
-          <section className="rounded-xl border border-gray-100 bg-white shadow-sm">
-            <button onClick={toggleCollapsed} className="flex w-full items-center justify-between px-5 py-4 text-left">
-              <div>
-                <h2 className="font-bold text-gray-900">{lang === 'cn' ? '收藏项目速览' : 'Favorite snapshot'}</h2>
-                <p className="text-xs text-gray-400">{lang === 'cn' ? '关键数据、状态和类目放在这里，方便快速扫一眼。' : 'A compact view of status, category, pledge, and backers.'}</p>
-              </div>
-              {collapsed ? <ChevronRight className="h-5 w-5 text-gray-400" /> : <ChevronDown className="h-5 w-5 text-gray-400" />}
-            </button>
-            {!collapsed && (
-              <div className="grid grid-cols-1 gap-3 border-t border-gray-100 p-5 md:grid-cols-2 xl:grid-cols-3">
-                {projects.map(p => {
-                  const src = p.image_thumb_url || p.image_url;
-                  const pct = p.goal ? Math.round((Number(p.usd_pledged ?? 0) / Math.max(1, Number(p.goal))) * 100) : null;
-                  return (
-                    <Link key={p.id} href={`/projects/${p.id}`} className="group flex gap-3 rounded-lg border border-gray-100 p-3 transition-colors hover:bg-gray-50">
-                      <span className="h-16 w-24 shrink-0 overflow-hidden rounded-md bg-gray-100">
-                        {src ? (
-                          <ImagePreview src={src} className="block h-full w-full">
-                            <img src={src} alt="" className="h-full w-full object-cover" />
-                          </ImagePreview>
-                        ) : <span className="block h-full w-full bg-gray-100" />}
-                      </span>
-                      <span className="min-w-0">
-                        <span className="line-clamp-1 text-sm font-bold text-gray-900 group-hover:text-ks-green">{p.name}</span>
-                        <span className="mt-1 block text-xs text-gray-400">{p.category_parent} · {p.country ?? '--'} · {t[lang].states[p.state as keyof typeof t.en.states] ?? p.state}</span>
-                        <span className="mt-2 flex flex-wrap gap-2 text-xs">
-                          <span className="rounded-md bg-ks-green-light px-2 py-1 font-bold text-ks-green-dark">${Number(p.usd_pledged).toLocaleString()}</span>
-                          <span className="rounded-md bg-blue-50 px-2 py-1 font-semibold text-blue-600">{Number(p.backers_count).toLocaleString()} {lang === 'cn' ? '支持者' : 'backers'}</span>
-                          {pct !== null && <span className="py-1 text-gray-400">{pct}%</span>}
-                        </span>
-                      </span>
-                    </Link>
-                  );
-                })}
-              </div>
-            )}
-          </section>
         </div>
       )}
     </div>

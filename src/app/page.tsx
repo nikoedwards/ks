@@ -10,8 +10,21 @@ import { useLanguage, setLang } from '@/hooks/useLanguage';
 import { t } from '@/lib/i18n';
 import LoginModal from '@/components/LoginModal';
 
-interface PlatformStats { total: number; success_rate: number; total_pledged_usd: number; }
-interface SearchHit { id: string; name: string; category_parent: string; state: string; }
+interface PlatformStats { total: number; success_rate: number; total_pledged_usd: number; category_count?: number; }
+interface SearchHit { id: string; name: string; category_parent: string; state: string; usd_pledged?: number; launched_at?: number; }
+interface LandingProject extends SearchHit { backers_count?: number; goal?: number; }
+
+function fmtMoneyCompact(value: number) {
+  const v = Number(value ?? 0);
+  if (v >= 1_000_000_000) return `$${(v / 1_000_000_000).toFixed(1)}B`;
+  if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(1)}M`;
+  if (v >= 1_000) return `$${(v / 1_000).toFixed(0)}K`;
+  return `$${v.toFixed(0)}`;
+}
+
+function RollingValue({ value, className }: { value: string; className?: string }) {
+  return <span key={value} className={`inline-block animate-[bounce_0.45s_ease-out_1] ${className ?? ''}`}>{value}</span>;
+}
 
 // ── FAQ accordion ──────────────────────────────────────────────────────────────
 
@@ -32,12 +45,12 @@ function FaqItem({ q, a }: { q: string; a: string }) {
 }
 
 // ── Mockup: Project Table ──────────────────────────────────────────────────────
-function ProjectTableMockup({ lang }: { lang: string }) {
-  const rows = [
-    { name: 'Creality K2 Plus', cat: 'Technology', pledged: '$4.2M', funded: '420%' },
-    { name: 'BSIDES Bag', cat: 'Fashion', pledged: '$1.8M', funded: '900%' },
-    { name: 'Anker Soundcore', cat: 'Technology', pledged: '$520K', funded: '217%' },
-  ];
+function ProjectTableMockup({ lang, rows: liveRows }: { lang: string; rows?: LandingProject[] }) {
+  const rows = (liveRows?.length ? liveRows : [
+    { id: '1', name: 'Creality K2 Plus', category_parent: 'Technology', state: 'successful', usd_pledged: 4200000, goal: 100000 },
+    { id: '2', name: 'BSIDES Bag', category_parent: 'Fashion', state: 'successful', usd_pledged: 1800000, goal: 20000 },
+    { id: '3', name: 'Anker Soundcore', category_parent: 'Technology', state: 'successful', usd_pledged: 520000, goal: 240000 },
+  ]).slice(0, 3);
   return (
     <div className="rounded-xl border border-gray-200 bg-white shadow-xl overflow-hidden text-xs">
       <div className="bg-gray-50 px-3 py-2 flex items-center gap-1.5 border-b border-gray-100">
@@ -73,10 +86,10 @@ function ProjectTableMockup({ lang }: { lang: string }) {
                 <td className="py-1.5">
                   <div className="font-semibold text-gray-800 text-[10px] truncate max-w-[80px]">{r.name}</div>
                 </td>
-                <td className="py-1.5 text-gray-400 text-[10px]">{r.cat}</td>
-                <td className="py-1.5 text-right text-gray-800 font-semibold text-[10px]">{r.pledged}</td>
+                <td className="py-1.5 text-gray-400 text-[10px]">{r.category_parent}</td>
+                <td className="py-1.5 text-right text-gray-800 font-semibold text-[10px]">{fmtMoneyCompact(r.usd_pledged ?? 0)}</td>
                 <td className="py-1.5 text-right">
-                  <span className="text-ks-green text-[10px] font-bold">{r.funded}</span>
+                  <span className="text-ks-green text-[10px] font-bold">{r.goal ? `${Math.round(((r.usd_pledged ?? 0) / Math.max(1, r.goal)) * 100)}%` : '-'}</span>
                 </td>
               </tr>
             ))}
@@ -176,6 +189,8 @@ export default function LandingPage() {
   const router = useRouter();
 
   const [stats, setStats] = useState<PlatformStats | null>(null);
+  const [top2026, setTop2026] = useState<LandingProject[]>([]);
+  const [defaultSuggestions, setDefaultSuggestions] = useState<{ latestMonth: SearchHit[]; topPledged: SearchHit[] }>({ latestMonth: [], topPledged: [] });
   const [navSearch, setNavSearch] = useState('');
   const [suggestions, setSuggestions] = useState<SearchHit[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
@@ -185,11 +200,22 @@ export default function LandingPage() {
   useEffect(() => {
     fetch('/api/stats').then(r => r.json()).then(d => {
       if (d.stats) setStats(d.stats);
+      if (d.landing) {
+        setTop2026(d.landing.top2026 ?? []);
+        setDefaultSuggestions({
+          latestMonth: d.landing.latestMonth ?? [],
+          topPledged: d.landing.topPledged ?? [],
+        });
+      }
     }).catch(() => {});
   }, []);
 
   const fetchSuggestions = useCallback((q: string) => {
-    if (!q.trim() || q.length < 2) { setSuggestions([]); return; }
+    if (!q.trim()) {
+      setSuggestions([]);
+      return;
+    }
+    if (q.length < 2) { setSuggestions([]); return; }
     fetch(`/api/projects?search=${encodeURIComponent(q)}&limit=5&page=1`)
       .then(r => r.json())
       .then(d => setSuggestions(d.rows?.slice(0, 5) ?? []))
@@ -202,6 +228,11 @@ export default function LandingPage() {
     setShowSuggestions(true);
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => fetchSuggestions(v), 300);
+  };
+
+  const showDefaultSearch = () => {
+    setShowSuggestions(true);
+    if (!navSearch.trim()) setSuggestions([]);
   };
 
   const handleNavSearchSubmit = (e?: React.FormEvent) => {
@@ -232,7 +263,7 @@ export default function LandingPage() {
     { label: tr.stats.projects,   value: stats ? fmtNum(stats.total)            : '200K+', color: 'text-ks-green' },
     { label: tr.stats.rate,       value: stats ? `${stats.success_rate}%`        : '35%',   color: 'text-white' },
     { label: tr.stats.raised,     value: stats ? `$${stats.total_pledged_usd}M`  : '$2B+',  color: 'text-white' },
-    { label: tr.stats.categories, value: '18',                                              color: 'text-white' },
+    { label: tr.stats.categories, value: stats?.category_count ? String(stats.category_count) : '18', color: 'text-white' },
   ];
 
   const featureSections = lang === 'cn' ? [
@@ -336,15 +367,15 @@ export default function LandingPage() {
                     type="text"
                     value={navSearch}
                     onChange={handleNavSearchChange}
-                    onFocus={() => navSearch.length >= 2 && setShowSuggestions(true)}
+                    onFocus={showDefaultSearch}
                     placeholder={lang === 'cn' ? '搜索项目名称...' : 'Search campaigns...'}
                     className="w-full pl-9 pr-4 py-2 border border-gray-200 rounded-full text-sm focus:outline-none focus:ring-2 focus:ring-ks-green/40 focus:border-ks-green bg-gray-50 transition-all"
                   />
                 </div>
               </form>
-              {showSuggestions && suggestions.length > 0 && (
+              {showSuggestions && (suggestions.length > 0 || !navSearch.trim()) && (
                 <div className="absolute top-full left-0 right-0 mt-1 bg-white rounded-xl border border-gray-200 shadow-xl overflow-hidden z-50">
-                  {suggestions.map(s => (
+                  {navSearch.trim() ? suggestions.map(s => (
                     <button
                       key={s.id}
                       className="w-full px-4 py-2.5 text-left hover:bg-gray-50 transition-colors flex items-center gap-3 border-b border-gray-50 last:border-0"
@@ -356,13 +387,34 @@ export default function LandingPage() {
                         <div className="text-xs text-gray-400">{s.category_parent}</div>
                       </div>
                     </button>
-                  ))}
-                  <button
+                  )) : (
+                    <div className="grid grid-cols-1 gap-0 md:grid-cols-2">
+                      <div className="border-b border-gray-50 md:border-b-0 md:border-r">
+                        <p className="px-4 py-2 text-xs font-bold text-gray-400">{lang === 'cn' ? '近一个月新发起 Top 5' : 'Newest launches in 30 days'}</p>
+                        {defaultSuggestions.latestMonth.slice(0, 5).map(s => (
+                          <button key={s.id} className="w-full px-4 py-2 text-left hover:bg-gray-50" onClick={() => { router.push(`/projects/${s.id}`); setShowSuggestions(false); }}>
+                            <div className="truncate text-sm font-semibold text-gray-800">{s.name}</div>
+                            <div className="text-xs text-gray-400">{s.category_parent} · {fmtMoneyCompact(s.usd_pledged ?? 0)}</div>
+                          </button>
+                        ))}
+                      </div>
+                      <div>
+                        <p className="px-4 py-2 text-xs font-bold text-gray-400">{lang === 'cn' ? '金额排名 Top 5' : 'Top pledged campaigns'}</p>
+                        {defaultSuggestions.topPledged.slice(0, 5).map(s => (
+                          <button key={s.id} className="w-full px-4 py-2 text-left hover:bg-gray-50" onClick={() => { router.push(`/projects/${s.id}`); setShowSuggestions(false); }}>
+                            <div className="truncate text-sm font-semibold text-gray-800">{s.name}</div>
+                            <div className="text-xs text-gray-400">{s.category_parent} · {fmtMoneyCompact(s.usd_pledged ?? 0)}</div>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {navSearch.trim() && <button
                     className="w-full px-4 py-2 text-left text-xs text-ks-green font-semibold hover:bg-ks-green-light transition-colors"
                     onClick={() => handleNavSearchSubmit()}
                   >
                     {lang === 'cn' ? `搜索 "${navSearch}" →` : `Search for "${navSearch}" →`}
-                  </button>
+                  </button>}
                 </div>
               )}
             </div>
@@ -426,14 +478,14 @@ export default function LandingPage() {
 
             <div className="flex flex-wrap items-center justify-center gap-4">
               <Link
-                href="/dashboard"
+                href="/live-intel"
                 className="inline-flex items-center gap-2 bg-ks-green hover:bg-ks-green-dark text-white px-8 py-3.5 rounded-xl font-bold text-base transition-all shadow-lg shadow-ks-green/25 hover:shadow-ks-green/40 hover:-translate-y-0.5"
               >
                 {tr.cta}
                 <ArrowRight className="w-4 h-4" />
               </Link>
               <Link
-                href="/about"
+                href="/live-intel"
                 className="inline-flex items-center gap-2 bg-white/10 hover:bg-white/15 text-white px-8 py-3.5 rounded-xl font-semibold text-base transition-all border border-white/10"
               >
                 {tr.learnMore}
@@ -447,7 +499,7 @@ export default function LandingPage() {
           <div className="max-w-6xl mx-auto px-6 py-8 grid grid-cols-2 md:grid-cols-4 gap-6 text-center">
             {platformStats.map(s => (
               <div key={s.label}>
-                <div className={`text-3xl md:text-4xl font-black ${s.color}`}>{s.value}</div>
+                <div className={`text-3xl md:text-4xl font-black ${s.color}`}><RollingValue value={s.value} /></div>
                 <div className="text-white/50 text-xs font-medium mt-1 uppercase tracking-wide">{s.label}</div>
               </div>
             ))}
@@ -477,7 +529,7 @@ export default function LandingPage() {
                 </div>
                 {/* Mockup */}
                 <div className="flex-1 w-full">
-                  {f.mockup === 'table' && <ProjectTableMockup lang={lang} />}
+                  {f.mockup === 'table' && <ProjectTableMockup lang={lang} rows={top2026} />}
                   {f.mockup === 'chart' && <ChartMockup lang={lang} />}
                   {f.mockup === 'score' && <ScoreMockup lang={lang} />}
                 </div>
@@ -550,7 +602,7 @@ export default function LandingPage() {
                 <ArrowRight className="w-4 h-4" />
               </button>
               <Link
-                href="/dashboard"
+                href="/live-intel"
                 className="inline-flex items-center gap-2 bg-white/10 hover:bg-white/15 text-white px-8 py-3.5 rounded-xl font-semibold text-base transition-all border border-white/10"
               >
                 {lang === 'cn' ? '先逛逛数据' : 'Explore Data'}

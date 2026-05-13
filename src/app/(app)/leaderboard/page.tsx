@@ -73,7 +73,8 @@ interface LeaderboardData {
   };
 }
 
-type Metric = 'pledged' | 'backers' | 'creator-pledged' | 'creator-count' | 'creator-average';
+type Metric = 'pledged' | 'backers' | 'creator';
+type CreatorMetric = 'pledged' | 'count' | 'average';
 
 const PAGE_SIZE = 20;
 
@@ -172,6 +173,7 @@ export default function LeaderboardPage() {
   const [categoryParent, setCategoryParent] = useState('');
   const [categoryName, setCategoryName] = useState('');
   const [metric, setMetric] = useState<Metric>('pledged');
+  const [creatorMetric, setCreatorMetric] = useState<CreatorMetric>('pledged');
   const [page, setPage] = useState(1);
   const [data, setData] = useState<LeaderboardData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -186,7 +188,12 @@ export default function LeaderboardPage() {
     const params = new URLSearchParams(window.location.search);
     const metricParam = params.get('metric');
     const yearParam = params.get('year');
-    if (metricParam === 'backers' || metricParam === 'creator-pledged' || metricParam === 'creator-count' || metricParam === 'creator-average') setMetric(metricParam);
+    if (metricParam === 'backers' || metricParam === 'creator') setMetric(metricParam);
+    if (metricParam === 'creator-pledged') { setMetric('creator'); setCreatorMetric('pledged'); }
+    if (metricParam === 'creator-count') { setMetric('creator'); setCreatorMetric('count'); }
+    if (metricParam === 'creator-average') { setMetric('creator'); setCreatorMetric('average'); }
+    const creatorMetricParam = params.get('creatorMetric');
+    if (creatorMetricParam === 'pledged' || creatorMetricParam === 'count' || creatorMetricParam === 'average') setCreatorMetric(creatorMetricParam);
     if (yearParam && /^\d{4}$/.test(yearParam)) {
       const y = Number(yearParam);
       const range = yearRange(y);
@@ -217,11 +224,11 @@ export default function LeaderboardPage() {
     return (data?.categories ?? []).filter(c => !categoryParent || c.category_parent === categoryParent);
   }, [data, categoryParent]);
 
-  const creatorMetrics = metric === 'creator-pledged' || metric === 'creator-count' || metric === 'creator-average';
+  const creatorMetrics = metric === 'creator';
   const projects = metric === 'backers' ? data?.byBackers ?? [] : data?.byPledged ?? [];
-  const creators = metric === 'creator-count'
+  const creators = creatorMetric === 'count'
     ? data?.creatorsByCount ?? []
-    : metric === 'creator-average'
+    : creatorMetric === 'average'
     ? data?.creatorsByAverage ?? []
     : data?.creatorsByPledged ?? [];
   const rows = creatorMetrics ? creators : projects;
@@ -274,6 +281,7 @@ export default function LeaderboardPage() {
       url.searchParams.set('to', dateTo);
     }
     url.searchParams.set('metric', metric);
+    if (metric === 'creator') url.searchParams.set('creatorMetric', creatorMetric);
     if (categoryParent) url.searchParams.set('categoryParent', categoryParent);
     if (categoryName) url.searchParams.set('categoryName', categoryName);
     return url.toString();
@@ -329,7 +337,7 @@ export default function LeaderboardPage() {
     ctx.font = '700 34px Arial, sans-serif';
     ctx.fillText('Kicksonar x', 64, 78);
     if (kickstarterLogo) {
-      ctx.drawImage(kickstarterLogo, 260, 30, 300, 84);
+      ctx.drawImage(kickstarterLogo, 256, 34, 330, 72);
     } else {
       ctx.fillStyle = '#05ce78';
       ctx.font = '900 26px Arial, sans-serif';
@@ -497,14 +505,8 @@ export default function LeaderboardPage() {
             <button onClick={() => { setMetric('backers'); setPage(1); }} className={`inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-sm font-bold ${metric === 'backers' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500'}`}>
               <Users className="h-4 w-4" />{cn ? '支持者' : 'Backers'}
             </button>
-            <button onClick={() => { setMetric('creator-pledged'); setPage(1); }} className={`inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-sm font-bold ${metric === 'creator-pledged' ? 'bg-white text-ks-green shadow-sm' : 'text-gray-500'}`}>
-              <DollarSign className="h-4 w-4" />{cn ? 'Creator 总额' : 'Creator total'}
-            </button>
-            <button onClick={() => { setMetric('creator-count'); setPage(1); }} className={`inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-sm font-bold ${metric === 'creator-count' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500'}`}>
-              <Users className="h-4 w-4" />{cn ? 'Creator 次数' : 'Creator count'}
-            </button>
-            <button onClick={() => { setMetric('creator-average'); setPage(1); }} className={`inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-sm font-bold ${metric === 'creator-average' ? 'bg-white text-amber-600 shadow-sm' : 'text-gray-500'}`}>
-              <DollarSign className="h-4 w-4" />{cn ? '单次均额' : 'Avg per launch'}
+            <button onClick={() => { setMetric('creator'); setPage(1); }} className={`inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-sm font-bold ${metric === 'creator' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500'}`}>
+              <Users className="h-4 w-4" />{cn ? '发起者' : 'Creators'}
             </button>
           </div>
         </div>
@@ -512,12 +514,30 @@ export default function LeaderboardPage() {
         {loading ? (
           <div className="p-12 text-center text-gray-400">{cn ? '加载中...' : 'Loading...'}</div>
         ) : creatorMetrics ? (
-          <div className="divide-y divide-gray-50">
-            {pageCreators.map((creator, index) => {
-              const rank = (page - 1) * PAGE_SIZE + index + 1;
-              const preview = creator.best_project_thumb_url ?? creator.best_project_image_url;
-              return (
-                <div key={creator.creator_key} className={`grid grid-cols-[44px_88px_1fr_auto] items-center gap-4 px-5 py-4 transition-colors hover:bg-gray-50 ${rank <= 3 ? 'bg-amber-50/30' : ''}`}>
+          <>
+            <div className="grid grid-cols-1 gap-3 border-b border-gray-100 p-5 md:grid-cols-3">
+              {([
+                ['pledged', cn ? 'Creator 累计众筹金额榜' : 'Total pledged', cn ? '单次平均金额 × 众筹次数' : 'Average per launch × launch count'],
+                ['count', cn ? 'Creator 众筹次数榜' : 'Launch count', cn ? '按项目发起次数排序' : 'Ranked by number of launches'],
+                ['average', cn ? 'Creator 单次平均金额榜' : 'Average pledged', cn ? '按单次平均融资金额排序' : 'Ranked by average pledged amount'],
+              ] as [CreatorMetric, string, string][]).map(([key, label, hint]) => (
+                <button
+                  key={key}
+                  onClick={() => { setCreatorMetric(key); setPage(1); }}
+                  className={`rounded-lg border p-4 text-left transition-all ${creatorMetric === key ? 'border-ks-green bg-ks-green-light/60 shadow-sm' : 'border-gray-100 bg-gray-50/70 hover:bg-gray-100'}`}
+                >
+                  <p className="text-sm font-black text-gray-900">{label}</p>
+                  <p className="mt-1 text-xs text-gray-400">{hint}</p>
+                </button>
+              ))}
+            </div>
+            <div className="divide-y divide-gray-50">
+              {pageCreators.map((creator, index) => {
+                const rank = (page - 1) * PAGE_SIZE + index + 1;
+                const preview = creator.best_project_thumb_url ?? creator.best_project_image_url;
+                const creatorTotal = Number(creator.avg_pledged_usd ?? 0) * Number(creator.project_count ?? 0);
+                return (
+                  <div key={creator.creator_key} className={`grid grid-cols-[44px_88px_1fr_auto] items-center gap-4 px-5 py-4 transition-colors hover:bg-gray-50 ${rank <= 3 ? 'bg-amber-50/30' : ''}`}>
                   <span className={`flex h-9 min-w-9 items-center justify-center rounded-full px-2 text-sm font-black ${rankClass(rank)}`}>{rank}</span>
                   <Link href={creator.best_project_id ? `/projects/${creator.best_project_id}` : '/projects'} className="h-16 w-24 overflow-hidden rounded-md bg-gray-100">
                     {preview ? (
@@ -534,23 +554,24 @@ export default function LeaderboardPage() {
                       {creator.best_project_name ?? (cn ? '代表项目未知' : 'Representative project unknown')} / {creator.category_parent ?? 'Uncategorized'} / {creator.country ?? '--'}
                     </span>
                     <span className="mt-2 flex flex-wrap gap-2 text-xs">
-                      <span className="rounded-md bg-ks-green-light px-2 py-1 font-bold text-ks-green-dark">{fmtUsd(creator.total_pledged_usd)}</span>
+                      <span className="rounded-md bg-ks-green-light px-2 py-1 font-bold text-ks-green-dark">{fmtUsd(creatorTotal)}</span>
                       <span className="rounded-md bg-blue-50 px-2 py-1 font-semibold text-blue-600">{fmtNum(creator.project_count)} {cn ? '次众筹' : 'projects'}</span>
                       <span className="rounded-md bg-amber-50 px-2 py-1 font-semibold text-amber-700">{fmtUsd(creator.avg_pledged_usd)} {cn ? '单次均额' : 'avg'}</span>
                     </span>
                   </span>
                   <span className="w-32 text-right">
                     <span className="block text-xl font-black tabular-nums text-gray-900">
-                      {metric === 'creator-count' ? fmtNum(creator.project_count) : metric === 'creator-average' ? fmtUsd(creator.avg_pledged_usd) : fmtUsd(creator.total_pledged_usd)}
+                      {creatorMetric === 'count' ? fmtNum(creator.project_count) : creatorMetric === 'average' ? fmtUsd(creator.avg_pledged_usd) : fmtUsd(creatorTotal)}
                     </span>
                     <span className="text-xs text-gray-400">
-                      {metric === 'creator-count' ? (cn ? '众筹次数' : 'launches') : metric === 'creator-average' ? (cn ? '单次均额' : 'avg pledged') : (cn ? '累计金额' : 'total pledged')}
+                      {creatorMetric === 'count' ? (cn ? '众筹次数' : 'launches') : creatorMetric === 'average' ? (cn ? '单次均额' : 'avg pledged') : (cn ? '累计金额' : 'total pledged')}
                     </span>
                   </span>
                 </div>
-              );
-            })}
-          </div>
+                );
+              })}
+            </div>
+          </>
         ) : (
           <div className="divide-y divide-gray-50">
             {pageProjects.map((project, index) => {

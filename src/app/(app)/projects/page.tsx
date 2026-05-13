@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import Link from 'next/link';
 import { Search, ExternalLink, ChevronLeft, ChevronRight, Download, ArrowUp, ArrowDown, ArrowUpDown, Heart, SlidersHorizontal, X } from 'lucide-react';
 import EmptyState from '@/components/EmptyState';
@@ -162,13 +162,14 @@ export default function ProjectsPage() {
   const stateTr = t[lang].states;
   const { user, showLogin } = useAuth();
 
-  const [data, setData] = useState<{ total: number; rows: Project[]; categories: string[]; countries: { country: string; country_name: string }[] } | null>(null);
+  const [data, setData] = useState<{ total: number; rows: Project[]; categories: string[]; categoryOptions?: { category_parent: string; category_name: string | null; total: number }[]; countries: { country: string; country_name: string }[] } | null>(null);
   const [loading, setLoading] = useState(true);
   const [empty, setEmpty] = useState(false);
 
   const [search, setSearch] = useState('');
   const [state, setState] = useState('all');
   const [category, setCategory] = useState('');
+  const [categoryName, setCategoryName] = useState('');
   const [country, setCountry] = useState('');
   const [sort, setSort] = useState('usd_pledged');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
@@ -201,6 +202,7 @@ export default function ProjectsPage() {
     if (sp.get('search')) setSearch(sp.get('search')!);
     if (sp.get('state')) setState(sp.get('state')!);
     if (sp.get('category')) setCategory(sp.get('category')!);
+    if (sp.get('categoryName')) setCategoryName(sp.get('categoryName')!);
     if (sp.get('country')) setCountry(sp.get('country')!);
     if (sp.get('sort')) setSort(sp.get('sort')!);
     if (sp.get('sortDir')) setSortDir(sp.get('sortDir') as SortDir);
@@ -218,6 +220,7 @@ export default function ProjectsPage() {
     if (search) params.set('search', search);
     if (state !== 'all') params.set('state', state);
     if (category) params.set('category', category);
+    if (categoryName) params.set('categoryName', categoryName);
     if (country) params.set('country', country);
     if (sort !== 'usd_pledged') params.set('sort', sort);
     if (sortDir !== 'desc') params.set('sortDir', sortDir);
@@ -227,7 +230,7 @@ export default function ProjectsPage() {
     if (dateTo) params.set('dateTo', dateTo);
     const qs = params.toString();
     window.history.replaceState(null, '', qs ? `?${qs}` : window.location.pathname);
-  }, [search, state, category, country, sort, sortDir, page, timePeriod, dateFrom, dateTo]);
+  }, [search, state, category, categoryName, country, sort, sortDir, page, timePeriod, dateFrom, dateTo]);
 
   // Cross-page selection: Set for re-render, Map for data cache
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -283,6 +286,7 @@ export default function ProjectsPage() {
       page: String(page), limit: '20', sort, sortDir,
       ...(state !== 'all' ? { state } : {}),
       ...(category ? { category } : {}),
+      ...(categoryName ? { categoryName } : {}),
       ...(country ? { country } : {}),
       ...(search ? { search } : {}),
       ...(tsFrom ? { dateFrom: String(tsFrom) } : {}),
@@ -296,11 +300,28 @@ export default function ProjectsPage() {
         setLoading(false);
       })
       .catch(() => setLoading(false));
-  }, [page, sort, sortDir, state, category, country, search, timePeriod, dateFrom, dateTo]);
+  }, [page, sort, sortDir, state, category, categoryName, country, search, timePeriod, dateFrom, dateTo]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
   const handleSearch = (e: React.FormEvent) => { e.preventDefault(); setPage(1); fetchData(); };
+  const resetFilters = () => {
+    setSearch('');
+    setState('all');
+    setCategory('');
+    setCategoryName('');
+    setCountry('');
+    setSort('usd_pledged');
+    setSortDir('desc');
+    setPage(1);
+    setTimePeriod('all');
+    setDateFrom('');
+    setDateTo('');
+  };
+
+  const childCategories = useMemo(() => {
+    return (data?.categoryOptions ?? []).filter(c => !category || c.category_parent === category);
+  }, [data, category]);
 
   const currentRows = data?.rows ?? [];
   const currentIds = currentRows.map(p => p.id);
@@ -438,9 +459,21 @@ export default function ProjectsPage() {
 
           <div>
             <label className="text-xs font-medium text-gray-400 mb-1 block">{tr.categoryLabel}</label>
-            <select value={category} onChange={e => gate(() => { setCategory(e.target.value); setPage(1); })} className={selectCls}>
+            <select value={category} onChange={e => gate(() => { setCategory(e.target.value); setCategoryName(''); setPage(1); })} className={selectCls}>
               <option value="">{tr.allCategories}</option>
               {(data?.categories ?? []).map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
+
+          <div>
+            <label className="text-xs font-medium text-gray-400 mb-1 block">{lang === 'cn' ? '二级类目' : 'Subcategory'}</label>
+            <select value={categoryName} onChange={e => gate(() => { setCategoryName(e.target.value); setPage(1); })} className={selectCls}>
+              <option value="">{lang === 'cn' ? '全部二级类目' : 'All subcategories'}</option>
+              {childCategories.map(c => (
+                <option key={`${c.category_parent}-${c.category_name}`} value={c.category_name ?? ''}>
+                  {c.category_name ?? '-'} ({c.total})
+                </option>
+              ))}
             </select>
           </div>
 
@@ -466,6 +499,10 @@ export default function ProjectsPage() {
           <button type="submit"
             className="bg-ks-green hover:bg-ks-green-dark text-white px-4 py-2 rounded-lg text-sm font-semibold transition-colors shadow-sm">
             {tr.searchBtn}
+          </button>
+          <button type="button" onClick={() => gate(resetFilters)}
+            className="bg-gray-100 hover:bg-gray-200 text-gray-700 px-4 py-2 rounded-lg text-sm font-semibold transition-colors">
+            {lang === 'cn' ? '重置' : 'Reset'}
           </button>
         </form>
       </div>
