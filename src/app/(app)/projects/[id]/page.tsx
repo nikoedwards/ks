@@ -24,6 +24,7 @@ interface Project {
   goal: number; pledged: number; usd_pledged: number; backers_count: number;
   staff_pick: number; created_at: number; launched_at: number; deadline: number;
   creator_name: string; creator_slug?: string; creator_url?: string; source_url: string; slug: string;
+  image_url?: string | null; image_thumb_url?: string | null;
   similar?: SimilarProject[];
 }
 
@@ -413,6 +414,7 @@ export default function ProjectDetailPage() {
   const ksUrl = project.source_url?.startsWith('https://www.kickstarter.com/projects/') ? project.source_url : null;
   const creatorUrl = project.creator_url || (project.creator_slug ? `https://www.kickstarter.com/profile/${project.creator_slug}` : null);
   const kicktraqUrl = project.creator_slug && project.slug ? `https://www.kicktraq.com/projects/${project.creator_slug}/${project.slug}/` : null;
+  const projectImage = project.image_url || project.image_thumb_url;
   const hasRealData = snapshots.length > 0;
   const sharedTrackingActive = !!platformTracking?.is_tracking;
   const subscriberCount = platformTracking?.subscriber_count ?? 0;
@@ -440,6 +442,12 @@ export default function ProjectDetailPage() {
 
       {/* ── Hero header (Social Blade style) ───────────────────────────────── */}
       <div className="bg-gray-900 rounded-t-2xl px-6 pt-6 pb-0">
+        {projectImage && (
+          <div className="mb-5 overflow-hidden rounded-xl bg-gray-800">
+            <img src={projectImage} alt="" className="h-56 w-full object-cover" />
+          </div>
+        )}
+
         {/* Top row */}
         <div className="flex items-start justify-between gap-4 mb-4">
           <div className="flex-1 min-w-0">
@@ -493,6 +501,13 @@ export default function ProjectDetailPage() {
               {scraping ? tr.syncingBtn : tr.syncNow}
             </button>
 
+            <button onClick={importKicktraq} disabled={ktImporting}
+              title={lang === 'cn' ? '从 Kicktraq 日图表导入历史逐日数据，必要时会使用 OCR。' : 'Import historical daily data from Kicktraq charts, using OCR when needed.'}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 text-white text-xs font-semibold hover:bg-blue-700 transition-colors disabled:opacity-50">
+              <TrendingUp className={`w-3.5 h-3.5 ${ktImporting ? 'animate-pulse' : ''}`} />
+              {ktImporting ? tr.importingFromKT : tr.importFromKT}
+            </button>
+
             {ksUrl && (
               <a href={ksUrl} target="_blank" rel="noopener noreferrer"
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-ks-green text-white text-xs font-semibold hover:bg-ks-green-dark transition-colors">
@@ -511,6 +526,11 @@ export default function ProjectDetailPage() {
         {syncError && (
           <div className="mb-4 rounded-lg border border-amber-700/50 bg-amber-900/30 px-3 py-2 text-xs text-amber-200">
             {syncError}
+          </div>
+        )}
+        {(ktError || ktNoData) && (
+          <div className="mb-4 rounded-lg border border-blue-700/50 bg-blue-900/30 px-3 py-2 text-xs text-blue-100">
+            {ktError || ktNoDataMessage || (lang === 'cn' ? 'Kicktraq 暂无可解析数据。' : 'No readable Kicktraq chart data was found.')}
           </div>
         )}
 
@@ -611,15 +631,15 @@ export default function ProjectDetailPage() {
                   <table className="w-full text-xs">
                     <thead>
                       <tr className="bg-gray-50 text-gray-500 font-semibold uppercase tracking-wide">
-                        <th className="text-left px-4 py-3">{tr.colDate}</th>
-                        <th className="text-right px-4 py-3">{tr.colPledged}</th>
-                        <th className="text-right px-4 py-3">{tr.colChange}</th>
-                        <th className="text-right px-4 py-3">{tr.colBackers}</th>
-                        <th className="text-right px-4 py-3">{tr.colDelta}</th>
-                        <th className="text-right px-4 py-3">{tr.colDaysLeft}</th>
-                        <th className="text-right px-4 py-3">{tr.colComments}</th>
-                        <th className="text-right px-4 py-3">{tr.colUpdates}</th>
-                        <th className="text-center px-4 py-3">{tr.colSource}</th>
+                        <th className="text-left px-4 py-3">{lang === 'cn' ? '快照时间' : 'Snapshot Time'}</th>
+                        <th className="text-right px-4 py-3">{lang === 'cn' ? '累计已筹' : 'Total Pledged'}</th>
+                        <th className="text-right px-4 py-3">{lang === 'cn' ? '筹款增量' : 'Pledged Change'}</th>
+                        <th className="text-right px-4 py-3">{lang === 'cn' ? '累计支持者' : 'Total Backers'}</th>
+                        <th className="text-right px-4 py-3">{lang === 'cn' ? '支持者增量' : 'Backer Change'}</th>
+                        <th className="text-right px-4 py-3">{lang === 'cn' ? '剩余天数' : 'Days Left'}</th>
+                        <th className="text-right px-4 py-3">{lang === 'cn' ? '评论数' : 'Comments'}</th>
+                        <th className="text-right px-4 py-3">{lang === 'cn' ? '更新数' : 'Updates'}</th>
+                        <th className="text-center px-4 py-3">{lang === 'cn' ? '数据来源' : 'Source'}</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -651,7 +671,7 @@ export default function ProjectDetailPage() {
             ) : (
               <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6 text-center space-y-4">
                 <p className="text-gray-500 text-sm">{tr.noHistoricalData}</p>
-                <div className="flex justify-center gap-3">
+                <div className="hidden">
                   <button onClick={triggerScrape} disabled={scraping}
                     title={lang === 'cn' ? '立刻从 Kickstarter 项目 JSON 抓取一次最新快照和奖励。' : 'Fetch the latest Kickstarter JSON snapshot and rewards once.'}
                     className="flex items-center gap-2 px-4 py-2 bg-ks-green text-white rounded-lg text-sm font-semibold hover:bg-ks-green-dark disabled:opacity-50">

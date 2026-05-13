@@ -16,6 +16,8 @@ interface Project {
   usd_pledged: number;
   backers_count: number;
   source_url: string;
+  image_url?: string | null;
+  image_thumb_url?: string | null;
 }
 
 export default function FavoritesPage() {
@@ -90,6 +92,7 @@ export default function FavoritesPage() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="bg-gray-50 text-left text-xs font-semibold text-gray-400 uppercase tracking-wide">
+                  <th className="px-5 py-3"></th>
                   <th className="px-5 py-3">{lang === 'cn' ? '项目名称' : 'Project'}</th>
                   <th className="px-5 py-3">{lang === 'cn' ? '状态' : 'Status'}</th>
                   <th className="px-5 py-3">{lang === 'cn' ? '类目' : 'Category'}</th>
@@ -101,6 +104,15 @@ export default function FavoritesPage() {
               <tbody className="divide-y divide-gray-50">
                 {projects.map(p => (
                   <tr key={p.id} className="hover:bg-gray-50/80">
+                    <td className="px-5 py-3">
+                      <Link href={`/projects/${p.id}`} className="block h-12 w-12 overflow-hidden rounded-md bg-gray-100">
+                        {p.image_thumb_url || p.image_url ? (
+                          <img src={p.image_thumb_url || p.image_url || ''} alt="" className="h-full w-full object-cover" />
+                        ) : (
+                          <div className="h-full w-full bg-gray-100" />
+                        )}
+                      </Link>
+                    </td>
                     <td className="px-5 py-3">
                       <Link href={`/projects/${p.id}`} className="font-medium text-gray-900 hover:text-ks-green transition-colors line-clamp-1">
                         {p.name}

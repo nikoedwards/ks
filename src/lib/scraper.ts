@@ -1,5 +1,6 @@
 import {
   getProjectById,
+  getSnapshots,
   insertSnapshot,
   insertRewardSnapshots,
   insertTextIfChanged,
@@ -208,16 +209,21 @@ export async function scrapeAndStore(projectId: string, jsonUrl: string, opts: S
   const now = Math.floor(Date.now() / 1000);
   const { pledgedUsd, goalUsd } = resolveUsdAmounts(p);
   const existing = await getProjectById(projectId) as { usd_pledged?: number; backers_count?: number } | null;
+  const latestSnapshot = getSnapshots(projectId).at(-1);
   const existingPledged = Number(existing?.usd_pledged ?? 0);
   const existingBackers = Number(existing?.backers_count ?? 0);
+  const latestPledged = Number(latestSnapshot?.pledged_usd ?? 0);
+  const latestBackers = Number(latestSnapshot?.backers_count ?? 0);
+  const baselinePledged = Math.max(existingPledged, latestPledged);
+  const baselineBackers = Math.max(existingBackers, latestBackers);
   const fetchedBackers = Number(p.backers_count ?? 0);
 
-  if (pledgedUsd <= 0 && fetchedBackers <= 0 && (existingPledged > 0 || existingBackers > 0)) {
+  if (pledgedUsd <= 0 && fetchedBackers <= 0 && (baselinePledged > 0 || baselineBackers > 0)) {
     return false;
   }
 
-  const safePledgedUsd = pledgedUsd > 0 ? pledgedUsd : existingPledged;
-  const safeBackers = fetchedBackers > 0 ? fetchedBackers : existingBackers;
+  const safePledgedUsd = pledgedUsd > 0 ? pledgedUsd : baselinePledged;
+  const safeBackers = fetchedBackers > 0 ? fetchedBackers : baselineBackers;
 
   insertSnapshot({
     project_id: projectId,

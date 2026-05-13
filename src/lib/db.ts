@@ -1603,7 +1603,16 @@ export function getSnapshots(projectId: string, limitRows = 500): Snapshot[] {
         s.source = 'ks'
         AND COALESCE(s.pledged_usd, 0) = 0
         AND COALESCE(s.backers_count, 0) = 0
-        AND (COALESCE(p.usd_pledged, 0) > 0 OR COALESCE(p.backers_count, 0) > 0)
+        AND (
+          COALESCE(p.usd_pledged, 0) > 0
+          OR COALESCE(p.backers_count, 0) > 0
+          OR EXISTS (
+            SELECT 1 FROM project_snapshots prior
+            WHERE prior.project_id = s.project_id
+              AND prior.id < s.id
+              AND (COALESCE(prior.pledged_usd, 0) > 0 OR COALESCE(prior.backers_count, 0) > 0)
+          )
+        )
       )
     ORDER BY s.captured_at ASC LIMIT ?
   `).all(projectId, limitRows) as Snapshot[];

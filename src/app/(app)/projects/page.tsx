@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback, useRef } from 'react';
 import Link from 'next/link';
-import { Search, ExternalLink, ChevronLeft, ChevronRight, Download, ArrowUp, ArrowDown, ArrowUpDown, Heart } from 'lucide-react';
+import { Search, ExternalLink, ChevronLeft, ChevronRight, Download, ArrowUp, ArrowDown, ArrowUpDown, Heart, SlidersHorizontal, X } from 'lucide-react';
 import EmptyState from '@/components/EmptyState';
 import DataSource from '@/components/DataSource';
 import { useLanguage } from '@/hooks/useLanguage';
@@ -32,6 +32,8 @@ interface Project {
   source_url: string;
   slug: string;
   data_source?: string;
+  image_url?: string | null;
+  image_thumb_url?: string | null;
   // Live snapshot fields
   live_pledged_usd?: number | null;
   live_backers_count?: number | null;
@@ -136,6 +138,22 @@ function SortIcon({ col, sort, sortDir }: { col: string; sort: string; sortDir: 
 }
 
 const SORTABLE_COLS = ['goal', 'usd_pledged', 'funding_rate', 'backers', 'launched'] as const;
+const VIEW_COLUMNS = [
+  { id: 'thumbnail', labelCn: '缩略图', labelEn: 'Image' },
+  { id: 'creator', labelCn: '项目所有者', labelEn: 'Creator' },
+  { id: 'status', labelCn: '状态', labelEn: 'Status' },
+  { id: 'category', labelCn: '类目', labelEn: 'Category' },
+  { id: 'goal', labelCn: '目标', labelEn: 'Goal' },
+  { id: 'pledged', labelCn: '已筹', labelEn: 'Pledged' },
+  { id: 'funded', labelCn: '完成率', labelEn: 'Funded' },
+  { id: 'backers', labelCn: '支持者', labelEn: 'Backers' },
+  { id: 'days', labelCn: '天数', labelEn: 'Days' },
+  { id: 'country', labelCn: '国家', labelEn: 'Country' },
+  { id: 'launch', labelCn: '发起时间', labelEn: 'Launch' },
+  { id: 'actions', labelCn: '操作', labelEn: 'Actions' },
+] as const;
+type ViewColumnId = typeof VIEW_COLUMNS[number]['id'];
+const DEFAULT_VISIBLE_COLUMNS = VIEW_COLUMNS.map(c => c.id);
 
 export default function ProjectsPage() {
   const [lang] = useLanguage();
@@ -157,6 +175,23 @@ export default function ProjectsPage() {
   const [timePeriod, setTimePeriod] = useState<TimePeriod>('all');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
+  const [viewOpen, setViewOpen] = useState(false);
+  const [visibleCols, setVisibleCols] = useState<ViewColumnId[]>(DEFAULT_VISIBLE_COLUMNS);
+
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem('kicksonar.projectColumns');
+      if (saved) {
+        const parsed = JSON.parse(saved) as ViewColumnId[];
+        const allowed = parsed.filter(id => VIEW_COLUMNS.some(c => c.id === id));
+        if (allowed.length) setVisibleCols(allowed);
+      }
+    } catch { /* ignore */ }
+  }, []);
+
+  useEffect(() => {
+    try { window.localStorage.setItem('kicksonar.projectColumns', JSON.stringify(visibleCols)); } catch { /* ignore */ }
+  }, [visibleCols]);
 
   // URL state persistence — read on mount
   const urlInitDone = useRef(false);
@@ -303,6 +338,13 @@ export default function ProjectsPage() {
     exportCsv(rows);
   };
 
+  const showCol = (id: ViewColumnId) => visibleCols.includes(id);
+  const toggleColumn = (id: ViewColumnId) => {
+    setVisibleCols(cols => cols.includes(id)
+      ? cols.filter(col => col !== id)
+      : [...cols, id]);
+  };
+
   if (empty && !loading) return <EmptyState />;
 
   const totalPages = data ? Math.ceil(data.total / 20) : 0;
@@ -444,31 +486,64 @@ export default function ProjectsPage() {
                   </span>
                 )}
               </span>
-              <button
-                onClick={handleExport}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-gray-100 hover:bg-gray-200 text-gray-700 transition-colors"
-              >
-                <Download className="w-3.5 h-3.5" />
-                {selectedIds.size > 0 ? tr.exportSelected(selectedIds.size) : tr.exportPage}
-              </button>
+              <div className="relative flex items-center gap-2">
+                <button
+                  onClick={() => gate(() => setViewOpen(true))}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-gray-100 hover:bg-gray-200 text-gray-700 transition-colors"
+                >
+                  <SlidersHorizontal className="w-3.5 h-3.5" />
+                  {lang === 'cn' ? '编辑视图' : 'Edit View'}
+                </button>
+                <button
+                  onClick={handleExport}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-gray-100 hover:bg-gray-200 text-gray-700 transition-colors"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  {selectedIds.size > 0 ? tr.exportSelected(selectedIds.size) : tr.exportPage}
+                </button>
+                {viewOpen && (
+                  <div className="absolute right-0 top-9 z-20 w-64 rounded-lg border border-gray-200 bg-white p-3 shadow-xl">
+                    <div className="mb-2 flex items-center justify-between">
+                      <p className="text-xs font-semibold text-gray-700">{lang === 'cn' ? '列表字段' : 'Visible columns'}</p>
+                      <button onClick={() => setViewOpen(false)} className="text-gray-400 hover:text-gray-600">
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      {VIEW_COLUMNS.map(col => (
+                        <label key={col.id} className="flex items-center gap-2 rounded-md px-2 py-1 text-xs text-gray-600 hover:bg-gray-50">
+                          <input
+                            type="checkbox"
+                            checked={showCol(col.id)}
+                            onChange={() => toggleColumn(col.id)}
+                            className="rounded border-gray-300 accent-ks-green"
+                          />
+                          <span>{lang === 'cn' ? col.labelCn : col.labelEn}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full min-w-[1720px] table-fixed text-sm">
                 <colgroup>
                   <col className="w-12" />
                   <col className="w-14" />
+                  {showCol('thumbnail') && <col className="w-16" />}
                   <col className="w-[420px]" />
-                  <col className="w-36" />
-                  <col className="w-28" />
-                  <col className="w-40" />
-                  <col className="w-28" />
-                  <col className="w-32" />
-                  <col className="w-24" />
-                  <col className="w-24" />
-                  <col className="w-24" />
-                  <col className="w-20" />
-                  <col className="w-32" />
-                  <col className="w-20" />
+                  {showCol('creator') && <col className="w-36" />}
+                  {showCol('status') && <col className="w-28" />}
+                  {showCol('category') && <col className="w-40" />}
+                  {showCol('goal') && <col className="w-28" />}
+                  {showCol('pledged') && <col className="w-32" />}
+                  {showCol('funded') && <col className="w-24" />}
+                  {showCol('backers') && <col className="w-24" />}
+                  {showCol('days') && <col className="w-24" />}
+                  {showCol('country') && <col className="w-20" />}
+                  {showCol('launch') && <col className="w-32" />}
+                  {showCol('actions') && <col className="w-20" />}
                 </colgroup>
                 <thead>
                   <tr className="bg-gray-50 text-left text-xs font-semibold text-gray-400 uppercase tracking-wide">
@@ -482,18 +557,19 @@ export default function ProjectsPage() {
                       />
                     </th>
                     <th className="px-4 py-3 whitespace-nowrap align-middle">#</th>
+                    {showCol('thumbnail') && <th className="px-4 py-3 whitespace-nowrap align-middle"></th>}
                     <th className="px-4 py-3 whitespace-nowrap align-middle">{tr.colName}</th>
-                    <th className="px-4 py-3 whitespace-nowrap align-middle">Creator</th>
-                    <th className="px-4 py-3 whitespace-nowrap align-middle">{tr.colStatus}</th>
-                    <th className="px-4 py-3 whitespace-nowrap align-middle">{tr.colCategory}</th>
-                    <SortableTh col={colSortKey['goal']} right>{tr.colGoal}</SortableTh>
-                    <SortableTh col={colSortKey['usd_pledged']} right>{tr.colPledged}</SortableTh>
-                    <SortableTh col={colSortKey['funding_rate']} right>{tr.colFunded}</SortableTh>
-                    <SortableTh col={colSortKey['backers']} right>{tr.colBackers}</SortableTh>
-                    <th className="px-4 py-3 text-right whitespace-nowrap align-middle">{tr.colDays}</th>
-                    <th className="px-4 py-3 whitespace-nowrap align-middle">{tr.colCountry}</th>
-                    <SortableTh col={colSortKey['launched']}>{tr.colLaunch}</SortableTh>
-                    <th className="px-4 py-3 whitespace-nowrap align-middle"></th>
+                    {showCol('creator') && <th className="px-4 py-3 whitespace-nowrap align-middle">Creator</th>}
+                    {showCol('status') && <th className="px-4 py-3 whitespace-nowrap align-middle">{tr.colStatus}</th>}
+                    {showCol('category') && <th className="px-4 py-3 whitespace-nowrap align-middle">{tr.colCategory}</th>}
+                    {showCol('goal') && <SortableTh col={colSortKey['goal']} right>{tr.colGoal}</SortableTh>}
+                    {showCol('pledged') && <SortableTh col={colSortKey['usd_pledged']} right>{tr.colPledged}</SortableTh>}
+                    {showCol('funded') && <SortableTh col={colSortKey['funding_rate']} right>{tr.colFunded}</SortableTh>}
+                    {showCol('backers') && <SortableTh col={colSortKey['backers']} right>{tr.colBackers}</SortableTh>}
+                    {showCol('days') && <th className="px-4 py-3 text-right whitespace-nowrap align-middle">{tr.colDays}</th>}
+                    {showCol('country') && <th className="px-4 py-3 whitespace-nowrap align-middle">{tr.colCountry}</th>}
+                    {showCol('launch') && <SortableTh col={colSortKey['launched']}>{tr.colLaunch}</SortableTh>}
+                    {showCol('actions') && <th className="px-4 py-3 whitespace-nowrap align-middle"></th>}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-50">
@@ -518,13 +594,24 @@ export default function ProjectsPage() {
                         <td className="px-4 py-3">
                           <RowBadge n={rowNum} />
                         </td>
+                        {showCol('thumbnail') && (
+                          <td className="px-4 py-3">
+                            <Link href={`/projects/${p.id}`} className="block h-10 w-10 overflow-hidden rounded-md bg-gray-100">
+                              {p.image_thumb_url || p.image_url ? (
+                                <img src={p.image_thumb_url || p.image_url || ''} alt="" className="h-full w-full object-cover" />
+                              ) : (
+                                <div className="h-full w-full bg-gray-100" />
+                              )}
+                            </Link>
+                          </td>
+                        )}
                         <td className="px-4 py-3">
                           <Link href={`/projects/${p.id}`} className="group block">
                             <div className="font-medium text-gray-900 max-w-xs truncate group-hover:text-ks-green transition-colors">{p.name}</div>
                             <div className="text-xs text-gray-400 max-w-xs truncate mt-0.5">{p.blurb}</div>
                           </Link>
                         </td>
-                        <td className="px-4 py-3">
+                        {showCol('creator') && <td className="px-4 py-3">
                           {p.creator_name && creatorUrl ? (
                             <a href={creatorUrl} target="_blank" rel="noopener noreferrer"
                               className="inline-flex max-w-[8rem] items-center gap-1 text-xs font-medium text-gray-600 hover:text-ks-green transition-colors">
@@ -534,21 +621,21 @@ export default function ProjectsPage() {
                           ) : (
                             <span className="block max-w-[8rem] truncate text-xs text-gray-400">{p.creator_name || '-'}</span>
                           )}
-                        </td>
-                        <td className="px-4 py-3 whitespace-nowrap">
+                        </td>}
+                        {showCol('status') && <td className="px-4 py-3 whitespace-nowrap">
                           <span className={`px-2 py-0.5 rounded-full text-xs ${STATE_BADGE[p.state] ?? 'bg-gray-100 text-gray-600'}`}>
                             {stateTr[p.state as keyof typeof stateTr] ?? p.state}
                           </span>
                           {p.staff_pick === 1 && (
                             <span className="ml-1 px-2 py-0.5 rounded-full text-xs bg-yellow-50 text-yellow-600">{tr.staffPick}</span>
                           )}
-                        </td>
-                        <td className="px-4 py-3">
+                        </td>}
+                        {showCol('category') && <td className="px-4 py-3">
                           <div className="text-xs text-gray-700 font-medium">{p.category_parent}</div>
                           <div className="text-xs text-gray-400">{p.category_name}</div>
-                        </td>
-                        <td className="px-4 py-3 text-right font-mono text-gray-500 text-xs">{fmtMoney(money.goal, money.currency)}</td>
-                        <td className="px-4 py-3 text-right">
+                        </td>}
+                        {showCol('goal') && <td className="px-4 py-3 text-right font-mono text-gray-500 text-xs">{fmtMoney(money.goal, money.currency)}</td>}
+                        {showCol('pledged') && <td className="px-4 py-3 text-right">
                           <div className="font-mono text-gray-900 font-semibold">
                             {fmtMoney(money.pledged, money.currency)}
                           </div>
@@ -558,8 +645,8 @@ export default function ProjectsPage() {
                               {lang === 'cn' ? '实时' : 'live'}
                             </div>
                           )}
-                        </td>
-                        <td className="px-4 py-3 text-right">
+                        </td>}
+                        {showCol('funded') && <td className="px-4 py-3 text-right">
                           {(() => {
                             const fundingRate = money.goal > 0 ? (money.pledged / money.goal) * 100 : 0;
                             return (
@@ -568,20 +655,20 @@ export default function ProjectsPage() {
                               </span>
                             );
                           })()}
-                        </td>
-                        <td className="px-4 py-3 text-right text-gray-600">
+                        </td>}
+                        {showCol('backers') && <td className="px-4 py-3 text-right text-gray-600">
                           {(p.live_backers_count ?? p.backers_count).toLocaleString()}
-                        </td>
-                        <td className="px-4 py-3 text-right">
+                        </td>}
+                        {showCol('days') && <td className="px-4 py-3 text-right">
                           {days !== null ? (
                             <span className={`text-xs font-medium ${p.state === 'live' ? 'text-blue-600' : 'text-gray-500'}`}>
                               {days}{p.state === 'live' ? ' ↑' : ''}
                             </span>
                           ) : '—'}
-                        </td>
-                        <td className="px-4 py-3 text-gray-500 text-xs">{p.country}</td>
-                        <td className="px-4 py-3 text-gray-400 whitespace-nowrap text-xs">{fmtDate(p.launched_at)}</td>
-                        <td className="px-4 py-3">
+                        </td>}
+                        {showCol('country') && <td className="px-4 py-3 text-gray-500 text-xs">{p.country}</td>}
+                        {showCol('launch') && <td className="px-4 py-3 text-gray-400 whitespace-nowrap text-xs">{fmtDate(p.launched_at)}</td>}
+                        {showCol('actions') && <td className="px-4 py-3">
                           <div className="flex items-center gap-1.5">
                             <button
                               onClick={() => toggleFavorite(p.id)}
@@ -597,7 +684,7 @@ export default function ProjectsPage() {
                               </a>
                             )}
                           </div>
-                        </td>
+                        </td>}
                       </tr>
                     );
                   })}
