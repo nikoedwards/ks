@@ -524,6 +524,8 @@ export interface LeaderboardProject {
   name: string;
   blurb: string | null;
   state: string;
+  slug: string | null;
+  creator_slug: string | null;
   category_parent: string | null;
   category_name: string | null;
   country: string | null;
@@ -561,21 +563,43 @@ function leaderboardBaseSql(where: string) {
           AND NOT (COALESCE(pledged_usd, 0) = 0 AND COALESCE(backers_count, 0) = 0)
         GROUP BY project_id
       ) x ON x.id = ps.id
+    ),
+    raw_rows AS (
+      SELECT
+        p.id, p.name, p.blurb, p.state, p.slug, p.creator_slug,
+        p.category_parent, p.category_name, p.country, p.country_name,
+        p.launched_at, p.deadline, p.source_url, p.image_url, p.image_thumb_url,
+        MAX(COALESCE(p.usd_pledged, 0), COALESCE(l.pledged_usd, 0)) as pledged_usd,
+        MAX(COALESCE(p.backers_count, 0), COALESCE(l.backers_count, 0)) as backers_count,
+        COALESCE(p.goal, 0) as goal,
+        CASE WHEN COALESCE(p.goal, 0) > 0
+          THEN ROUND((MAX(COALESCE(p.usd_pledged, 0), COALESCE(l.pledged_usd, 0)) / p.goal) * 100, 1)
+          ELSE 0
+        END as funded_pct,
+        CASE
+          WHEN p.slug IS NOT NULL AND p.slug <> '' THEN lower(p.slug)
+          ELSE p.id
+        END as dedupe_key
+      FROM projects p
+      LEFT JOIN latest l ON l.project_id = p.id
+      ${where}
+    ),
+    deduped AS (
+      SELECT *,
+        ROW_NUMBER() OVER (
+          PARTITION BY dedupe_key
+          ORDER BY pledged_usd DESC, backers_count DESC, CASE WHEN image_url IS NOT NULL OR image_thumb_url IS NOT NULL THEN 1 ELSE 0 END DESC
+        ) as rn
+      FROM raw_rows
     )
     SELECT
       p.id, p.name, p.blurb, p.state,
+      p.slug, p.creator_slug,
       p.category_parent, p.category_name, p.country, p.country_name,
       p.launched_at, p.deadline, p.source_url, p.image_url, p.image_thumb_url,
-      MAX(COALESCE(p.usd_pledged, 0), COALESCE(l.pledged_usd, 0)) as pledged_usd,
-      MAX(COALESCE(p.backers_count, 0), COALESCE(l.backers_count, 0)) as backers_count,
-      COALESCE(p.goal, 0) as goal,
-      CASE WHEN COALESCE(p.goal, 0) > 0
-        THEN ROUND((MAX(COALESCE(p.usd_pledged, 0), COALESCE(l.pledged_usd, 0)) / p.goal) * 100, 1)
-        ELSE 0
-      END as funded_pct
-    FROM projects p
-    LEFT JOIN latest l ON l.project_id = p.id
-    ${where}
+      p.pledged_usd, p.backers_count, p.goal, p.funded_pct
+    FROM deduped p
+    WHERE p.rn = 1
   `;
 }
 
@@ -1354,13 +1378,23 @@ export async function getProjectById(id: string) {
  * Returns the canonical numeric KS id if found, null otherwise.
  */
 export function getProjectIdBySlug(creatorSlug: string, projectSlug: string): string | null {
-  const row = getDB().prepare(
+  const db = getDB();
+  const exact = db.prepare(
     `SELECT id FROM projects
      WHERE creator_slug = ? AND slug = ?
        AND id NOT LIKE 'kt:%'
      LIMIT 1`
   ).get(creatorSlug, projectSlug) as { id: string } | null;
-  return row?.id ?? null;
+  if (exact?.id) return exact.id;
+
+  const fallbackRows = db.prepare(
+    `SELECT id FROM projects
+     WHERE slug = ?
+       AND id NOT LIKE 'kt:%'
+     ORDER BY usd_pledged DESC, backers_count DESC
+     LIMIT 2`
+  ).all(projectSlug) as { id: string }[];
+  return fallbackRows.length === 1 ? fallbackRows[0].id : null;
 }
 
 /**

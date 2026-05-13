@@ -44,6 +44,7 @@ interface LeaderboardData {
   byPledged: LeaderboardProject[];
   byBackers: LeaderboardProject[];
   categories: CategoryOption[];
+  generatedAt: number;
   summary: {
     total_projects: number;
     total_pledged_usd: number;
@@ -112,6 +113,8 @@ export default function LeaderboardPage() {
   const [initialized, setInitialized] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
   const [shareImage, setShareImage] = useState('');
+  const [shareLang, setShareLang] = useState<'cn' | 'en'>(cn ? 'cn' : 'en');
+  const [shareGenerating, setShareGenerating] = useState(false);
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
@@ -152,7 +155,13 @@ export default function LeaderboardPage() {
   const projects = metric === 'pledged' ? data?.byPledged ?? [] : data?.byBackers ?? [];
   const totalPages = Math.max(1, Math.ceil(projects.length / PAGE_SIZE));
   const pageProjects = projects.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
-  const title = cn ? `${activeYear === 'custom' ? '自定义区间' : `${activeYear}年`} Kickstarter TOP100 项目榜单` : `${activeYear === 'custom' ? 'Custom Range' : activeYear} Kickstarter Top 100`;
+  const categoryLabel = categoryName || categoryParent || (cn ? '全类目' : 'All Categories');
+  const title = cn
+    ? `${activeYear === 'custom' ? '自定义区间' : `${activeYear}年`} ${categoryLabel} Kickstarter TOP100 项目榜单`
+    : `${activeYear === 'custom' ? 'Custom Range' : activeYear} ${categoryLabel} Kickstarter Top 100`;
+  const dataDate = data?.generatedAt
+    ? new Date(data.generatedAt * 1000).toLocaleString(cn ? 'zh-CN' : 'en-US', { year: 'numeric', month: 'short', day: 'numeric' })
+    : new Date().toLocaleDateString(cn ? 'zh-CN' : 'en-US');
 
   const load = async () => {
     setLoading(true);
@@ -202,8 +211,28 @@ export default function LeaderboardPage() {
     window.setTimeout(() => setCopied(false), 1500);
   };
 
-  const generateShareImage = () => {
+  const translateTitles = async (rows: LeaderboardProject[], targetLang: 'cn' | 'en') => {
+    if (targetLang !== 'cn') return rows.map(r => r.name);
+    try {
+      const res = await fetch('/api/translate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ texts: rows.map(r => r.name), target: 'zh-CN' }),
+      });
+      if (!res.ok) return rows.map(r => r.name);
+      const json = await res.json() as { translations?: string[] };
+      return rows.map((r, i) => json.translations?.[i] || r.name);
+    } catch {
+      return rows.map(r => r.name);
+    }
+  };
+
+  const generateShareImage = async (langOverride = shareLang) => {
+    setShareGenerating(true);
+    setShareOpen(true);
+    setShareImage('');
     const rows = projects.slice(0, 20);
+    const names = await translateTitles(rows, langOverride);
     const canvas = document.createElement('canvas');
     canvas.width = 1080;
     canvas.height = 1540;
@@ -217,24 +246,38 @@ export default function LeaderboardPage() {
     ctx.arc(950, 80, 170, 0, Math.PI * 2);
     ctx.fill();
 
+    const isCnShare = langOverride === 'cn';
+    const shareCategory = categoryName || categoryParent || (isCnShare ? '全类目' : 'All Categories');
+    const generatedLabel = isCnShare ? `数据时间：${dataDate}` : `Data as of ${dataDate}`;
+
     ctx.fillStyle = '#09351f';
     ctx.font = '700 34px Arial, sans-serif';
-    ctx.fillText('Kicksonar x Kickstarter', 64, 78);
+    ctx.fillText('Kicksonar x', 64, 78);
+    ctx.fillStyle = '#05ce78';
+    ctx.beginPath();
+    ctx.roundRect(260, 42, 240, 48, 16);
+    ctx.fill();
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '900 26px Arial, sans-serif';
+    ctx.fillText('KICKSTARTER', 286, 76);
     ctx.font = '900 82px Arial, sans-serif';
     ctx.fillText(activeYear === 'custom' ? 'CUSTOM' : `${activeYear}`, 64, 190);
-    ctx.font = '900 76px Arial, sans-serif';
-    ctx.fillText(cn ? '海外众筹 TOP100 项目榜单' : 'GLOBAL CROWDFUNDING TOP100', 64, 285);
+    ctx.font = '900 62px Arial, sans-serif';
+    ctx.fillText(isCnShare ? `${shareCategory} TOP100 项目榜单` : `${shareCategory} TOP100`, 64, 285);
     ctx.fillStyle = '#0f3f29';
     ctx.fillRect(64, 330, 720, 82);
     ctx.fillStyle = '#ffffff';
     ctx.font = '800 40px Arial, sans-serif';
-    ctx.fillText(metric === 'pledged' ? (cn ? '按众筹总金额排序' : 'Ranked by Pledged Amount') : (cn ? '按支持者数量排序' : 'Ranked by Backers'), 96, 383);
+    ctx.fillText(metric === 'pledged' ? (isCnShare ? '按众筹总金额排序' : 'Ranked by Pledged Amount') : (isCnShare ? '按支持者数量排序' : 'Ranked by Backers'), 96, 383);
+    ctx.fillStyle = '#0f3f29';
+    ctx.font = '700 24px Arial, sans-serif';
+    ctx.fillText(generatedLabel, 64, 445);
 
     ctx.fillStyle = '#f3fff4';
     ctx.strokeStyle = '#baff82';
     ctx.lineWidth = 6;
     const tableX = 54;
-    const tableY = 470;
+    const tableY = 500;
     const tableW = 972;
     const rowH = 46;
     ctx.beginPath();
@@ -246,10 +289,10 @@ export default function LeaderboardPage() {
     ctx.fillRect(tableX + 10, tableY + 14, tableW - 20, 58);
     ctx.fillStyle = '#0f2f20';
     ctx.font = '700 24px Arial, sans-serif';
-    ctx.fillText(cn ? '序号' : '#', 82, tableY + 52);
-    ctx.fillText(cn ? '产品' : 'Project', 175, tableY + 52);
-    ctx.fillText(cn ? '金额' : 'Pledged', 720, tableY + 52);
-    ctx.fillText(cn ? '支持者' : 'Backers', 865, tableY + 52);
+    ctx.fillText(isCnShare ? '序号' : '#', 82, tableY + 52);
+    ctx.fillText(isCnShare ? '产品' : 'Project', 175, tableY + 52);
+    ctx.fillText(isCnShare ? '金额' : 'Pledged', 720, tableY + 52);
+    ctx.fillText(isCnShare ? '支持者' : 'Backers', 865, tableY + 52);
 
     rows.forEach((project, i) => {
       const y = tableY + 98 + i * rowH;
@@ -258,7 +301,8 @@ export default function LeaderboardPage() {
       ctx.fillStyle = '#0f2f20';
       ctx.font = '500 22px Arial, sans-serif';
       ctx.fillText(String(i + 1), 92, y);
-      const name = project.name.length > 32 ? `${project.name.slice(0, 31)}...` : project.name;
+      const translatedName = names[i] || project.name;
+      const name = translatedName.length > 32 ? `${translatedName.slice(0, 31)}...` : translatedName;
       ctx.fillText(name, 175, y);
       ctx.textAlign = 'right';
       ctx.fillText(fmtUsd(project.pledged_usd), 805, y);
@@ -268,9 +312,12 @@ export default function LeaderboardPage() {
 
     ctx.fillStyle = '#0f2f20';
     ctx.font = '700 24px Arial, sans-serif';
-    ctx.fillText(cn ? '注：金额已统一换算为美元，包含全球 Kickstarter 公开项目。' : 'Note: Amounts are normalized to USD for public Kickstarter projects.', 64, 1480);
+    const note = isCnShare
+      ? '注：金额已统一换算为美元，包含全球 Kickstarter 公开项目。'
+      : 'Note: Amounts are normalized to USD for public Kickstarter projects.';
+    ctx.fillText(note, 64, 1480);
     setShareImage(canvas.toDataURL('image/png'));
-    setShareOpen(true);
+    setShareGenerating(false);
   };
 
   return (
@@ -286,13 +333,13 @@ export default function LeaderboardPage() {
           <button onClick={copyShareLink} className="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-600 hover:bg-gray-50">
             <Copy className="h-4 w-4" />{copied ? (cn ? '已复制' : 'Copied') : (cn ? '复制链接' : 'Copy Link')}
           </button>
-          <button onClick={generateShareImage} className="inline-flex items-center gap-2 rounded-lg bg-ks-green px-3 py-2 text-sm font-semibold text-white hover:bg-ks-green-dark">
+          <button onClick={() => generateShareImage(shareLang)} className="inline-flex items-center gap-2 rounded-lg bg-ks-green px-3 py-2 text-sm font-semibold text-white hover:bg-ks-green-dark">
             <Share2 className="h-4 w-4" />{cn ? '生成分享图' : 'Share Image'}
           </button>
         </div>
       </div>
 
-      <div className="rounded-lg border border-gray-100 bg-white p-4 shadow-sm">
+      <div className="rounded-lg border border-gray-100/80 bg-white/60 p-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex flex-wrap gap-2">
             {[yearNow, yearNow - 1, yearNow - 2].map(year => (
@@ -300,7 +347,7 @@ export default function LeaderboardPage() {
                 key={year}
                 onClick={() => applyYear(year)}
                 className={`rounded-full px-5 py-2 text-sm font-black transition-colors ${
-                  activeYear === year ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                  activeYear === year ? 'bg-gray-900 text-white' : 'bg-gray-100/80 text-gray-600 hover:bg-gray-200'
                 }`}
               >
                 {year}
@@ -309,13 +356,13 @@ export default function LeaderboardPage() {
             <button
               onClick={() => setActiveYear('custom')}
               className={`rounded-full px-4 py-2 text-sm font-semibold transition-colors ${
-                activeYear === 'custom' ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
+                activeYear === 'custom' ? 'bg-gray-900 text-white' : 'bg-gray-100/80 text-gray-500 hover:bg-gray-200'
               }`}
             >
               {cn ? '自定义' : 'Custom'}
             </button>
           </div>
-          <button onClick={load} className="rounded-lg bg-ks-green px-4 py-2 text-sm font-semibold text-white hover:bg-ks-green-dark">
+          <button onClick={load} className="rounded-lg bg-ks-green px-3 py-2 text-sm font-semibold text-white hover:bg-ks-green-dark">
             {cn ? '应用筛选' : 'Apply'}
           </button>
         </div>
@@ -323,22 +370,22 @@ export default function LeaderboardPage() {
         <div className="mt-4 grid grid-cols-1 gap-3 text-sm lg:grid-cols-4">
           <label className="space-y-1">
             <span className="flex items-center gap-1 text-xs font-semibold text-gray-400"><Calendar className="h-3.5 w-3.5" />{cn ? '开始日期' : 'From'}</span>
-            <input type="date" value={dateFrom} onChange={e => { setActiveYear('custom'); setDateFrom(e.target.value); }} className="w-full rounded-md border border-gray-200 bg-gray-50 px-3 py-2" />
+            <input type="date" value={dateFrom} onChange={e => { setActiveYear('custom'); setDateFrom(e.target.value); }} className="w-full rounded-md border border-gray-200 bg-white px-3 py-2" />
           </label>
           <label className="space-y-1">
             <span className="flex items-center gap-1 text-xs font-semibold text-gray-400"><Calendar className="h-3.5 w-3.5" />{cn ? '结束日期' : 'To'}</span>
-            <input type="date" value={dateTo} onChange={e => { setActiveYear('custom'); setDateTo(e.target.value); }} className="w-full rounded-md border border-gray-200 bg-gray-50 px-3 py-2" />
+            <input type="date" value={dateTo} onChange={e => { setActiveYear('custom'); setDateTo(e.target.value); }} className="w-full rounded-md border border-gray-200 bg-white px-3 py-2" />
           </label>
           <label className="space-y-1">
             <span className="flex items-center gap-1 text-xs font-semibold text-gray-400"><Filter className="h-3.5 w-3.5" />{cn ? '大类' : 'Parent Category'}</span>
-            <select value={categoryParent} onChange={e => { setCategoryParent(e.target.value); setCategoryName(''); }} className="w-full rounded-md border border-gray-200 bg-gray-50 px-3 py-2">
+            <select value={categoryParent} onChange={e => { setCategoryParent(e.target.value); setCategoryName(''); }} className="w-full rounded-md border border-gray-200 bg-white px-3 py-2">
               <option value="">{cn ? '全部大类' : 'All parent categories'}</option>
               {parentOptions.map(([parent, total]) => <option key={parent} value={parent}>{parent} ({total})</option>)}
             </select>
           </label>
           <label className="space-y-1">
             <span className="flex items-center gap-1 text-xs font-semibold text-gray-400"><Filter className="h-3.5 w-3.5" />{cn ? '二级类目' : 'Subcategory'}</span>
-            <select value={categoryName} onChange={e => setCategoryName(e.target.value)} className="w-full rounded-md border border-gray-200 bg-gray-50 px-3 py-2">
+            <select value={categoryName} onChange={e => setCategoryName(e.target.value)} className="w-full rounded-md border border-gray-200 bg-white px-3 py-2">
               <option value="">{cn ? '全部二级类目' : 'All subcategories'}</option>
               {childOptions.map(c => <option key={`${c.category_parent}-${c.category_name}`} value={c.category_name ?? ''}>{c.category_name ?? '-'} ({c.total})</option>)}
             </select>
@@ -347,21 +394,21 @@ export default function LeaderboardPage() {
       </div>
 
       <div className="grid grid-cols-3 gap-3">
-        <div className="rounded-lg bg-white p-4 shadow-sm">
+        <div className="rounded-lg border border-gray-100 bg-white/70 p-3">
           <p className="text-xs font-semibold text-gray-400">{cn ? '项目数' : 'Projects'}</p>
-          <p className="mt-1 text-2xl font-black text-gray-900">{fmtNum(data?.summary?.total_projects ?? 0)}</p>
+          <p className="mt-1 text-xl font-black text-gray-900">{fmtNum(data?.summary?.total_projects ?? 0)}</p>
         </div>
-        <div className="rounded-lg bg-white p-4 shadow-sm">
+        <div className="rounded-lg border border-gray-100 bg-white/70 p-3">
           <p className="text-xs font-semibold text-gray-400">{cn ? '总筹资额' : 'Total pledged'}</p>
-          <p className="mt-1 text-2xl font-black text-ks-green">{fmtUsd(data?.summary?.total_pledged_usd ?? 0)}</p>
+          <p className="mt-1 text-xl font-black text-ks-green">{fmtUsd(data?.summary?.total_pledged_usd ?? 0)}</p>
         </div>
-        <div className="rounded-lg bg-white p-4 shadow-sm">
+        <div className="rounded-lg border border-gray-100 bg-white/70 p-3">
           <p className="text-xs font-semibold text-gray-400">{cn ? '总支持者' : 'Total backers'}</p>
-          <p className="mt-1 text-2xl font-black text-blue-600">{fmtNum(data?.summary?.total_backers ?? 0)}</p>
+          <p className="mt-1 text-xl font-black text-blue-600">{fmtNum(data?.summary?.total_backers ?? 0)}</p>
         </div>
       </div>
 
-      <section className="overflow-hidden rounded-lg border border-gray-100 bg-white shadow-sm">
+      <section className="mx-3 overflow-hidden rounded-lg border border-gray-100 bg-white shadow-sm sm:mx-4">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-100 px-5 py-4">
           <div>
             <h2 className="text-lg font-black text-gray-900">{title}</h2>
@@ -447,6 +494,17 @@ export default function LeaderboardPage() {
               <button onClick={() => setShareOpen(false)} className="text-gray-400 hover:text-gray-700">×</button>
             </div>
             <div className="mt-4 flex gap-2">
+              <div className="flex rounded-lg bg-gray-100 p-1">
+                {(['cn', 'en'] as const).map(l => (
+                  <button
+                    key={l}
+                    onClick={() => { setShareLang(l); generateShareImage(l); }}
+                    className={`rounded-md px-3 py-1.5 text-sm font-bold ${shareLang === l ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500'}`}
+                  >
+                    {l === 'cn' ? '中文' : 'EN'}
+                  </button>
+                ))}
+              </div>
               <button onClick={copyShareLink} className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm font-semibold text-gray-600 hover:bg-gray-50">
                 <Copy className="h-4 w-4" />{copied ? (cn ? '已复制' : 'Copied') : (cn ? '复制链接' : 'Copy Link')}
               </button>
@@ -461,7 +519,7 @@ export default function LeaderboardPage() {
                 <img src={shareImage} alt="" className="w-full" />
               ) : (
                 <div className="flex h-80 items-center justify-center text-gray-400">
-                  <ImageIcon className="mr-2 h-5 w-5" />{cn ? '正在生成...' : 'Generating...'}
+                  <ImageIcon className="mr-2 h-5 w-5" />{shareGenerating ? (cn ? '正在生成...' : 'Generating...') : (cn ? '等待生成' : 'Ready')}
                 </div>
               )}
             </div>

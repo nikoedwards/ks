@@ -323,6 +323,19 @@ export default function ProjectDetailPage() {
   const [ktError, setKtError] = useState('');
   const [ktNoData, setKtNoData] = useState(false);
   const [ktNoDataMessage, setKtNoDataMessage] = useState('');
+  const friendlyKicktraqMessage = (message?: string) => {
+    if (message?.includes('cannot read OPENAI_API_KEY') || message?.includes('cannot read')) {
+      return lang === 'cn'
+        ? '当前线上服务还没有读到 OCR Key。请确认变量加在同一个 Railway Service/Environment，并重新部署或 Restart 后再导入。'
+        : 'OCR is not active in the running Railway service. Make sure the key is on this service/environment, then redeploy or restart and import again.';
+    }
+    if (message?.includes('OCR is configured')) {
+      return lang === 'cn'
+        ? 'OCR 已启用，但这张 Kicktraq 图表没有解析出可用数据，可能是图表被拦截、图片不可读或项目暂无公开 daily chart。'
+        : 'OCR is active, but no usable daily rows were extracted. Kicktraq may have blocked the chart image, returned an unreadable image, or not exposed a public daily chart.';
+    }
+    return message ?? '';
+  };
   const importKicktraq = async () => {
     if (!user) { showLogin(); return; }
     if (!id) return;
@@ -337,7 +350,7 @@ export default function ProjectDetailPage() {
         loadSnapshots();
       } else if (data.noData) {
         setKtNoData(true);
-        setKtNoDataMessage(data.message ?? '');
+        setKtNoDataMessage(friendlyKicktraqMessage(data.message));
       } else {
         setKtError(data.message ?? 'Import failed');
       }
@@ -479,11 +492,19 @@ export default function ProjectDetailPage() {
 
           {/* Action buttons */}
           <div className="w-full shrink-0 space-y-3 lg:w-[320px]">
-            {projectImage && (
-              <div className="aspect-[16/9] overflow-hidden rounded-xl border border-white/10 bg-gray-800">
+            <div className="aspect-[16/9] overflow-hidden rounded-xl border border-white/10 bg-gray-800 shadow-lg">
+              {projectImage ? (
                 <img src={projectImage} alt="" className="h-full w-full object-cover" loading="lazy" referrerPolicy="no-referrer" />
-              </div>
-            )}
+              ) : (
+                <div className="flex h-full w-full flex-col justify-between bg-gradient-to-br from-emerald-500/25 via-gray-800 to-blue-500/20 p-4">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-white/45">{project.category_parent ?? 'Kickstarter'}</div>
+                  <div>
+                    <div className="mb-2 h-8 w-8 rounded-lg bg-ks-green/80" />
+                    <p className="line-clamp-2 text-sm font-bold leading-snug text-white">{project.name}</p>
+                  </div>
+                </div>
+              )}
+            </div>
             <div className="flex gap-2 flex-wrap justify-start lg:justify-end">
             <button onClick={toggleFavorite}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${

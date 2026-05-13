@@ -48,6 +48,7 @@ interface RawRecord {
   static_usd_rate?: string;
   creator?: string;
   category?: string;
+  photo?: string;
   source_url?: string;
   urls?: string;
 }
@@ -73,6 +74,14 @@ function parseRecord(raw: RawRecord): Record<string, unknown> | null {
     creator_name = creatorJson.name ?? null;
     creator_slug = creatorJson.slug ?? null;
     creator_url = creatorJson.urls?.web?.user ?? null;
+  } catch { /* ignore */ }
+
+  let image_url: string | null = null;
+  let image_thumb_url: string | null = null;
+  try {
+    const photo = JSON.parse(raw.photo || '{}');
+    image_url = photo.full ?? photo['1536x864'] ?? photo['1024x576'] ?? photo.ed ?? photo.med ?? photo.small ?? null;
+    image_thumb_url = photo.little ?? photo.thumb ?? photo.small ?? photo.ed ?? photo.med ?? image_url;
   } catch { /* ignore */ }
 
   const goal = parseFloat(raw.goal || '0') || 0;
@@ -106,6 +115,8 @@ function parseRecord(raw: RawRecord): Record<string, unknown> | null {
     creator_url: creator_url ?? (creator_slug ? `https://www.kickstarter.com/profile/${creator_slug}` : null),
     source_url,
     slug: projectSlug,
+    image_url,
+    image_thumb_url,
   };
 }
 
