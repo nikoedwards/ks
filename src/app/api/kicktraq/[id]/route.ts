@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSessionUser, SESSION_COOKIE } from '@/lib/auth';
 import { getProjectById } from '@/lib/db';
-import { extractCreatorSlug, extractProjectSlug, getOptionalEnv, scrapeKicktraq, storeKicktraqDays } from '@/lib/scraper';
+import { extractCreatorSlug, extractProjectSlug, getOptionalEnv, scrapeKicktraqDetailed, storeKicktraqDays } from '@/lib/scraper';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -27,7 +27,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       }, { status: 422 });
     }
 
-    const days = await scrapeKicktraq(creatorSlug, projectSlug);
+    const { days, diagnostics } = await scrapeKicktraqDetailed(creatorSlug, projectSlug);
     if (!days.length) {
       const hasOpenAI = !!getOptionalEnv('OPENAI_API_KEY');
       const hasAnthropic = !!getOptionalEnv('ANTHROPIC_API_KEY');
@@ -37,8 +37,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         noData: true,
         _v: 'ocr-v1',
         message: hasOcr
-          ? 'Kicktraq page was found and OCR is configured, but no daily chart rows could be parsed. This usually means Kicktraq blocked the chart image, returned an unreadable image, or the OCR model could not extract a valid table.'
+          ? `OCR is enabled, but no usable Daily Data rows were parsed. Diagnostics: page=${diagnostics.pageStatus ?? '-'}, json=${diagnostics.jsonStatus ?? '-'}, htmlRows=${diagnostics.htmlRows ?? 0}, image=${diagnostics.imageStatus ?? '-'} ${diagnostics.imageContentType ?? ''}, imageBytes=${diagnostics.imageBytes ?? '-'}, ocr=${diagnostics.ocrProvider ?? '-'} ${diagnostics.ocrStatus ?? '-'}, ocrRows=${diagnostics.ocrRows ?? 0}. ${diagnostics.reason ?? ''}`
           : 'The running Railway service cannot read OPENAI_API_KEY or ANTHROPIC_API_KEY. If you already added it in Railway, redeploy or restart this same service/environment, then import again.',
+        diagnostics,
       });
     }
 

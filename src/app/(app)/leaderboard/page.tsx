@@ -294,12 +294,11 @@ export default function LeaderboardPage() {
   };
 
   const translateTitles = async (rows: LeaderboardProject[], targetLang: 'cn' | 'en') => {
-    if (targetLang !== 'cn') return rows.map(r => r.name);
     try {
       const res = await fetch('/api/translate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ texts: rows.map(r => r.name), target: 'zh-CN' }),
+        body: JSON.stringify({ texts: rows.map(r => r.name), target: targetLang === 'cn' ? 'zh-CN' : 'en' }),
       });
       if (!res.ok) return rows.map(r => r.name);
       const json = await res.json() as { translations?: string[] };

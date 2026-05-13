@@ -298,6 +298,21 @@ interface DailyChartJson {
   chart_data?: { pledged?: number[]; backers?: number[]; comments?: number[]; start_date?: string };
 }
 
+export interface KicktraqScrapeDiagnostics {
+  pageStatus?: number;
+  jsonStatus?: number;
+  jsonRows?: number;
+  htmlRows?: number;
+  imageStatus?: number;
+  imageContentType?: string;
+  imageBytes?: number;
+  ocrProvider?: 'anthropic' | 'openai';
+  ocrStatus?: number;
+  ocrRows?: number;
+  ocrPreview?: string;
+  reason?: string;
+}
+
 function parseDailyChartJson(json: DailyChartJson): KicktraqDay[] | null {
   const days: KicktraqDay[] = [];
   const src = json.data ?? json;
@@ -336,8 +351,9 @@ function parseDailyChartJson(json: DailyChartJson): KicktraqDay[] | null {
   return null;
 }
 
-export async function scrapeKicktraq(creatorSlug: string, projectSlug: string): Promise<KicktraqDay[]> {
+export async function scrapeKicktraqDetailed(creatorSlug: string, projectSlug: string): Promise<{ days: KicktraqDay[]; diagnostics: KicktraqScrapeDiagnostics }> {
   const pageUrl = 'https://www.kicktraq.com/projects/' + creatorSlug + '/' + projectSlug + '/';
+  const diagnostics: KicktraqScrapeDiagnostics = {};
 
   // Step 1: fetch main page for session cookie + HTML fallback
   let html = '';
@@ -351,13 +367,14 @@ export async function scrapeKicktraq(creatorSlug: string, projectSlug: string): 
       },
       signal: AbortSignal.timeout(20_000),
     });
-    if (pageRes.status === 404) return [];
-    if (!pageRes.ok) return [];
+    diagnostics.pageStatus = pageRes.status;
+    if (pageRes.status === 404) return { days: [], diagnostics: { ...diagnostics, reason: 'Kicktraq project page returned 404.' } };
+    if (!pageRes.ok) return { days: [], diagnostics: { ...diagnostics, reason: `Kicktraq project page returned HTTP ${pageRes.status}.` } };
     html = await pageRes.text();
     const setCookie = pageRes.headers.getSetCookie?.() ?? [];
     cookieStr = setCookie.map(c => c.split(';')[0]).join('; ');
-  } catch {
-    return [];
+  } catch (e) {
+    return { days: [], diagnostics: { ...diagnostics, reason: `Could not fetch Kicktraq project page: ${String(e)}` } };
   }
 
   // Step 2: try dailychart.json with session cookie
@@ -378,39 +395,47 @@ export async function scrapeKicktraq(creatorSlug: string, projectSlug: string): 
       },
       signal: AbortSignal.timeout(15_000),
     });
+    diagnostics.jsonStatus = jsonRes.status;
     if (jsonRes.ok) {
       const text = await jsonRes.text();
       if (text && !text.trim().startsWith('<') && !text.includes('invalid request')) {
         const json = JSON.parse(text);
         const days = parseDailyChartJson(json);
-        if (days?.length) return days;
+        diagnostics.jsonRows = days?.length ?? 0;
+        if (days?.length) return { days, diagnostics };
       }
     }
   } catch { /* fall through */ }
 
   // Step 3: HTML embedded chart data (older Kicktraq format)
   const htmlDays = parseKicktraqHtml(html);
-  if (htmlDays.length) return htmlDays;
+  diagnostics.htmlRows = htmlDays.length;
+  if (htmlDays.length) return { days: htmlDays, diagnostics };
 
   // Step 4: OCR the dailychart.png via Claude/OpenAI Vision.
   if (getOptionalEnv('ANTHROPIC_API_KEY')) {
-    const ocrDays = await scrapeKicktraqViaOCR(pageUrl, cookieStr);
-    if (ocrDays.length) return ocrDays;
+    const ocrDays = await scrapeKicktraqViaOCR(pageUrl, cookieStr, diagnostics);
+    if (ocrDays.length) return { days: ocrDays, diagnostics };
   }
 
   if (getOptionalEnv('OPENAI_API_KEY')) {
-    const ocrDays = await scrapeKicktraqViaOpenAI(pageUrl, cookieStr);
-    if (ocrDays.length) return ocrDays;
+    const ocrDays = await scrapeKicktraqViaOpenAI(pageUrl, cookieStr, diagnostics);
+    if (ocrDays.length) return { days: ocrDays, diagnostics };
   }
 
-  return [];
+  return { days: [], diagnostics: { ...diagnostics, reason: 'No daily rows were found in JSON, HTML, or OCR output.' } };
+}
+
+export async function scrapeKicktraq(creatorSlug: string, projectSlug: string): Promise<KicktraqDay[]> {
+  return (await scrapeKicktraqDetailed(creatorSlug, projectSlug)).days;
 }
 
 // ─── OCR fallback via Claude Vision ──────────────────────────────────────────
 
-async function scrapeKicktraqViaOCR(pageUrl: string, cookieStr: string): Promise<KicktraqDay[]> {
+async function scrapeKicktraqViaOCR(pageUrl: string, cookieStr: string, diagnostics?: KicktraqScrapeDiagnostics): Promise<KicktraqDay[]> {
   const imgUrl = pageUrl + 'dailychart.png';
   const anthropicKey = getOptionalEnv('ANTHROPIC_API_KEY');
+  if (diagnostics) diagnostics.ocrProvider = 'anthropic';
 
   try {
     const imgRes = await fetch(imgUrl, {
@@ -423,6 +448,10 @@ async function scrapeKicktraqViaOCR(pageUrl: string, cookieStr: string): Promise
       signal: AbortSignal.timeout(20_000),
     });
     console.log('[OCR] img status=' + imgRes.status + ' content-type=' + imgRes.headers.get('content-type'));
+    if (diagnostics) {
+      diagnostics.imageStatus = imgRes.status;
+      diagnostics.imageContentType = imgRes.headers.get('content-type') ?? '';
+    }
     if (!imgRes.ok) return [];
     const contentType = imgRes.headers.get('content-type') ?? '';
     if (!contentType.includes('image')) {
@@ -433,16 +462,15 @@ async function scrapeKicktraqViaOCR(pageUrl: string, cookieStr: string): Promise
 
     const imgBuffer = await imgRes.arrayBuffer();
     console.log('[OCR] img size=' + imgBuffer.byteLength + ' bytes');
+    if (diagnostics) diagnostics.imageBytes = imgBuffer.byteLength;
     const base64 = Buffer.from(imgBuffer).toString('base64');
 
-    const ocrPrompt = 'This image shows Kicktraq daily chart data for a Kickstarter project with bar charts.\n' +
-      'Extract ALL daily data visible. Charts show:\n' +
-      '1. Pledges Per Day (USD amounts like $6m, $1m, $469k)\n' +
-      '2. Backers Per Day (counts like 7510, 1595, 638)\n' +
-      '3. Comments Per Day (counts like 466, 192, 135)\n' +
-      'X-axis shows dates in MM-DD format.\n' +
-      'Return ONLY a JSON array. Each element: {"date":"YYYY-MM-DD","pledged_usd":NUMBER,"backers":NUMBER,"comments":NUMBER}\n' +
-      'Infer the year from context. Use 0 for unclear values.';
+    const ocrPrompt = 'This is the Kicktraq Daily Data tab image for a Kickstarter project. It contains up to three separate bar charts: Pledges Per Day, Backers Per Day, and Comments Per Day.\n' +
+      'Extract the per-day values from the vertical labels on each bar. Do NOT extract the Funding Progress cumulative line chart.\n' +
+      'Use the x-axis MM-DD labels to assign dates to bars. Infer missing dates between visible tick labels sequentially and infer the year from the copyright/header context.\n' +
+      'Normalize money labels such as $6.7m, $469k, $20,249 into numeric USD amounts.\n' +
+      'Return ONLY a JSON array. Each element must be {"date":"YYYY-MM-DD","pledged_usd":NUMBER,"backers":NUMBER,"comments":NUMBER}.\n' +
+      'If one chart is missing or unreadable for a date, use 0 for that field.';
 
     const claudeBody = JSON.stringify({
       model: 'claude-sonnet-4-6',
@@ -470,18 +498,28 @@ async function scrapeKicktraqViaOCR(pageUrl: string, cookieStr: string): Promise
     if (!claudeRes.ok) {
       const errText = await claudeRes.text().catch(() => '');
       console.log('[OCR] Claude error status=' + claudeRes.status + ' body=' + errText.slice(0, 200));
+      if (diagnostics) {
+        diagnostics.ocrStatus = claudeRes.status;
+        diagnostics.ocrPreview = errText.slice(0, 200);
+      }
       return [];
     }
+    if (diagnostics) diagnostics.ocrStatus = claudeRes.status;
 
     const claudeData = await claudeRes.json() as { content?: Array<{ type: string; text?: string }> };
     const text = claudeData.content?.[0]?.text ?? '';
     console.log('[OCR] Claude response length=' + text.length + ' preview=' + text.slice(0, 100));
+    if (diagnostics) diagnostics.ocrPreview = text.slice(0, 200);
 
     const jsonMatch = text.match(/\[[\s\S]*\]/);
-    if (!jsonMatch) return [];
+    if (!jsonMatch) {
+      if (diagnostics) diagnostics.ocrRows = 0;
+      return [];
+    }
 
     const rows = JSON.parse(jsonMatch[0]) as Array<{ date?: string; pledged_usd?: number; backers?: number; comments?: number }>;
     console.log('[OCR] parsed rows=' + rows.length);
+    if (diagnostics) diagnostics.ocrRows = rows.length;
 
     return rows
       .filter(r => r.date)
@@ -497,10 +535,11 @@ async function scrapeKicktraqViaOCR(pageUrl: string, cookieStr: string): Promise
   }
 }
 
-async function scrapeKicktraqViaOpenAI(pageUrl: string, cookieStr: string): Promise<KicktraqDay[]> {
+async function scrapeKicktraqViaOpenAI(pageUrl: string, cookieStr: string, diagnostics?: KicktraqScrapeDiagnostics): Promise<KicktraqDay[]> {
   const imgUrl = pageUrl + 'dailychart.png';
   const openAIKey = getOptionalEnv('OPENAI_API_KEY');
   const openAIModel = getOptionalEnv('OPENAI_VISION_MODEL') || 'gpt-4o-mini';
+  if (diagnostics) diagnostics.ocrProvider = 'openai';
 
   try {
     const imgRes = await fetch(imgUrl, {
@@ -512,15 +551,23 @@ async function scrapeKicktraqViaOpenAI(pageUrl: string, cookieStr: string): Prom
       },
       signal: AbortSignal.timeout(20_000),
     });
+    if (diagnostics) {
+      diagnostics.imageStatus = imgRes.status;
+      diagnostics.imageContentType = imgRes.headers.get('content-type') ?? '';
+    }
     if (!imgRes.ok) return [];
     const contentType = imgRes.headers.get('content-type') ?? '';
     if (!contentType.includes('image')) return [];
 
     const imgBuffer = await imgRes.arrayBuffer();
+    if (diagnostics) diagnostics.imageBytes = imgBuffer.byteLength;
     const base64 = Buffer.from(imgBuffer).toString('base64');
-    const prompt = 'Extract all visible Kicktraq daily chart rows from this image. ' +
-      'Return only a JSON array. Each item must be {"date":"YYYY-MM-DD","pledged_usd":number,"backers":number,"comments":number}. ' +
-      'The image may show Pledges Per Day, Backers Per Day, and Comments Per Day. Infer the year from chart context and use 0 for unreadable values.';
+    const prompt = 'This is the Kicktraq Daily Data tab image for a Kickstarter project. It contains up to three separate bar charts: Pledges Per Day, Backers Per Day, and Comments Per Day. ' +
+      'Extract the per-day values from the vertical labels on each bar. Do NOT extract the Funding Progress cumulative line chart. ' +
+      'Use the x-axis MM-DD labels to assign dates to bars. Infer missing dates between visible tick labels sequentially and infer the year from the copyright/header context. ' +
+      'Normalize money labels such as $6.7m, $469k, $20,249 into numeric USD amounts. ' +
+      'Return ONLY a JSON array. Each item must be {"date":"YYYY-MM-DD","pledged_usd":number,"backers":number,"comments":number}. ' +
+      'If one chart is missing or unreadable for a date, use 0 for that field.';
 
     const res = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
@@ -544,13 +591,23 @@ async function scrapeKicktraqViaOpenAI(pageUrl: string, cookieStr: string): Prom
     if (!res.ok) {
       const errText = await res.text().catch(() => '');
       console.log('[OpenAI OCR] error status=' + res.status + ' body=' + errText.slice(0, 300));
+      if (diagnostics) {
+        diagnostics.ocrStatus = res.status;
+        diagnostics.ocrPreview = errText.slice(0, 200);
+      }
       return [];
     }
+    if (diagnostics) diagnostics.ocrStatus = res.status;
     const data = await res.json() as { choices?: Array<{ message?: { content?: string } }> };
     const text = data.choices?.[0]?.message?.content ?? '';
+    if (diagnostics) diagnostics.ocrPreview = text.slice(0, 200);
     const jsonMatch = text.match(/\[[\s\S]*\]/);
-    if (!jsonMatch) return [];
+    if (!jsonMatch) {
+      if (diagnostics) diagnostics.ocrRows = 0;
+      return [];
+    }
     const rows = JSON.parse(jsonMatch[0]) as Array<{ date?: string; pledged_usd?: number; backers?: number; comments?: number }>;
+    if (diagnostics) diagnostics.ocrRows = rows.length;
     return rows
       .filter(r => r.date)
       .map(r => ({

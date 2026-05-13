@@ -31,7 +31,7 @@ export async function POST(req: NextRequest) {
         messages: [
           {
             role: 'system',
-            content: `Translate Kickstarter project titles into ${target}. Keep brand names and product model names unchanged. Return only a JSON array of strings in the same order.`,
+            content: `Translate Kickstarter project titles into ${target}. Keep brand names, product model names, and technical terms unchanged where appropriate. Return only a JSON array of strings in the same order.`,
           },
           { role: 'user', content: JSON.stringify(texts) },
         ],
