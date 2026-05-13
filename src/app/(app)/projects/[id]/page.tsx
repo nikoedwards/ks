@@ -76,6 +76,8 @@ const STATE_COLOR: Record<string, string> = {
 
 const TAB_IDS = ['overview', 'curve', 'rewards', 'changes', 'similar'] as const;
 type TabId = typeof TAB_IDS[number];
+type CurveMetric = 'pledged' | 'backers' | 'comments';
+type CurveMode = 'daily' | 'cumulative';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -195,6 +197,11 @@ export default function ProjectDetailPage() {
   const [autoSyncAttempted, setAutoSyncAttempted] = useState(false);
   const [ktImporting, setKtImporting] = useState(false);
   const [syncError, setSyncError] = useState('');
+  const [curveModes, setCurveModes] = useState<Record<CurveMetric, CurveMode>>({
+    pledged: 'daily',
+    backers: 'daily',
+    comments: 'daily',
+  });
 
   // Snapshot data
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
@@ -259,13 +266,15 @@ export default function ProjectDetailPage() {
   }, [loadTracking]);
 
   // ── Fetch snapshot data ────────────────────────────────────────────────────
-  const loadSnapshots = useCallback(() => {
+  const loadSnapshots = useCallback(async () => {
     if (!id) return;
-    fetch(`/api/snapshots/${id}`).then(r => r.json()).then(d => {
+    try {
+      const r = await fetch(`/api/snapshots/${id}`);
+      const d = await r.json();
       setSnapshots(d.snapshots ?? []);
       setRewards(d.rewards ?? []);
       setTextHistory(d.textHistory ?? []);
-    }).catch(() => {});
+    } catch {}
   }, [id]);
 
   useEffect(() => { loadSnapshots(); }, [loadSnapshots]);
@@ -360,6 +369,20 @@ export default function ProjectDetailPage() {
     setKtNoData(false);
     setKtNoDataMessage('');
     setKtDebug(null);
+    const loadCachedKicktraqDebug = async () => {
+      try {
+        const debugRes = await fetch(`/api/kicktraq/${id}`);
+        if (!debugRes.ok) return;
+        const cached = await debugRes.json() as {
+          ok?: boolean;
+          debug?: KicktraqDebug;
+          diagnostics?: { debug?: KicktraqDebug };
+          structuredDays?: KicktraqDebug['structuredRows'];
+        };
+        const debug = cached.debug ?? cached.diagnostics?.debug ?? (cached.structuredDays ? { structuredRows: cached.structuredDays } : null);
+        if (debug) setKtDebug(debug);
+      } catch {}
+    };
     try {
       const res = await fetch(`/api/kicktraq/${id}`, { method: 'POST' });
       const data = await res.json() as {
@@ -374,7 +397,7 @@ export default function ProjectDetailPage() {
       const debug = data.debug ?? data.diagnostics?.debug ?? (data.structuredDays ? { structuredRows: data.structuredDays } : null);
       if (debug) setKtDebug(debug);
       if (data.ok) {
-        loadSnapshots();
+        await loadSnapshots();
       } else if (data.noData) {
         setKtNoData(true);
         setKtNoDataMessage(friendlyKicktraqMessage(data.message));
@@ -382,7 +405,13 @@ export default function ProjectDetailPage() {
         setKtError(data.message ?? 'Import failed');
       }
     } catch {
-      setKtError('Network error — please try again.');
+      await new Promise(r => setTimeout(r, 1200));
+      await loadSnapshots();
+      await loadCachedKicktraqDebug();
+      setKtNoData(true);
+      setKtNoDataMessage(lang === 'cn'
+        ? '导入请求连接中断，但后台可能已经写入成功；已自动刷新快照并尝试读取调试信息。'
+        : 'The import request disconnected, but the server may have completed it. Snapshots were refreshed and debug data was retried.');
     }
     setKtImporting(false);
   };
@@ -404,8 +433,11 @@ export default function ProjectDetailPage() {
   const chartData = snapshotWithDeltas.map(s => ({
     date: fmtDate(s.captured_at, lang),
     ts: s.captured_at,
+    pledgedTotal: Math.max(0, Math.round(s.pledged_usd)),
     pledgedDaily: Math.max(0, Math.round(s.daily_pledged)),
+    backersTotal: Math.max(0, s.backers_count),
     backersDaily: Math.max(0, s.daily_backers),
+    commentsTotal: Math.max(0, s.comments_count),
     commentsDaily: Math.max(0, s.daily_comments),
     source: s.source,
   }));
@@ -413,6 +445,16 @@ export default function ProjectDetailPage() {
   const avgPledgedDaily = avg(chartData.map(d => d.pledgedDaily));
   const avgBackersDaily = avg(chartData.map(d => d.backersDaily));
   const avgCommentsDaily = avg(chartData.map(d => d.commentsDaily));
+
+  const setCurveMode = (metric: CurveMetric, mode: CurveMode) => {
+    setCurveModes(prev => ({ ...prev, [metric]: mode }));
+  };
+
+  const curveModeLabel = (mode: CurveMode) => (
+    mode === 'daily'
+      ? (lang === 'cn' ? '新增数据' : 'New')
+      : (lang === 'cn' ? '加总数据' : 'Cumulative')
+  );
 
   // Table data: most recent first, delta columns
   const tableData = [...filteredSnapshots].reverse().map((s, i, arr) => {
@@ -695,7 +737,7 @@ export default function ProjectDetailPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {tableData.slice(0, 30).map((s, i) => (
+                      {tableData.map((s, i) => (
                         <tr key={s.captured_at} className={i % 2 === 0 ? 'bg-white' : 'bg-gray-50/50'}>
                           <td className="px-4 py-2.5 text-gray-600">{fmtDateTime(s.captured_at)}</td>
                           <td className="px-4 py-2.5 text-right font-semibold text-gray-800">{fmtMoney(s.pledged_usd, s.source === 'kicktraq_active' && nativeCurrency !== 'USD' ? nativeCurrency : 'USD')}</td>
@@ -810,11 +852,23 @@ export default function ProjectDetailPage() {
               <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5 space-y-6">
                 {/* Pledged chart */}
                 <div>
-                  <p className="text-xs text-gray-400 font-semibold uppercase tracking-wide mb-3">
-                    {lang === 'cn'
-                      ? `每日新增金额 · 平均 ${fmtMoney(avgPledgedDaily, displayCurrency)}`
-                      : `Daily pledged change · Avg ${fmtMoney(avgPledgedDaily, displayCurrency)}`}
-                  </p>
+                  <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                    <p className="text-xs text-gray-400 font-semibold uppercase tracking-wide">
+                      {curveModes.pledged === 'daily'
+                        ? (lang === 'cn'
+                          ? `每日新增金额 · 平均 ${fmtMoney(avgPledgedDaily, displayCurrency)}`
+                          : `Daily pledged change · Avg ${fmtMoney(avgPledgedDaily, displayCurrency)}`)
+                        : (lang === 'cn' ? '累计众筹金额' : 'Cumulative pledged')}
+                    </p>
+                    <div className="rounded-lg bg-gray-100 p-1">
+                      {(['daily', 'cumulative'] as const).map(mode => (
+                        <button key={mode} onClick={() => setCurveMode('pledged', mode)}
+                          className={`px-3 py-1 rounded-md text-xs font-semibold transition-colors ${curveModes.pledged === mode ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-800'}`}>
+                          {curveModeLabel(mode)}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                   <ResponsiveContainer width="100%" height={220}>
                     <AreaChart data={chartData} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
                       <defs>
@@ -826,31 +880,77 @@ export default function ProjectDetailPage() {
                       <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
                       <XAxis dataKey="date" tick={{ fontSize: 10 }} interval="preserveStartEnd" />
                       <YAxis tick={{ fontSize: 10 }} tickFormatter={v => fmtMoney(v as number, displayCurrency)} width={65} />
-                      <Tooltip formatter={(v: number) => [fmtMoney(v, displayCurrency), lang === 'cn' ? '金额增量' : 'Pledged Change']} />
-                      <ReferenceLine y={avgPledgedDaily} stroke="#64748b" strokeDasharray="5 5" label={{ value: lang === 'cn' ? '平均' : 'Avg', fontSize: 10, fill: '#64748b' }} />
-                      <Area type="monotone" dataKey="pledgedDaily" stroke="#05CE78" strokeWidth={2} fill="url(#gPledged)" />
+                      <Tooltip formatter={(v: number) => [fmtMoney(v, displayCurrency), curveModes.pledged === 'daily' ? (lang === 'cn' ? '金额增量' : 'Pledged Change') : (lang === 'cn' ? '累计金额' : 'Total Pledged')]} />
+                      {curveModes.pledged === 'daily' && (
+                        <ReferenceLine y={avgPledgedDaily} stroke="#64748b" strokeDasharray="5 5" label={{ value: lang === 'cn' ? '平均' : 'Avg', fontSize: 10, fill: '#64748b' }} />
+                      )}
+                      <Area type="monotone" dataKey={curveModes.pledged === 'daily' ? 'pledgedDaily' : 'pledgedTotal'} stroke="#05CE78" strokeWidth={2} fill="url(#gPledged)" />
                     </AreaChart>
                   </ResponsiveContainer>
                 </div>
 
-                {/* Backers + engagement chart */}
+                {/* Backers chart */}
                 <div>
-                  <p className="text-xs text-gray-400 font-semibold uppercase tracking-wide mb-3">
-                    {lang === 'cn'
-                      ? `每日新增 Backer / Comment · 平均 ${Math.round(avgBackersDaily).toLocaleString()} 支持者，${Math.round(avgCommentsDaily).toLocaleString()} 评论`
-                      : `Daily backers / comments · Avg ${Math.round(avgBackersDaily).toLocaleString()} backers, ${Math.round(avgCommentsDaily).toLocaleString()} comments`}
-                  </p>
+                  <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                    <p className="text-xs text-gray-400 font-semibold uppercase tracking-wide">
+                      {curveModes.backers === 'daily'
+                        ? (lang === 'cn'
+                          ? `每日新增 Backer · 平均 ${Math.round(avgBackersDaily).toLocaleString()}`
+                          : `Daily backer change · Avg ${Math.round(avgBackersDaily).toLocaleString()}`)
+                        : (lang === 'cn' ? '累计支持者' : 'Cumulative backers')}
+                    </p>
+                    <div className="rounded-lg bg-gray-100 p-1">
+                      {(['daily', 'cumulative'] as const).map(mode => (
+                        <button key={mode} onClick={() => setCurveMode('backers', mode)}
+                          className={`px-3 py-1 rounded-md text-xs font-semibold transition-colors ${curveModes.backers === mode ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-800'}`}>
+                          {curveModeLabel(mode)}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                   <ResponsiveContainer width="100%" height={200}>
                     <LineChart data={chartData} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
                       <XAxis dataKey="date" tick={{ fontSize: 10 }} interval="preserveStartEnd" />
                       <YAxis tick={{ fontSize: 10 }} width={45} />
-                      <Tooltip />
-                      <Legend wrapperStyle={{ fontSize: 11 }} />
-                      <ReferenceLine y={avgBackersDaily} stroke="#6366f1" strokeDasharray="5 5" label={{ value: lang === 'cn' ? '支持者平均' : 'Backer Avg', fontSize: 10, fill: '#6366f1' }} />
-                      <ReferenceLine y={avgCommentsDaily} stroke="#f59e0b" strokeDasharray="5 5" label={{ value: lang === 'cn' ? '评论平均' : 'Comment Avg', fontSize: 10, fill: '#f59e0b' }} />
-                      <Line type="monotone" dataKey="backersDaily" stroke="#6366f1" strokeWidth={2} dot={false} name={lang === 'cn' ? '支持者增量' : 'Backer Change'} />
-                      <Line type="monotone" dataKey="commentsDaily" stroke="#f59e0b" strokeWidth={1.5} dot={false} name={lang === 'cn' ? '评论增量' : 'Comment Change'} />
+                      <Tooltip formatter={(v: number) => [Number(v).toLocaleString(), curveModes.backers === 'daily' ? (lang === 'cn' ? '支持者增量' : 'Backer Change') : (lang === 'cn' ? '累计支持者' : 'Total Backers')]} />
+                      {curveModes.backers === 'daily' && (
+                        <ReferenceLine y={avgBackersDaily} stroke="#6366f1" strokeDasharray="5 5" label={{ value: lang === 'cn' ? '平均' : 'Avg', fontSize: 10, fill: '#6366f1' }} />
+                      )}
+                      <Line type="monotone" dataKey={curveModes.backers === 'daily' ? 'backersDaily' : 'backersTotal'} stroke="#6366f1" strokeWidth={2} dot={false} name={curveModes.backers === 'daily' ? (lang === 'cn' ? '支持者增量' : 'Backer Change') : (lang === 'cn' ? '累计支持者' : 'Total Backers')} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+
+                {/* Comments chart */}
+                <div>
+                  <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                    <p className="text-xs text-gray-400 font-semibold uppercase tracking-wide">
+                      {curveModes.comments === 'daily'
+                        ? (lang === 'cn'
+                          ? `每日新增 Comments · 平均 ${Math.round(avgCommentsDaily).toLocaleString()}`
+                          : `Daily comment change · Avg ${Math.round(avgCommentsDaily).toLocaleString()}`)
+                        : (lang === 'cn' ? '累计评论数' : 'Cumulative comments')}
+                    </p>
+                    <div className="rounded-lg bg-gray-100 p-1">
+                      {(['daily', 'cumulative'] as const).map(mode => (
+                        <button key={mode} onClick={() => setCurveMode('comments', mode)}
+                          className={`px-3 py-1 rounded-md text-xs font-semibold transition-colors ${curveModes.comments === mode ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-800'}`}>
+                          {curveModeLabel(mode)}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <ResponsiveContainer width="100%" height={200}>
+                    <LineChart data={chartData} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                      <XAxis dataKey="date" tick={{ fontSize: 10 }} interval="preserveStartEnd" />
+                      <YAxis tick={{ fontSize: 10 }} width={45} />
+                      <Tooltip formatter={(v: number) => [Number(v).toLocaleString(), curveModes.comments === 'daily' ? (lang === 'cn' ? '评论增量' : 'Comment Change') : (lang === 'cn' ? '累计评论' : 'Total Comments')]} />
+                      {curveModes.comments === 'daily' && (
+                        <ReferenceLine y={avgCommentsDaily} stroke="#f59e0b" strokeDasharray="5 5" label={{ value: lang === 'cn' ? '平均' : 'Avg', fontSize: 10, fill: '#f59e0b' }} />
+                      )}
+                      <Line type="monotone" dataKey={curveModes.comments === 'daily' ? 'commentsDaily' : 'commentsTotal'} stroke="#f59e0b" strokeWidth={2} dot={false} name={curveModes.comments === 'daily' ? (lang === 'cn' ? '评论增量' : 'Comment Change') : (lang === 'cn' ? '累计评论' : 'Total Comments')} />
                     </LineChart>
                   </ResponsiveContainer>
                 </div>
