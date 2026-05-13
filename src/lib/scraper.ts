@@ -312,6 +312,7 @@ export interface KicktraqScrapeDiagnostics {
   ocrPreview?: string;
   ocrError?: string;
   ocrEndpoint?: string;
+  ocrTimeoutMs?: number;
   reason?: string;
 }
 
@@ -575,8 +576,10 @@ async function scrapeKicktraqViaQwen(pageUrl: string, cookieStr: string, diagnos
   const qwenModel = getOptionalEnv('QWEN_VISION_MODEL') || 'qwen-vl-plus';
   const qwenBaseUrl = (getOptionalEnv('QWEN_BASE_URL') || 'https://dashscope.aliyuncs.com/compatible-mode/v1').replace(/\/+$/, '');
   const qwenEndpoint = `${qwenBaseUrl}/chat/completions`;
+  const qwenTimeoutMs = Math.max(60_000, Number(getOptionalEnv('QWEN_TIMEOUT_MS') || 180_000));
   if (diagnostics) diagnostics.ocrProvider = 'qwen';
   if (diagnostics) diagnostics.ocrEndpoint = qwenEndpoint;
+  if (diagnostics) diagnostics.ocrTimeoutMs = qwenTimeoutMs;
 
   try {
     const imgRes = await fetch(imgUrl, {
@@ -620,15 +623,21 @@ async function scrapeKicktraqViaQwen(pageUrl: string, cookieStr: string, diagnos
 
     let res: Response | null = null;
     for (let attempt = 0; attempt < 3; attempt++) {
-      res = await fetch(qwenEndpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${qwenKey}`,
-        },
-        body,
-        signal: AbortSignal.timeout(60_000),
-      });
+      try {
+        res = await fetch(qwenEndpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${qwenKey}`,
+          },
+          body,
+          signal: AbortSignal.timeout(qwenTimeoutMs),
+        });
+      } catch (e) {
+        if (attempt === 2) throw e;
+        await sleep(1500 * (attempt + 1));
+        continue;
+      }
       if (res.status !== 429 || attempt === 2) break;
       const retryAfter = Number(res.headers.get('retry-after') ?? 0);
       await sleep(retryAfter > 0 ? retryAfter * 1000 : 1500 * (attempt + 1));
