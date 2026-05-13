@@ -299,6 +299,13 @@ interface DailyChartJson {
   chart_data?: { pledged?: number[]; backers?: number[]; comments?: number[]; start_date?: string };
 }
 
+type KicktraqOcrRow = {
+  date?: string;
+  pledged_usd?: number | string;
+  backers?: number | string;
+  comments?: number | string;
+};
+
 export interface KicktraqScrapeDiagnostics {
   pageStatus?: number;
   jsonStatus?: number;
@@ -314,6 +321,7 @@ export interface KicktraqScrapeDiagnostics {
   ocrError?: string;
   ocrEndpoint?: string;
   ocrTimeoutMs?: number;
+  ocrFallbackRows?: number;
   zeroRowsRejected?: number;
   reason?: string;
 }
@@ -331,26 +339,44 @@ function extractOpenAIErrorMessage(raw: string): string {
   }
 }
 
-function kicktraqVisionPrompt() {
-  return 'You are reading a Kicktraq Daily Data tab chart image for a Kickstarter project. This is a vision chart extraction task, not plain text OCR. It contains up to three separate bar charts: Pledges Per Day, Backers Per Day, and Comments Per Day. ' +
+function parseOcrNumber(value: number | string | undefined, integerOnly = false): number {
+  if (value === undefined || value === null) return 0;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+  const raw = value.trim().toLowerCase();
+  if (!raw || raw === '-' || raw === 'n/a') return 0;
+  const multiplier = raw.includes('m') ? 1_000_000 : raw.includes('k') ? 1_000 : 1;
+  const normalized = raw.replace(/[^0-9.+-]/g, '');
+  const parsed = parseFloat(normalized);
+  if (!Number.isFinite(parsed)) return 0;
+  const result = parsed * multiplier;
+  return integerOnly ? Math.round(result) : result;
+}
+
+function kicktraqVisionPrompt(mode: 'exact' | 'estimate' = 'exact') {
+  const base = 'You are reading a Kicktraq Daily Data tab chart image for a Kickstarter project. This is a vision chart extraction task, not plain text OCR. It contains up to three separate bar charts: Pledges Per Day, Backers Per Day, and Comments Per Day. ' +
     'Extract the per-day values printed vertically on each bar. Do NOT extract the Funding Progress cumulative line chart. ' +
     'Use the x-axis MM-DD labels to assign dates to bars. Infer missing dates between visible tick labels sequentially and infer the year from the copyright/header context. ' +
     'Normalize money labels such as $6.7m, $469k, $20,249 into numeric USD amounts. ' +
-    'Return ONLY a JSON array. Each item must be {"date":"YYYY-MM-DD","pledged_usd":number,"backers":number,"comments":number}. ' +
+    'Return ONLY a JSON array. Each item must be {"date":"YYYY-MM-DD","pledged_usd":number,"backers":number,"comments":number}. ';
+  if (mode === 'estimate') {
+    return base +
+      'If the tiny vertical bar labels are unreadable, estimate the values from the bar heights, y-axis tick labels, and any visible Average Per Day value. Include approximate values for every visible daily bar. Do not return an empty array when bars are visible. Do not use zero unless a bar visibly has zero height.';
+  }
+  return base +
     'Only include dates where you can read at least one numeric value from a bar. Omit any unreadable date or unreadable field; do not invent zeros. If no bar values are readable, return [].';
 }
 
 function usableKicktraqDays(
-  rows: Array<{ date?: string; pledged_usd?: number; backers?: number; comments?: number }>,
+  rows: KicktraqOcrRow[],
   diagnostics?: KicktraqScrapeDiagnostics
 ): KicktraqDay[] {
   const parsed = rows
     .filter(r => r.date)
     .map(r => ({
       date: normalizeDate(r.date!),
-      pledged_usd: Number(r.pledged_usd ?? 0) || 0,
-      backers: Number(r.backers ?? 0) || 0,
-      comments: r.comments === undefined || r.comments === null ? undefined : Number(r.comments) || 0,
+      pledged_usd: parseOcrNumber(r.pledged_usd),
+      backers: parseOcrNumber(r.backers, true),
+      comments: r.comments === undefined || r.comments === null ? undefined : parseOcrNumber(r.comments, true),
     }));
 
   const usable = parsed.filter(d => d.pledged_usd > 0 || d.backers > 0 || (d.comments ?? 0) > 0);
@@ -361,7 +387,7 @@ function usableKicktraqDays(
   return usable;
 }
 
-function rowsFromOcrText(text: string): Array<{ date?: string; pledged_usd?: number; backers?: number; comments?: number }> {
+function rowsFromOcrText(text: string): KicktraqOcrRow[] {
   const cleaned = text.replace(/```(?:json)?/gi, '').replace(/```/g, '').trim();
   const candidates = [
     cleaned.match(/\[[\s\S]*\]/)?.[0],
@@ -371,8 +397,8 @@ function rowsFromOcrText(text: string): Array<{ date?: string; pledged_usd?: num
   for (const candidate of candidates) {
     try {
       const parsed = JSON.parse(candidate) as
-        | Array<{ date?: string; pledged_usd?: number; backers?: number; comments?: number }>
-        | { rows?: Array<{ date?: string; pledged_usd?: number; backers?: number; comments?: number }>; data?: Array<{ date?: string; pledged_usd?: number; backers?: number; comments?: number }> };
+        | KicktraqOcrRow[]
+        | { rows?: KicktraqOcrRow[]; data?: KicktraqOcrRow[] };
       if (Array.isArray(parsed)) return parsed;
       if (Array.isArray(parsed.rows)) return parsed.rows;
       if (Array.isArray(parsed.data)) return parsed.data;
@@ -622,59 +648,89 @@ async function scrapeKicktraqViaQwen(pageUrl: string, cookieStr: string, diagnos
     const imgBuffer = await imgRes.arrayBuffer();
     if (diagnostics) diagnostics.imageBytes = imgBuffer.byteLength;
     const base64 = Buffer.from(imgBuffer).toString('base64');
-    const prompt = kicktraqVisionPrompt();
 
-    const body = JSON.stringify({
-      model: qwenModel,
-      temperature: 0,
-      messages: [{
-        role: 'user',
-        content: [
-          { type: 'text', text: prompt },
-          { type: 'image_url', image_url: { url: `data:image/png;base64,${base64}` } },
-        ],
-      }],
-    });
+    const callQwen = async (prompt: string) => {
+      const body = JSON.stringify({
+        model: qwenModel,
+        temperature: 0,
+        max_tokens: 8192,
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'text', text: prompt },
+            { type: 'image_url', image_url: { url: `data:image/png;base64,${base64}` } },
+          ],
+        }],
+      });
 
-    let res: Response | null = null;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        res = await fetch(qwenEndpoint, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${qwenKey}`,
-          },
-          body,
-          signal: AbortSignal.timeout(qwenTimeoutMs),
-        });
-      } catch (e) {
-        if (attempt === 2) throw e;
-        await sleep(1500 * (attempt + 1));
-        continue;
+      let res: Response | null = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          res = await fetch(qwenEndpoint, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${qwenKey}`,
+            },
+            body,
+            signal: AbortSignal.timeout(qwenTimeoutMs),
+          });
+        } catch (e) {
+          if (attempt === 2) throw e;
+          await sleep(1500 * (attempt + 1));
+          continue;
+        }
+        if (res.status !== 429 || attempt === 2) break;
+        const retryAfter = Number(res.headers.get('retry-after') ?? 0);
+        await sleep(retryAfter > 0 ? retryAfter * 1000 : 1500 * (attempt + 1));
       }
-      if (res.status !== 429 || attempt === 2) break;
-      const retryAfter = Number(res.headers.get('retry-after') ?? 0);
-      await sleep(retryAfter > 0 ? retryAfter * 1000 : 1500 * (attempt + 1));
-    }
-    if (!res) return [];
-    if (!res.ok) {
-      const errText = await res.text().catch(() => '');
-      console.log('[Qwen OCR] error status=' + res.status + ' body=' + errText.slice(0, 300));
+
+      if (!res) return { ok: false, status: 0, text: '' };
+      if (!res.ok) {
+        const errText = await res.text().catch(() => '');
+        console.log('[Qwen OCR] error status=' + res.status + ' body=' + errText.slice(0, 300));
+        return { ok: false, status: res.status, text: errText };
+      }
+
+      const data = await res.json() as { choices?: Array<{ message?: { content?: string } }> };
+      return { ok: true, status: res.status, text: data.choices?.[0]?.message?.content ?? '' };
+    };
+
+    const exact = await callQwen(kicktraqVisionPrompt('exact'));
+    if (!exact.ok) {
       if (diagnostics) {
-        diagnostics.ocrStatus = res.status;
-        diagnostics.ocrPreview = errText.slice(0, 200);
-        diagnostics.ocrError = extractOpenAIErrorMessage(errText);
+        diagnostics.ocrStatus = exact.status;
+        diagnostics.ocrPreview = exact.text.slice(0, 200);
+        diagnostics.ocrError = extractOpenAIErrorMessage(exact.text);
       }
       return [];
     }
-    if (diagnostics) diagnostics.ocrStatus = res.status;
-    const data = await res.json() as { choices?: Array<{ message?: { content?: string } }> };
-    const text = data.choices?.[0]?.message?.content ?? '';
-    if (diagnostics) diagnostics.ocrPreview = text.slice(0, 200);
-    const rows = rowsFromOcrText(text);
+
+    if (diagnostics) diagnostics.ocrStatus = exact.status;
+    if (diagnostics) diagnostics.ocrPreview = exact.text.slice(0, 200);
+    const rows = rowsFromOcrText(exact.text);
     if (diagnostics) diagnostics.ocrRows = rows.length;
-    return usableKicktraqDays(rows, diagnostics);
+    const exactDays = usableKicktraqDays(rows, diagnostics);
+    if (exactDays.length) return exactDays;
+
+    const estimated = await callQwen(kicktraqVisionPrompt('estimate'));
+    if (!estimated.ok) {
+      if (diagnostics) {
+        diagnostics.ocrStatus = estimated.status;
+        diagnostics.ocrPreview = estimated.text.slice(0, 200);
+        diagnostics.ocrError = extractOpenAIErrorMessage(estimated.text);
+      }
+      return [];
+    }
+
+    const estimatedRows = rowsFromOcrText(estimated.text);
+    if (diagnostics) {
+      diagnostics.ocrStatus = estimated.status;
+      diagnostics.ocrPreview = estimated.text.slice(0, 200);
+      diagnostics.ocrFallbackRows = estimatedRows.length;
+      diagnostics.ocrRows = estimatedRows.length;
+    }
+    return usableKicktraqDays(estimatedRows, diagnostics);
   } catch (e) {
     console.log('[Qwen OCR] exception: ' + String(e));
     if (diagnostics) {
