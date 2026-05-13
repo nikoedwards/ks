@@ -332,6 +332,18 @@ export interface KicktraqScrapeDiagnostics {
   ocrTimeoutMs?: number;
   ocrFallbackRows?: number;
   zeroRowsRejected?: number;
+  debug?: {
+    images?: Array<{
+      kind: KicktraqChartImage['kind'];
+      url: string;
+      status: number;
+      contentType: string;
+      bytes: number;
+      dataUrl: string;
+    }>;
+    modelOutput?: string;
+    structuredRows?: KicktraqDay[];
+  };
   reason?: string;
 }
 
@@ -412,6 +424,17 @@ async function fetchKicktraqDailyImages(pageUrl: string, cookieStr: string, diag
     diagnostics.imageStatus = images.every(img => img.status === 200) ? 200 : images[0].status;
     diagnostics.imageContentType = images.map(img => `${img.kind}:${img.contentType}`).join(',');
     diagnostics.imageBytes = images.reduce((sum, img) => sum + img.bytes, 0);
+    diagnostics.debug = {
+      ...(diagnostics.debug ?? {}),
+      images: images.map(img => ({
+        kind: img.kind,
+        url: img.url,
+        status: img.status,
+        contentType: img.contentType,
+        bytes: img.bytes,
+        dataUrl: `data:${img.contentType};base64,${img.base64}`,
+      })),
+    };
   }
 
   return images;
@@ -733,11 +756,12 @@ async function scrapeKicktraqViaQwen(pageUrl: string, cookieStr: string, diagnos
 
     const result = await callQwen(kicktraqVisionPrompt('estimate'));
     if (!result.ok) {
-      if (diagnostics) {
-        diagnostics.ocrStatus = result.status;
-        diagnostics.ocrPreview = result.text.slice(0, 200);
-        diagnostics.ocrError = extractOpenAIErrorMessage(result.text);
-      }
+    if (diagnostics) {
+      diagnostics.ocrStatus = result.status;
+      diagnostics.ocrPreview = result.text.slice(0, 200);
+      diagnostics.debug = { ...(diagnostics.debug ?? {}), modelOutput: result.text };
+      diagnostics.ocrError = extractOpenAIErrorMessage(result.text);
+    }
       return [];
     }
 
@@ -745,10 +769,13 @@ async function scrapeKicktraqViaQwen(pageUrl: string, cookieStr: string, diagnos
     if (diagnostics) {
       diagnostics.ocrStatus = result.status;
       diagnostics.ocrPreview = result.text.slice(0, 200);
+      diagnostics.debug = { ...(diagnostics.debug ?? {}), modelOutput: result.text };
       diagnostics.ocrFallbackRows = estimatedRows.length;
       diagnostics.ocrRows = estimatedRows.length;
     }
-    return usableKicktraqDays(estimatedRows, diagnostics);
+    const days = usableKicktraqDays(estimatedRows, diagnostics);
+    if (diagnostics) diagnostics.debug = { ...(diagnostics.debug ?? {}), structuredRows: days };
+    return days;
   } catch (e) {
     console.log('[Qwen OCR] exception: ' + String(e));
     if (diagnostics) {

@@ -8,7 +8,7 @@ import {
 } from 'lucide-react';
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, LineChart, Line, Legend,
+  ResponsiveContainer, LineChart, Line, Legend, ReferenceLine,
 } from 'recharts';
 import DataSource from '@/components/DataSource';
 import ImagePreview from '@/components/ImagePreview';
@@ -40,6 +40,12 @@ interface Snapshot {
   captured_at: number; pledged_usd: number; backers_count: number;
   days_to_go: number; comments_count: number; updates_count: number;
   state: string; source: string;
+}
+
+interface KicktraqDebug {
+  images?: Array<{ kind: string; url: string; status: number; contentType: string; bytes: number; dataUrl: string }>;
+  modelOutput?: string;
+  structuredRows?: Array<{ date: string; pledged_usd: number; backers: number; comments?: number }>;
 }
 
 interface Reward {
@@ -98,6 +104,16 @@ function fmtDateTime(ts: number) {
   return new Date(ts * 1000).toLocaleString('en-US', {
     month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
   });
+}
+
+function daysLeftAt(deadline: number | null | undefined, capturedAt: number) {
+  if (!deadline) return null;
+  return Math.max(0, Math.ceil((deadline - capturedAt) / 86400));
+}
+
+function avg(values: number[]) {
+  const usable = values.filter(v => Number.isFinite(v));
+  return usable.length ? usable.reduce((sum, v) => sum + v, 0) / usable.length : 0;
 }
 
 function calcDuration(p: Project): number | null {
@@ -185,8 +201,7 @@ export default function ProjectDetailPage() {
   const [rewards, setRewards] = useState<Reward[]>([]);
   const [textHistory, setTextHistory] = useState<TextChange[]>([]);
 
-  // Chart range
-  const [chartRange, setChartRange] = useState<'all' | '30d' | '14d'>('all');
+  const [ktDebug, setKtDebug] = useState<KicktraqDebug | null>(null);
 
   const id = params?.id;
   const detailCopy = lang === 'cn' ? {
@@ -344,9 +359,20 @@ export default function ProjectDetailPage() {
     setKtError('');
     setKtNoData(false);
     setKtNoDataMessage('');
+    setKtDebug(null);
     try {
       const res = await fetch(`/api/kicktraq/${id}`, { method: 'POST' });
-      const data = await res.json() as { ok: boolean; noData?: boolean; days?: number; message?: string };
+      const data = await res.json() as {
+        ok: boolean;
+        noData?: boolean;
+        days?: number;
+        message?: string;
+        debug?: KicktraqDebug;
+        diagnostics?: { debug?: KicktraqDebug };
+        structuredDays?: KicktraqDebug['structuredRows'];
+      };
+      const debug = data.debug ?? data.diagnostics?.debug ?? (data.structuredDays ? { structuredRows: data.structuredDays } : null);
+      if (debug) setKtDebug(debug);
       if (data.ok) {
         loadSnapshots();
       } else if (data.noData) {
@@ -363,23 +389,30 @@ export default function ProjectDetailPage() {
 
   // ── Chart data ─────────────────────────────────────────────────────────────
 
-  const filteredSnapshots = (() => {
-    if (!snapshots.length) return [];
-    const cutoff = chartRange === '30d' ? Date.now() / 1000 - 30 * 86400
-      : chartRange === '14d' ? Date.now() / 1000 - 14 * 86400
-      : 0;
-    return snapshots.filter(s => s.captured_at >= cutoff);
-  })();
+  const filteredSnapshots = snapshots;
 
-  const chartData = filteredSnapshots.map(s => ({
+  const snapshotWithDeltas = filteredSnapshots.map((s, i, arr) => {
+    const prev = arr[i - 1];
+    return {
+      ...s,
+      daily_pledged: prev ? s.pledged_usd - prev.pledged_usd : s.pledged_usd,
+      daily_backers: prev ? s.backers_count - prev.backers_count : s.backers_count,
+      daily_comments: prev ? s.comments_count - prev.comments_count : s.comments_count,
+    };
+  });
+
+  const chartData = snapshotWithDeltas.map(s => ({
     date: fmtDate(s.captured_at, lang),
     ts: s.captured_at,
-    pledged: Math.round(s.pledged_usd),
-    backers: s.backers_count,
-    comments: s.comments_count,
-    updates: s.updates_count,
+    pledgedDaily: Math.max(0, Math.round(s.daily_pledged)),
+    backersDaily: Math.max(0, s.daily_backers),
+    commentsDaily: Math.max(0, s.daily_comments),
     source: s.source,
   }));
+
+  const avgPledgedDaily = avg(chartData.map(d => d.pledgedDaily));
+  const avgBackersDaily = avg(chartData.map(d => d.backersDaily));
+  const avgCommentsDaily = avg(chartData.map(d => d.commentsDaily));
 
   // Table data: most recent first, delta columns
   const tableData = [...filteredSnapshots].reverse().map((s, i, arr) => {
@@ -388,6 +421,8 @@ export default function ProjectDetailPage() {
       ...s,
       delta_pledged: prev ? s.pledged_usd - prev.pledged_usd : null,
       delta_backers: prev ? s.backers_count - prev.backers_count : null,
+      delta_comments: prev ? s.comments_count - prev.comments_count : null,
+      calculated_days_left: daysLeftAt(project?.deadline, s.captured_at),
     };
   });
 
@@ -655,8 +690,7 @@ export default function ProjectDetailPage() {
                         <th className="text-right px-4 py-3">{lang === 'cn' ? '累计支持者' : 'Total Backers'}</th>
                         <th className="text-right px-4 py-3">{lang === 'cn' ? '支持者增量' : 'Backer Change'}</th>
                         <th className="text-right px-4 py-3">{lang === 'cn' ? '剩余天数' : 'Days Left'}</th>
-                        <th className="text-right px-4 py-3">{lang === 'cn' ? '评论数' : 'Comments'}</th>
-                        <th className="text-right px-4 py-3">{lang === 'cn' ? '更新数' : 'Updates'}</th>
+                        <th className="text-right px-4 py-3">{lang === 'cn' ? '评论增量' : 'Comment Change'}</th>
                         <th className="text-center px-4 py-3">{lang === 'cn' ? '数据来源' : 'Source'}</th>
                       </tr>
                     </thead>
@@ -672,9 +706,10 @@ export default function ProjectDetailPage() {
                           <td className={`px-4 py-2.5 text-right font-semibold ${s.delta_backers == null ? 'text-gray-400' : s.delta_backers >= 0 ? 'text-ks-green' : 'text-red-500'}`}>
                             {s.delta_backers == null ? '—' : `${s.delta_backers >= 0 ? '+' : ''}${s.delta_backers.toLocaleString()}`}
                           </td>
-                          <td className="px-4 py-2.5 text-right text-gray-500">{s.days_to_go}</td>
-                          <td className="px-4 py-2.5 text-right text-gray-500">{s.comments_count}</td>
-                          <td className="px-4 py-2.5 text-right text-gray-500">{s.updates_count}</td>
+                          <td className="px-4 py-2.5 text-right text-gray-500">{s.calculated_days_left ?? '-'}</td>
+                          <td className={`px-4 py-2.5 text-right font-semibold ${s.delta_comments == null ? 'text-gray-400' : s.delta_comments >= 0 ? 'text-ks-green' : 'text-red-500'}`}>
+                            {s.delta_comments == null ? '—' : `${s.delta_comments >= 0 ? '+' : ''}${s.delta_comments.toLocaleString()}`}
+                          </td>
                           <td className="px-4 py-2.5 text-center">
                             <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${s.source === 'kicktraq' ? 'bg-blue-50 text-blue-600' : 'bg-ks-green-light text-ks-green-dark'}`}>
                               {s.source === 'kicktraq' ? 'KT' : 'KS'}
@@ -769,23 +804,17 @@ export default function ProjectDetailPage() {
                 {hasRealData ? tr.liveCurve : tr.simulatedCurve}
                 {!hasRealData && <span className="ml-2 text-xs font-normal text-amber-600">{tr.noRealDataYet}</span>}
               </h3>
-              {hasRealData && (
-                <div className="flex gap-2">
-                  {(['all', '30d', '14d'] as const).map(r => (
-                    <button key={r} onClick={() => setChartRange(r)}
-                      className={`px-3 py-1 rounded text-xs font-semibold ${chartRange === r ? 'bg-ks-green text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
-                      {r === 'all' ? tr.chartAll : r.toUpperCase()}
-                    </button>
-                  ))}
-                </div>
-              )}
             </div>
 
             {hasRealData && chartData.length > 1 ? (
               <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5 space-y-6">
                 {/* Pledged chart */}
                 <div>
-                  <p className="text-xs text-gray-400 font-semibold uppercase tracking-wide mb-3">{tr.amountPledgedLabel}</p>
+                  <p className="text-xs text-gray-400 font-semibold uppercase tracking-wide mb-3">
+                    {lang === 'cn'
+                      ? `每日新增金额 · 平均 ${fmtMoney(avgPledgedDaily, displayCurrency)}`
+                      : `Daily pledged change · Avg ${fmtMoney(avgPledgedDaily, displayCurrency)}`}
+                  </p>
                   <ResponsiveContainer width="100%" height={220}>
                     <AreaChart data={chartData} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
                       <defs>
@@ -797,15 +826,20 @@ export default function ProjectDetailPage() {
                       <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
                       <XAxis dataKey="date" tick={{ fontSize: 10 }} interval="preserveStartEnd" />
                       <YAxis tick={{ fontSize: 10 }} tickFormatter={v => fmtMoney(v as number, displayCurrency)} width={65} />
-                      <Tooltip formatter={(v: number) => [fmtMoney(v, displayCurrency), 'Pledged']} />
-                      <Area type="monotone" dataKey="pledged" stroke="#05CE78" strokeWidth={2} fill="url(#gPledged)" />
+                      <Tooltip formatter={(v: number) => [fmtMoney(v, displayCurrency), lang === 'cn' ? '金额增量' : 'Pledged Change']} />
+                      <ReferenceLine y={avgPledgedDaily} stroke="#64748b" strokeDasharray="5 5" label={{ value: lang === 'cn' ? '平均' : 'Avg', fontSize: 10, fill: '#64748b' }} />
+                      <Area type="monotone" dataKey="pledgedDaily" stroke="#05CE78" strokeWidth={2} fill="url(#gPledged)" />
                     </AreaChart>
                   </ResponsiveContainer>
                 </div>
 
                 {/* Backers + engagement chart */}
                 <div>
-                  <p className="text-xs text-gray-400 font-semibold uppercase tracking-wide mb-3">{tr.backersEngagement}</p>
+                  <p className="text-xs text-gray-400 font-semibold uppercase tracking-wide mb-3">
+                    {lang === 'cn'
+                      ? `每日新增 Backer / Comment · 平均 ${Math.round(avgBackersDaily).toLocaleString()} 支持者，${Math.round(avgCommentsDaily).toLocaleString()} 评论`
+                      : `Daily backers / comments · Avg ${Math.round(avgBackersDaily).toLocaleString()} backers, ${Math.round(avgCommentsDaily).toLocaleString()} comments`}
+                  </p>
                   <ResponsiveContainer width="100%" height={200}>
                     <LineChart data={chartData} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
@@ -813,9 +847,10 @@ export default function ProjectDetailPage() {
                       <YAxis tick={{ fontSize: 10 }} width={45} />
                       <Tooltip />
                       <Legend wrapperStyle={{ fontSize: 11 }} />
-                      <Line type="monotone" dataKey="backers" stroke="#6366f1" strokeWidth={2} dot={false} name="Backers" />
-                      <Line type="monotone" dataKey="comments" stroke="#f59e0b" strokeWidth={1.5} dot={false} name="Comments" />
-                      <Line type="monotone" dataKey="updates" stroke="#3b82f6" strokeWidth={1.5} dot={false} name="Updates" />
+                      <ReferenceLine y={avgBackersDaily} stroke="#6366f1" strokeDasharray="5 5" label={{ value: lang === 'cn' ? '支持者平均' : 'Backer Avg', fontSize: 10, fill: '#6366f1' }} />
+                      <ReferenceLine y={avgCommentsDaily} stroke="#f59e0b" strokeDasharray="5 5" label={{ value: lang === 'cn' ? '评论平均' : 'Comment Avg', fontSize: 10, fill: '#f59e0b' }} />
+                      <Line type="monotone" dataKey="backersDaily" stroke="#6366f1" strokeWidth={2} dot={false} name={lang === 'cn' ? '支持者增量' : 'Backer Change'} />
+                      <Line type="monotone" dataKey="commentsDaily" stroke="#f59e0b" strokeWidth={1.5} dot={false} name={lang === 'cn' ? '评论增量' : 'Comment Change'} />
                     </LineChart>
                   </ResponsiveContainer>
                 </div>
@@ -978,6 +1013,63 @@ export default function ProjectDetailPage() {
           </div>
         )}
       </div>
+
+      {ktDebug && (
+        <div className="fixed bottom-4 right-4 z-50 w-[min(620px,calc(100vw-2rem))] max-h-[78vh] overflow-hidden rounded-xl border border-gray-200 bg-white shadow-2xl">
+          <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
+            <div>
+              <h3 className="text-sm font-bold text-gray-900">{lang === 'cn' ? 'Kicktraq 导入调试' : 'Kicktraq Import Debug'}</h3>
+              <p className="text-[11px] text-gray-400">{lang === 'cn' ? '临时面板：图片、模型输出、结构化结果' : 'Temporary panel: images, model output, structured rows'}</p>
+            </div>
+            <button onClick={() => setKtDebug(null)} className="rounded-lg px-2 py-1 text-xs font-semibold text-gray-500 hover:bg-gray-100">
+              {lang === 'cn' ? '关闭' : 'Close'}
+            </button>
+          </div>
+          <div className="max-h-[68vh] space-y-4 overflow-y-auto p-4">
+            <section>
+              <h4 className="mb-2 text-xs font-bold uppercase tracking-wide text-gray-500">
+                {lang === 'cn' ? '1. 原始图片数据' : '1. Raw Image Data'}
+              </h4>
+              {ktDebug.images?.length ? (
+                <div className="space-y-3">
+                  {ktDebug.images.map((img, i) => (
+                    <div key={`${img.kind}-${i}`} className="rounded-lg border border-gray-100 bg-gray-50 p-3">
+                      <div className="mb-2 flex flex-wrap gap-2 text-[11px] text-gray-500">
+                        <span className="font-semibold text-gray-800">{img.kind}</span>
+                        <span>{img.status}</span>
+                        <span>{img.contentType}</span>
+                        <span>{img.bytes.toLocaleString()} bytes</span>
+                      </div>
+                      <img src={img.dataUrl} alt={`${img.kind} chart`} className="max-h-56 w-full rounded border border-gray-200 bg-white object-contain" />
+                      <p className="mt-2 break-all text-[10px] text-gray-400">{img.url}</p>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-400">{lang === 'cn' ? '没有捕获到图片。' : 'No images captured.'}</p>
+              )}
+            </section>
+
+            <section>
+              <h4 className="mb-2 text-xs font-bold uppercase tracking-wide text-gray-500">
+                {lang === 'cn' ? '2. 模型原始输出' : '2. Model Raw Output'}
+              </h4>
+              <pre className="max-h-56 overflow-auto rounded-lg bg-gray-950 p-3 text-[11px] leading-relaxed text-gray-100 whitespace-pre-wrap">
+                {ktDebug.modelOutput || (lang === 'cn' ? '没有捕获到模型输出。' : 'No model output captured.')}
+              </pre>
+            </section>
+
+            <section>
+              <h4 className="mb-2 text-xs font-bold uppercase tracking-wide text-gray-500">
+                {lang === 'cn' ? '3. 结构化数据' : '3. Structured Rows'}
+              </h4>
+              <pre className="max-h-56 overflow-auto rounded-lg bg-emerald-50 p-3 text-[11px] leading-relaxed text-emerald-950">
+                {JSON.stringify(ktDebug.structuredRows ?? [], null, 2)}
+              </pre>
+            </section>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

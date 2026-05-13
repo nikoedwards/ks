@@ -51,7 +51,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     }
 
     storeKicktraqDays(id, days);
-    return NextResponse.json({ ok: true, days: days.length, _v: 'ocr-v1' });
+    return NextResponse.json({ ok: true, days: days.length, diagnostics, debug: diagnostics.debug, structuredDays: days, _v: 'ocr-v1' });
   } catch (err) {
     return NextResponse.json({ ok: false, message: String(err) }, { status: 500 });
   }
