@@ -30,15 +30,19 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const { days, diagnostics } = await scrapeKicktraqDetailed(creatorSlug, projectSlug);
     if (!days.length) {
       const hasOpenAI = !!getOptionalEnv('OPENAI_API_KEY');
+      const hasQwen = !!getOptionalEnv('QWEN_API_KEY');
       const hasAnthropic = !!getOptionalEnv('ANTHROPIC_API_KEY');
-      const hasOcr = hasOpenAI || hasAnthropic;
+      const hasOcr = hasQwen || hasOpenAI || hasAnthropic;
+      const ocrHint = diagnostics.ocrStatus === 429
+        ? `${diagnostics.ocrProvider ?? 'OCR'} returned 429, which means the API key is rate-limited or has insufficient quota/billing. Check provider usage, billing, and project limits, then retry.`
+        : '';
       return NextResponse.json({
         ok: false,
         noData: true,
         _v: 'ocr-v1',
         message: hasOcr
-          ? `OCR is enabled, but no usable Daily Data rows were parsed. Diagnostics: page=${diagnostics.pageStatus ?? '-'}, json=${diagnostics.jsonStatus ?? '-'}, htmlRows=${diagnostics.htmlRows ?? 0}, image=${diagnostics.imageStatus ?? '-'} ${diagnostics.imageContentType ?? ''}, imageBytes=${diagnostics.imageBytes ?? '-'}, ocr=${diagnostics.ocrProvider ?? '-'} ${diagnostics.ocrStatus ?? '-'}, ocrRows=${diagnostics.ocrRows ?? 0}. ${diagnostics.reason ?? ''}`
-          : 'The running Railway service cannot read OPENAI_API_KEY or ANTHROPIC_API_KEY. If you already added it in Railway, redeploy or restart this same service/environment, then import again.',
+          ? `OCR is enabled, but no usable Daily Data rows were parsed. ${ocrHint} Diagnostics: page=${diagnostics.pageStatus ?? '-'}, json=${diagnostics.jsonStatus ?? '-'}, htmlRows=${diagnostics.htmlRows ?? 0}, image=${diagnostics.imageStatus ?? '-'} ${diagnostics.imageContentType ?? ''}, imageBytes=${diagnostics.imageBytes ?? '-'}, ocr=${diagnostics.ocrProvider ?? '-'} ${diagnostics.ocrStatus ?? '-'}, ocrRows=${diagnostics.ocrRows ?? 0}. ${diagnostics.ocrError ? `OCR error: ${diagnostics.ocrError}.` : ''} ${diagnostics.reason ?? ''}`
+          : 'The running Railway service cannot read QWEN_API_KEY, OPENAI_API_KEY, or ANTHROPIC_API_KEY. If you already added it in Railway, redeploy or restart this same service/environment, then import again.',
         diagnostics,
       });
     }

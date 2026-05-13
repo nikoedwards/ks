@@ -306,11 +306,25 @@ export interface KicktraqScrapeDiagnostics {
   imageStatus?: number;
   imageContentType?: string;
   imageBytes?: number;
-  ocrProvider?: 'anthropic' | 'openai';
+  ocrProvider?: 'qwen' | 'anthropic' | 'openai';
   ocrStatus?: number;
   ocrRows?: number;
   ocrPreview?: string;
+  ocrError?: string;
   reason?: string;
+}
+
+function sleep(ms: number) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function extractOpenAIErrorMessage(raw: string): string {
+  try {
+    const parsed = JSON.parse(raw) as { error?: { message?: string; type?: string; code?: string } };
+    return [parsed.error?.message, parsed.error?.type, parsed.error?.code].filter(Boolean).join(' | ');
+  } catch {
+    return raw.slice(0, 200);
+  }
 }
 
 function parseDailyChartJson(json: DailyChartJson): KicktraqDay[] | null {
@@ -412,14 +426,19 @@ export async function scrapeKicktraqDetailed(creatorSlug: string, projectSlug: s
   diagnostics.htmlRows = htmlDays.length;
   if (htmlDays.length) return { days: htmlDays, diagnostics };
 
-  // Step 4: OCR the dailychart.png via Claude/OpenAI Vision.
-  if (getOptionalEnv('ANTHROPIC_API_KEY')) {
-    const ocrDays = await scrapeKicktraqViaOCR(pageUrl, cookieStr, diagnostics);
+  // Step 4: OCR the dailychart.png via vision models.
+  if (getOptionalEnv('QWEN_API_KEY')) {
+    const ocrDays = await scrapeKicktraqViaQwen(pageUrl, cookieStr, diagnostics);
     if (ocrDays.length) return { days: ocrDays, diagnostics };
   }
 
   if (getOptionalEnv('OPENAI_API_KEY')) {
     const ocrDays = await scrapeKicktraqViaOpenAI(pageUrl, cookieStr, diagnostics);
+    if (ocrDays.length) return { days: ocrDays, diagnostics };
+  }
+
+  if (getOptionalEnv('ANTHROPIC_API_KEY')) {
+    const ocrDays = await scrapeKicktraqViaOCR(pageUrl, cookieStr, diagnostics);
     if (ocrDays.length) return { days: ocrDays, diagnostics };
   }
 
@@ -535,6 +554,103 @@ async function scrapeKicktraqViaOCR(pageUrl: string, cookieStr: string, diagnost
   }
 }
 
+async function scrapeKicktraqViaQwen(pageUrl: string, cookieStr: string, diagnostics?: KicktraqScrapeDiagnostics): Promise<KicktraqDay[]> {
+  const imgUrl = pageUrl + 'dailychart.png';
+  const qwenKey = getOptionalEnv('QWEN_API_KEY');
+  const qwenModel = getOptionalEnv('QWEN_VISION_MODEL') || 'qwen-vl-plus';
+  if (diagnostics) diagnostics.ocrProvider = 'qwen';
+
+  try {
+    const imgRes = await fetch(imgUrl, {
+      headers: {
+        'Referer': pageUrl,
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'image/png,image/*,*/*',
+        ...(cookieStr ? { 'Cookie': cookieStr } : {}),
+      },
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (diagnostics) {
+      diagnostics.imageStatus = imgRes.status;
+      diagnostics.imageContentType = imgRes.headers.get('content-type') ?? '';
+    }
+    if (!imgRes.ok) return [];
+    const contentType = imgRes.headers.get('content-type') ?? '';
+    if (!contentType.includes('image')) return [];
+
+    const imgBuffer = await imgRes.arrayBuffer();
+    if (diagnostics) diagnostics.imageBytes = imgBuffer.byteLength;
+    const base64 = Buffer.from(imgBuffer).toString('base64');
+    const prompt = 'This is the Kicktraq Daily Data tab image for a Kickstarter project. It contains up to three separate bar charts: Pledges Per Day, Backers Per Day, and Comments Per Day. ' +
+      'Extract the per-day values from the vertical labels on each bar. Do NOT extract the Funding Progress cumulative line chart. ' +
+      'Use the x-axis MM-DD labels to assign dates to bars. Infer missing dates between visible tick labels sequentially and infer the year from the copyright/header context. ' +
+      'Normalize money labels such as $6.7m, $469k, $20,249 into numeric USD amounts. ' +
+      'Return ONLY a JSON array. Each item must be {"date":"YYYY-MM-DD","pledged_usd":number,"backers":number,"comments":number}. ' +
+      'If one chart is missing or unreadable for a date, use 0 for that field.';
+
+    const body = JSON.stringify({
+      model: qwenModel,
+      temperature: 0,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'text', text: prompt },
+          { type: 'image_url', image_url: { url: `data:image/png;base64,${base64}` } },
+        ],
+      }],
+    });
+
+    let res: Response | null = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      res = await fetch('https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${qwenKey}`,
+        },
+        body,
+        signal: AbortSignal.timeout(60_000),
+      });
+      if (res.status !== 429 || attempt === 2) break;
+      const retryAfter = Number(res.headers.get('retry-after') ?? 0);
+      await sleep(retryAfter > 0 ? retryAfter * 1000 : 1500 * (attempt + 1));
+    }
+    if (!res) return [];
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '');
+      console.log('[Qwen OCR] error status=' + res.status + ' body=' + errText.slice(0, 300));
+      if (diagnostics) {
+        diagnostics.ocrStatus = res.status;
+        diagnostics.ocrPreview = errText.slice(0, 200);
+        diagnostics.ocrError = extractOpenAIErrorMessage(errText);
+      }
+      return [];
+    }
+    if (diagnostics) diagnostics.ocrStatus = res.status;
+    const data = await res.json() as { choices?: Array<{ message?: { content?: string } }> };
+    const text = data.choices?.[0]?.message?.content ?? '';
+    if (diagnostics) diagnostics.ocrPreview = text.slice(0, 200);
+    const jsonMatch = text.match(/\[[\s\S]*\]/);
+    if (!jsonMatch) {
+      if (diagnostics) diagnostics.ocrRows = 0;
+      return [];
+    }
+    const rows = JSON.parse(jsonMatch[0]) as Array<{ date?: string; pledged_usd?: number; backers?: number; comments?: number }>;
+    if (diagnostics) diagnostics.ocrRows = rows.length;
+    return rows
+      .filter(r => r.date)
+      .map(r => ({
+        date: normalizeDate(r.date!),
+        pledged_usd: r.pledged_usd ?? 0,
+        backers: r.backers ?? 0,
+        comments: r.comments,
+      }));
+  } catch (e) {
+    console.log('[Qwen OCR] exception: ' + String(e));
+    return [];
+  }
+}
+
 async function scrapeKicktraqViaOpenAI(pageUrl: string, cookieStr: string, diagnostics?: KicktraqScrapeDiagnostics): Promise<KicktraqDay[]> {
   const imgUrl = pageUrl + 'dailychart.png';
   const openAIKey = getOptionalEnv('OPENAI_API_KEY');
@@ -569,31 +685,41 @@ async function scrapeKicktraqViaOpenAI(pageUrl: string, cookieStr: string, diagn
       'Return ONLY a JSON array. Each item must be {"date":"YYYY-MM-DD","pledged_usd":number,"backers":number,"comments":number}. ' +
       'If one chart is missing or unreadable for a date, use 0 for that field.';
 
-    const res = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${openAIKey}`,
-      },
-      body: JSON.stringify({
-        model: openAIModel,
-        temperature: 0,
-        messages: [{
-          role: 'user',
-          content: [
-            { type: 'text', text: prompt },
-            { type: 'image_url', image_url: { url: `data:image/png;base64,${base64}` } },
-          ],
-        }],
-      }),
-      signal: AbortSignal.timeout(60_000),
+    const body = JSON.stringify({
+      model: openAIModel,
+      temperature: 0,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'text', text: prompt },
+          { type: 'image_url', image_url: { url: `data:image/png;base64,${base64}` } },
+        ],
+      }],
     });
+
+    let res: Response | null = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      res = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${openAIKey}`,
+        },
+        body,
+        signal: AbortSignal.timeout(60_000),
+      });
+      if (res.status !== 429 || attempt === 2) break;
+      const retryAfter = Number(res.headers.get('retry-after') ?? 0);
+      await sleep(retryAfter > 0 ? retryAfter * 1000 : 1500 * (attempt + 1));
+    }
+    if (!res) return [];
     if (!res.ok) {
       const errText = await res.text().catch(() => '');
       console.log('[OpenAI OCR] error status=' + res.status + ' body=' + errText.slice(0, 300));
       if (diagnostics) {
         diagnostics.ocrStatus = res.status;
         diagnostics.ocrPreview = errText.slice(0, 200);
+        diagnostics.ocrError = extractOpenAIErrorMessage(errText);
       }
       return [];
     }
