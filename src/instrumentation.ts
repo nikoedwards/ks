@@ -4,47 +4,47 @@ import { getSyncState } from './lib/syncState';
 import { getLastSync } from './lib/db';
 import { initTracker } from './lib/tracker';
 
+async function checkWebrobotsDataset(reason: string) {
+  const lastSync = await getLastSync() as { url?: string; status?: string } | null;
+  const latestUrl = await getLatestDatasetUrl();
+  const alreadySynced = lastSync?.status === 'completed' && lastSync?.url === latestUrl;
+
+  if (alreadySynced) {
+    console.log(`[Kicksonar] webrobots dataset is up to date during ${reason}, skipping sync.`);
+    return;
+  }
+
+  const state = getSyncState();
+  if (state.status === 'running') return;
+  console.log(`[Kicksonar] New webrobots dataset detected during ${reason}: ${latestUrl.split('/').pop()}, starting sync...`);
+  runSync().catch(e => console.error(`[Kicksonar] Auto-sync from ${reason} failed:`, e));
+}
+
 export async function register() {
   if (process.env.NEXT_RUNTIME === 'nodejs') {
-    // ── Start background tracker immediately on server boot ──────────────────
+    // Start background tracker immediately on server boot.
     initTracker();
     console.log('[Kicksonar] Background tracker initialized');
 
-    // ── Monthly webrobots sync: 15th of each month at 3:00 AM ───────────────
-    cron.schedule('0 3 15 * *', async () => {
-      const state = getSyncState();
-      if (state.status === 'running') return;
-      console.log('[Kicksonar] Running scheduled monthly webrobots sync...');
+    // Check for a new webrobots dataset every day. Actual imports only run when
+    // the latest dataset URL differs from the last completed sync.
+    cron.schedule('0 4 * * *', async () => {
       try {
-        await runSync();
-        console.log('[Kicksonar] Scheduled sync completed.');
+        await checkWebrobotsDataset('daily check');
       } catch (e) {
-        console.error('[Kicksonar] Scheduled sync failed:', e);
+        console.error('[Kicksonar] Daily webrobots dataset check failed:', e);
       }
     });
 
-    // ── On startup: check if a newer webrobots dataset is available ──────────
-    // Runs 30s after boot to avoid blocking startup
+    // Runs 30s after boot to avoid blocking startup.
     setTimeout(async () => {
       try {
-        const lastSync = await getLastSync() as { url?: string; status?: string } | null;
-        const latestUrl = await getLatestDatasetUrl();
-
-        const alreadySynced = lastSync?.status === 'completed' && lastSync?.url === latestUrl;
-        if (!alreadySynced) {
-          const state = getSyncState();
-          if (state.status !== 'running') {
-            console.log(`[Kicksonar] New webrobots dataset detected: ${latestUrl.split('/').pop()}, starting sync...`);
-            runSync().catch(e => console.error('[Kicksonar] Auto-sync on startup failed:', e));
-          }
-        } else {
-          console.log('[Kicksonar] webrobots dataset is up to date, skipping auto-sync.');
-        }
+        await checkWebrobotsDataset('startup');
       } catch (e) {
         console.error('[Kicksonar] Startup dataset check failed:', e);
       }
     }, 30_000);
 
-    console.log('[Kicksonar] Cron jobs registered (monthly sync on 15th at 3:00 AM)');
+    console.log('[Kicksonar] Cron jobs registered (daily webrobots check at 4:00 AM)');
   }
 }

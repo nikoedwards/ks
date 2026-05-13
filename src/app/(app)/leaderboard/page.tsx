@@ -2,7 +2,19 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { ArrowUpRight, Calendar, DollarSign, Filter, Medal, Users } from 'lucide-react';
+import {
+  ArrowUpRight,
+  Calendar,
+  ChevronLeft,
+  ChevronRight,
+  Copy,
+  Download,
+  DollarSign,
+  Filter,
+  Image as ImageIcon,
+  Share2,
+  Users,
+} from 'lucide-react';
 import { useLanguage } from '@/hooks/useLanguage';
 
 interface LeaderboardProject {
@@ -40,6 +52,10 @@ interface LeaderboardData {
   };
 }
 
+type Metric = 'pledged' | 'backers';
+
+const PAGE_SIZE = 20;
+
 function fmtUsd(value: number) {
   const v = Number(value ?? 0);
   if (v >= 1_000_000_000) return `$${(v / 1_000_000_000).toFixed(2)}B`;
@@ -52,11 +68,12 @@ function fmtNum(value: number) {
   return Number(value ?? 0).toLocaleString();
 }
 
-function yearStart(yearsAgo = 3) {
-  const d = new Date();
-  d.setFullYear(d.getFullYear() - yearsAgo);
-  d.setHours(0, 0, 0, 0);
-  return d.toISOString().slice(0, 10);
+function currentYear() {
+  return new Date().getFullYear();
+}
+
+function yearRange(year: number) {
+  return { from: `${year}-01-01`, to: `${year}-12-31` };
 }
 
 function toTs(date: string, end = false) {
@@ -71,68 +88,56 @@ function Thumb({ project }: { project: LeaderboardProject }) {
   return <div className="h-full w-full bg-gray-100" />;
 }
 
-function RankBadge({ rank }: { rank: number }) {
-  const cls = rank === 1 ? 'bg-amber-400 text-white' : rank === 2 ? 'bg-slate-300 text-white' : rank === 3 ? 'bg-orange-400 text-white' : 'bg-gray-100 text-gray-500';
-  return <span className={`flex h-8 min-w-8 items-center justify-center rounded-full px-2 text-sm font-black ${cls}`}>{rank}</span>;
-}
-
-function RankingList({ title, icon, projects, metric, cn }: {
-  title: string;
-  icon: React.ReactNode;
-  projects: LeaderboardProject[];
-  metric: 'pledged' | 'backers';
-  cn: boolean;
-}) {
-  return (
-    <section className="space-y-3">
-      <div className="flex items-center gap-2">
-        {icon}
-        <h2 className="font-bold text-gray-900">{title}</h2>
-      </div>
-      <div className="overflow-hidden rounded-lg border border-gray-100 bg-white shadow-sm">
-        {projects.map((project, index) => (
-          <Link key={project.id} href={`/projects/${project.id}`}
-            className={`group flex items-center gap-4 border-b border-gray-50 p-3 transition-colors hover:bg-gray-50 ${index < 3 ? 'bg-amber-50/30' : ''}`}>
-            <RankBadge rank={index + 1} />
-            <div className="h-16 w-24 shrink-0 overflow-hidden rounded-md bg-gray-100">
-              <Thumb project={project} />
-            </div>
-            <div className="min-w-0 flex-1">
-              <div className="flex items-start justify-between gap-3">
-                <h3 className="line-clamp-2 text-sm font-semibold text-gray-900 group-hover:text-ks-green">{project.name}</h3>
-                <ArrowUpRight className="h-4 w-4 shrink-0 text-gray-300 group-hover:text-ks-green" />
-              </div>
-              <p className="mt-1 truncate text-xs text-gray-400">
-                {project.category_parent ?? 'Uncategorized'} / {project.category_name ?? '-'} / {project.country ?? '--'}
-              </p>
-              <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
-                <span className="rounded-md bg-ks-green-light px-2 py-1 font-bold text-ks-green-dark">{fmtUsd(project.pledged_usd)}</span>
-                <span className="rounded-md bg-blue-50 px-2 py-1 font-semibold text-blue-600">{fmtNum(project.backers_count)} {cn ? '支持者' : 'backers'}</span>
-                <span className="text-gray-400">{Number(project.funded_pct ?? 0).toFixed(0)}% {cn ? '完成' : 'funded'}</span>
-              </div>
-            </div>
-            <div className="w-28 shrink-0 text-right">
-              <p className="text-lg font-black tabular-nums text-gray-900">
-                {metric === 'pledged' ? fmtUsd(project.pledged_usd) : fmtNum(project.backers_count)}
-              </p>
-              <p className="text-[11px] text-gray-400">{metric === 'pledged' ? (cn ? '总金额' : 'pledged') : (cn ? '支持者' : 'backers')}</p>
-            </div>
-          </Link>
-        ))}
-      </div>
-    </section>
-  );
+function rankClass(rank: number) {
+  if (rank === 1) return 'bg-amber-400 text-white';
+  if (rank === 2) return 'bg-slate-300 text-white';
+  if (rank === 3) return 'bg-orange-400 text-white';
+  return 'bg-gray-100 text-gray-500';
 }
 
 export default function LeaderboardPage() {
   const [lang] = useLanguage();
   const cn = lang === 'cn';
-  const [dateFrom, setDateFrom] = useState(yearStart(3));
-  const [dateTo, setDateTo] = useState(new Date().toISOString().slice(0, 10));
+  const yearNow = currentYear();
+  const defaultRange = yearRange(yearNow);
+  const [dateFrom, setDateFrom] = useState(defaultRange.from);
+  const [dateTo, setDateTo] = useState(defaultRange.to);
+  const [activeYear, setActiveYear] = useState<number | 'custom'>(yearNow);
   const [categoryParent, setCategoryParent] = useState('');
   const [categoryName, setCategoryName] = useState('');
+  const [metric, setMetric] = useState<Metric>('pledged');
+  const [page, setPage] = useState(1);
   const [data, setData] = useState<LeaderboardData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [initialized, setInitialized] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
+  const [shareImage, setShareImage] = useState('');
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const metricParam = params.get('metric');
+    const yearParam = params.get('year');
+    if (metricParam === 'backers') setMetric('backers');
+    if (yearParam && /^\d{4}$/.test(yearParam)) {
+      const y = Number(yearParam);
+      const range = yearRange(y);
+      setActiveYear(y);
+      setDateFrom(range.from);
+      setDateTo(range.to);
+    } else {
+      const from = params.get('from');
+      const to = params.get('to');
+      if (from && to) {
+        setActiveYear('custom');
+        setDateFrom(from);
+        setDateTo(to);
+      }
+    }
+    setCategoryParent(params.get('categoryParent') ?? '');
+    setCategoryName(params.get('categoryName') ?? '');
+    setInitialized(true);
+  }, []);
 
   const parentOptions = useMemo(() => {
     const parents = new Map<string, number>();
@@ -144,10 +149,16 @@ export default function LeaderboardPage() {
     return (data?.categories ?? []).filter(c => !categoryParent || c.category_parent === categoryParent);
   }, [data, categoryParent]);
 
+  const projects = metric === 'pledged' ? data?.byPledged ?? [] : data?.byBackers ?? [];
+  const totalPages = Math.max(1, Math.ceil(projects.length / PAGE_SIZE));
+  const pageProjects = projects.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  const title = cn ? `${activeYear === 'custom' ? '自定义区间' : `${activeYear}年`} Kickstarter TOP100 项目榜单` : `${activeYear === 'custom' ? 'Custom Range' : activeYear} Kickstarter Top 100`;
+
   const load = async () => {
     setLoading(true);
+    setPage(1);
     const params = new URLSearchParams({
-      limit: '25',
+      limit: '100',
       ...(toTs(dateFrom) ? { dateFrom: String(toTs(dateFrom)) } : {}),
       ...(toTs(dateTo, true) ? { dateTo: String(toTs(dateTo, true)) } : {}),
       ...(categoryParent ? { categoryParent } : {}),
@@ -159,8 +170,108 @@ export default function LeaderboardPage() {
     setLoading(false);
   };
 
-  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => { setCategoryName(''); }, [categoryParent]);
+  useEffect(() => {
+    if (initialized) load();
+  }, [initialized, dateFrom, dateTo, categoryParent, categoryName]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const applyYear = (year: number) => {
+    const range = yearRange(year);
+    setActiveYear(year);
+    setDateFrom(range.from);
+    setDateTo(range.to);
+  };
+
+  const shareUrl = () => {
+    const url = new URL(window.location.href);
+    url.pathname = '/leaderboard';
+    url.search = '';
+    if (activeYear !== 'custom') url.searchParams.set('year', String(activeYear));
+    else {
+      url.searchParams.set('from', dateFrom);
+      url.searchParams.set('to', dateTo);
+    }
+    url.searchParams.set('metric', metric);
+    if (categoryParent) url.searchParams.set('categoryParent', categoryParent);
+    if (categoryName) url.searchParams.set('categoryName', categoryName);
+    return url.toString();
+  };
+
+  const copyShareLink = async () => {
+    await navigator.clipboard?.writeText(shareUrl());
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1500);
+  };
+
+  const generateShareImage = () => {
+    const rows = projects.slice(0, 20);
+    const canvas = document.createElement('canvas');
+    canvas.width = 1080;
+    canvas.height = 1540;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    ctx.fillStyle = '#51d88a';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#d9ff92';
+    ctx.beginPath();
+    ctx.arc(950, 80, 170, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = '#09351f';
+    ctx.font = '700 34px Arial, sans-serif';
+    ctx.fillText('Kicksonar x Kickstarter', 64, 78);
+    ctx.font = '900 82px Arial, sans-serif';
+    ctx.fillText(activeYear === 'custom' ? 'CUSTOM' : `${activeYear}`, 64, 190);
+    ctx.font = '900 76px Arial, sans-serif';
+    ctx.fillText(cn ? '海外众筹 TOP100 项目榜单' : 'GLOBAL CROWDFUNDING TOP100', 64, 285);
+    ctx.fillStyle = '#0f3f29';
+    ctx.fillRect(64, 330, 720, 82);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '800 40px Arial, sans-serif';
+    ctx.fillText(metric === 'pledged' ? (cn ? '按众筹总金额排序' : 'Ranked by Pledged Amount') : (cn ? '按支持者数量排序' : 'Ranked by Backers'), 96, 383);
+
+    ctx.fillStyle = '#f3fff4';
+    ctx.strokeStyle = '#baff82';
+    ctx.lineWidth = 6;
+    const tableX = 54;
+    const tableY = 470;
+    const tableW = 972;
+    const rowH = 46;
+    ctx.beginPath();
+    ctx.roundRect(tableX, tableY, tableW, rowH * 21 + 70, 18);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = '#dff7df';
+    ctx.fillRect(tableX + 10, tableY + 14, tableW - 20, 58);
+    ctx.fillStyle = '#0f2f20';
+    ctx.font = '700 24px Arial, sans-serif';
+    ctx.fillText(cn ? '序号' : '#', 82, tableY + 52);
+    ctx.fillText(cn ? '产品' : 'Project', 175, tableY + 52);
+    ctx.fillText(cn ? '金额' : 'Pledged', 720, tableY + 52);
+    ctx.fillText(cn ? '支持者' : 'Backers', 865, tableY + 52);
+
+    rows.forEach((project, i) => {
+      const y = tableY + 98 + i * rowH;
+      ctx.fillStyle = i % 2 === 0 ? '#ffffff' : '#f5fbf3';
+      ctx.fillRect(tableX + 10, y - 30, tableW - 20, rowH);
+      ctx.fillStyle = '#0f2f20';
+      ctx.font = '500 22px Arial, sans-serif';
+      ctx.fillText(String(i + 1), 92, y);
+      const name = project.name.length > 32 ? `${project.name.slice(0, 31)}...` : project.name;
+      ctx.fillText(name, 175, y);
+      ctx.textAlign = 'right';
+      ctx.fillText(fmtUsd(project.pledged_usd), 805, y);
+      ctx.fillText(fmtNum(project.backers_count), 985, y);
+      ctx.textAlign = 'left';
+    });
+
+    ctx.fillStyle = '#0f2f20';
+    ctx.font = '700 24px Arial, sans-serif';
+    ctx.fillText(cn ? '注：金额已统一换算为美元，包含全球 Kickstarter 公开项目。' : 'Note: Amounts are normalized to USD for public Kickstarter projects.', 64, 1480);
+    setShareImage(canvas.toDataURL('image/png'));
+    setShareOpen(true);
+  };
 
   return (
     <div className="mx-auto max-w-7xl space-y-5">
@@ -168,71 +279,195 @@ export default function LeaderboardPage() {
         <div>
           <h1 className="text-2xl font-bold text-gray-900">{cn ? '排行榜' : 'Leaderboard'}</h1>
           <p className="mt-1 text-sm text-gray-500">
-            {cn ? '按统一美元金额和支持者数量查看 Kickstarter 项目排名。' : 'Rank Kickstarter projects by normalized USD pledged and backer count.'}
+            {cn ? '按单年、类目和统一美元金额查看 Kickstarter TOP100 项目。' : 'Rank Kickstarter projects by year, category, normalized USD pledged, and backers.'}
           </p>
         </div>
-        <button onClick={load} className="rounded-lg bg-ks-green px-4 py-2 text-sm font-semibold text-white hover:bg-ks-green-dark">
-          {cn ? '应用筛选' : 'Apply Filters'}
-        </button>
-      </div>
-
-      <div className="grid grid-cols-1 gap-3 rounded-lg border border-gray-100 bg-white p-4 shadow-sm lg:grid-cols-4">
-        <label className="space-y-1">
-          <span className="flex items-center gap-1 text-xs font-semibold text-gray-400"><Calendar className="h-3.5 w-3.5" />{cn ? '开始日期' : 'From'}</span>
-          <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm" />
-        </label>
-        <label className="space-y-1">
-          <span className="flex items-center gap-1 text-xs font-semibold text-gray-400"><Calendar className="h-3.5 w-3.5" />{cn ? '结束日期' : 'To'}</span>
-          <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm" />
-        </label>
-        <label className="space-y-1">
-          <span className="flex items-center gap-1 text-xs font-semibold text-gray-400"><Filter className="h-3.5 w-3.5" />{cn ? '大类' : 'Parent Category'}</span>
-          <select value={categoryParent} onChange={e => setCategoryParent(e.target.value)} className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm">
-            <option value="">{cn ? '全部大类' : 'All parent categories'}</option>
-            {parentOptions.map(([parent, total]) => <option key={parent} value={parent}>{parent} ({total})</option>)}
-          </select>
-        </label>
-        <label className="space-y-1">
-          <span className="flex items-center gap-1 text-xs font-semibold text-gray-400"><Filter className="h-3.5 w-3.5" />{cn ? '二级类目' : 'Subcategory'}</span>
-          <select value={categoryName} onChange={e => setCategoryName(e.target.value)} className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm">
-            <option value="">{cn ? '全部二级类目' : 'All subcategories'}</option>
-            {childOptions.map(c => <option key={`${c.category_parent}-${c.category_name}`} value={c.category_name ?? ''}>{c.category_name ?? '-'} ({c.total})</option>)}
-          </select>
-        </label>
-      </div>
-
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-        <div className="rounded-lg border border-gray-100 bg-white p-4 shadow-sm">
-          <p className="text-xs font-semibold uppercase text-gray-400">{cn ? '项目数' : 'Projects'}</p>
-          <p className="mt-2 text-2xl font-black text-gray-900">{fmtNum(data?.summary?.total_projects ?? 0)}</p>
-        </div>
-        <div className="rounded-lg border border-gray-100 bg-white p-4 shadow-sm">
-          <p className="text-xs font-semibold uppercase text-gray-400">{cn ? '总筹资额' : 'Total pledged'}</p>
-          <p className="mt-2 text-2xl font-black text-ks-green">{fmtUsd(data?.summary?.total_pledged_usd ?? 0)}</p>
-        </div>
-        <div className="rounded-lg border border-gray-100 bg-white p-4 shadow-sm">
-          <p className="text-xs font-semibold uppercase text-gray-400">{cn ? '总支持者' : 'Total backers'}</p>
-          <p className="mt-2 text-2xl font-black text-blue-600">{fmtNum(data?.summary?.total_backers ?? 0)}</p>
+        <div className="flex flex-wrap gap-2">
+          <button onClick={copyShareLink} className="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-600 hover:bg-gray-50">
+            <Copy className="h-4 w-4" />{copied ? (cn ? '已复制' : 'Copied') : (cn ? '复制链接' : 'Copy Link')}
+          </button>
+          <button onClick={generateShareImage} className="inline-flex items-center gap-2 rounded-lg bg-ks-green px-3 py-2 text-sm font-semibold text-white hover:bg-ks-green-dark">
+            <Share2 className="h-4 w-4" />{cn ? '生成分享图' : 'Share Image'}
+          </button>
         </div>
       </div>
 
-      {loading ? (
-        <div className="rounded-lg border border-gray-100 bg-white p-12 text-center text-gray-400">{cn ? '加载中...' : 'Loading...'}</div>
-      ) : (
-        <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
-          <RankingList cn={cn} title={cn ? '众筹总金额榜' : 'Top Pledged'} icon={<DollarSign className="h-5 w-5 text-ks-green" />} projects={data?.byPledged ?? []} metric="pledged" />
-          <RankingList cn={cn} title={cn ? '支持者数量榜' : 'Top Backers'} icon={<Users className="h-5 w-5 text-blue-600" />} projects={data?.byBackers ?? []} metric="backers" />
+      <div className="rounded-lg border border-gray-100 bg-white p-4 shadow-sm">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap gap-2">
+            {[yearNow, yearNow - 1, yearNow - 2].map(year => (
+              <button
+                key={year}
+                onClick={() => applyYear(year)}
+                className={`rounded-full px-5 py-2 text-sm font-black transition-colors ${
+                  activeYear === year ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                }`}
+              >
+                {year}
+              </button>
+            ))}
+            <button
+              onClick={() => setActiveYear('custom')}
+              className={`rounded-full px-4 py-2 text-sm font-semibold transition-colors ${
+                activeYear === 'custom' ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
+              }`}
+            >
+              {cn ? '自定义' : 'Custom'}
+            </button>
+          </div>
+          <button onClick={load} className="rounded-lg bg-ks-green px-4 py-2 text-sm font-semibold text-white hover:bg-ks-green-dark">
+            {cn ? '应用筛选' : 'Apply'}
+          </button>
+        </div>
+
+        <div className="mt-4 grid grid-cols-1 gap-3 text-sm lg:grid-cols-4">
+          <label className="space-y-1">
+            <span className="flex items-center gap-1 text-xs font-semibold text-gray-400"><Calendar className="h-3.5 w-3.5" />{cn ? '开始日期' : 'From'}</span>
+            <input type="date" value={dateFrom} onChange={e => { setActiveYear('custom'); setDateFrom(e.target.value); }} className="w-full rounded-md border border-gray-200 bg-gray-50 px-3 py-2" />
+          </label>
+          <label className="space-y-1">
+            <span className="flex items-center gap-1 text-xs font-semibold text-gray-400"><Calendar className="h-3.5 w-3.5" />{cn ? '结束日期' : 'To'}</span>
+            <input type="date" value={dateTo} onChange={e => { setActiveYear('custom'); setDateTo(e.target.value); }} className="w-full rounded-md border border-gray-200 bg-gray-50 px-3 py-2" />
+          </label>
+          <label className="space-y-1">
+            <span className="flex items-center gap-1 text-xs font-semibold text-gray-400"><Filter className="h-3.5 w-3.5" />{cn ? '大类' : 'Parent Category'}</span>
+            <select value={categoryParent} onChange={e => { setCategoryParent(e.target.value); setCategoryName(''); }} className="w-full rounded-md border border-gray-200 bg-gray-50 px-3 py-2">
+              <option value="">{cn ? '全部大类' : 'All parent categories'}</option>
+              {parentOptions.map(([parent, total]) => <option key={parent} value={parent}>{parent} ({total})</option>)}
+            </select>
+          </label>
+          <label className="space-y-1">
+            <span className="flex items-center gap-1 text-xs font-semibold text-gray-400"><Filter className="h-3.5 w-3.5" />{cn ? '二级类目' : 'Subcategory'}</span>
+            <select value={categoryName} onChange={e => setCategoryName(e.target.value)} className="w-full rounded-md border border-gray-200 bg-gray-50 px-3 py-2">
+              <option value="">{cn ? '全部二级类目' : 'All subcategories'}</option>
+              {childOptions.map(c => <option key={`${c.category_parent}-${c.category_name}`} value={c.category_name ?? ''}>{c.category_name ?? '-'} ({c.total})</option>)}
+            </select>
+          </label>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-3 gap-3">
+        <div className="rounded-lg bg-white p-4 shadow-sm">
+          <p className="text-xs font-semibold text-gray-400">{cn ? '项目数' : 'Projects'}</p>
+          <p className="mt-1 text-2xl font-black text-gray-900">{fmtNum(data?.summary?.total_projects ?? 0)}</p>
+        </div>
+        <div className="rounded-lg bg-white p-4 shadow-sm">
+          <p className="text-xs font-semibold text-gray-400">{cn ? '总筹资额' : 'Total pledged'}</p>
+          <p className="mt-1 text-2xl font-black text-ks-green">{fmtUsd(data?.summary?.total_pledged_usd ?? 0)}</p>
+        </div>
+        <div className="rounded-lg bg-white p-4 shadow-sm">
+          <p className="text-xs font-semibold text-gray-400">{cn ? '总支持者' : 'Total backers'}</p>
+          <p className="mt-1 text-2xl font-black text-blue-600">{fmtNum(data?.summary?.total_backers ?? 0)}</p>
+        </div>
+      </div>
+
+      <section className="overflow-hidden rounded-lg border border-gray-100 bg-white shadow-sm">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-100 px-5 py-4">
+          <div>
+            <h2 className="text-lg font-black text-gray-900">{title}</h2>
+            <p className="text-xs text-gray-400">{cn ? '最多显示前 100 名，每页 20 个项目。' : 'Up to 100 projects, 20 per page.'}</p>
+          </div>
+          <div className="flex rounded-lg bg-gray-100 p-1">
+            <button onClick={() => { setMetric('pledged'); setPage(1); }} className={`inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-sm font-bold ${metric === 'pledged' ? 'bg-white text-ks-green shadow-sm' : 'text-gray-500'}`}>
+              <DollarSign className="h-4 w-4" />{cn ? '总金额' : 'Pledged'}
+            </button>
+            <button onClick={() => { setMetric('backers'); setPage(1); }} className={`inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-sm font-bold ${metric === 'backers' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500'}`}>
+              <Users className="h-4 w-4" />{cn ? '支持者' : 'Backers'}
+            </button>
+          </div>
+        </div>
+
+        {loading ? (
+          <div className="p-12 text-center text-gray-400">{cn ? '加载中...' : 'Loading...'}</div>
+        ) : (
+          <div className="divide-y divide-gray-50">
+            {pageProjects.map((project, index) => {
+              const rank = (page - 1) * PAGE_SIZE + index + 1;
+              return (
+                <Link key={project.id} href={`/projects/${project.id}`} className={`group grid grid-cols-[44px_88px_1fr_auto] items-center gap-4 px-5 py-4 transition-colors hover:bg-gray-50 ${rank <= 3 ? 'bg-amber-50/30' : ''}`}>
+                  <span className={`flex h-9 min-w-9 items-center justify-center rounded-full px-2 text-sm font-black ${rankClass(rank)}`}>{rank}</span>
+                  <span className="h-16 w-24 overflow-hidden rounded-md bg-gray-100">
+                    <Thumb project={project} />
+                  </span>
+                  <span className="min-w-0">
+                    <span className="flex items-start gap-2">
+                      <span className="line-clamp-2 text-sm font-bold text-gray-900 group-hover:text-ks-green">{project.name}</span>
+                      <ArrowUpRight className="mt-0.5 h-4 w-4 shrink-0 text-gray-300 group-hover:text-ks-green" />
+                    </span>
+                    <span className="mt-1 block truncate text-xs text-gray-400">
+                      {project.category_parent ?? 'Uncategorized'} / {project.category_name ?? '-'} / {project.country ?? '--'}
+                    </span>
+                    <span className="mt-2 flex flex-wrap gap-2 text-xs">
+                      <span className="rounded-md bg-ks-green-light px-2 py-1 font-bold text-ks-green-dark">{fmtUsd(project.pledged_usd)}</span>
+                      <span className="rounded-md bg-blue-50 px-2 py-1 font-semibold text-blue-600">{fmtNum(project.backers_count)} {cn ? '支持者' : 'backers'}</span>
+                      <span className="py-1 text-gray-400">{Number(project.funded_pct ?? 0).toFixed(0)}% {cn ? '完成' : 'funded'}</span>
+                    </span>
+                  </span>
+                  <span className="w-28 text-right">
+                    <span className="block text-xl font-black tabular-nums text-gray-900">
+                      {metric === 'pledged' ? fmtUsd(project.pledged_usd) : fmtNum(project.backers_count)}
+                    </span>
+                    <span className="text-xs text-gray-400">{metric === 'pledged' ? (cn ? '总金额' : 'pledged') : (cn ? '支持者' : 'backers')}</span>
+                  </span>
+                </Link>
+              );
+            })}
+          </div>
+        )}
+
+        <div className="flex items-center justify-between border-t border-gray-100 px-5 py-3">
+          <p className="text-xs text-gray-400">
+            {cn ? `第 ${page} / ${totalPages} 页` : `Page ${page} of ${totalPages}`}
+          </p>
+          <div className="flex gap-2">
+            <button disabled={page <= 1} onClick={() => setPage(p => Math.max(1, p - 1))} className="rounded-md border border-gray-200 p-2 text-gray-500 disabled:opacity-40">
+              <ChevronLeft className="h-4 w-4" />
+            </button>
+            <button disabled={page >= totalPages} onClick={() => setPage(p => Math.min(totalPages, p + 1))} className="rounded-md border border-gray-200 p-2 text-gray-500 disabled:opacity-40">
+              <ChevronRight className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <div className="rounded-lg border border-amber-100 bg-amber-50 px-4 py-3 text-xs leading-relaxed text-amber-800">
+        {cn
+          ? '统计口径：榜单使用 usd_pledged 与有效实时快照金额，统一按美元排序；Kicktraq 的非美元原币快照不会直接参与美元排序。'
+          : 'Ranking note: pledged amounts are normalized to USD using usd_pledged and valid live snapshots; non-USD Kicktraq raw snapshots are excluded from USD ranking.'}
+      </div>
+
+      {shareOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => setShareOpen(false)}>
+          <div className="max-h-[90vh] w-full max-w-xl overflow-auto rounded-lg bg-white p-5 shadow-xl" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h3 className="font-bold text-gray-900">{cn ? '分享榜单' : 'Share Leaderboard'}</h3>
+                <p className="text-xs text-gray-400">{cn ? '复制链接，或保存生成的榜单图片。' : 'Copy the link or save the generated leaderboard image.'}</p>
+              </div>
+              <button onClick={() => setShareOpen(false)} className="text-gray-400 hover:text-gray-700">×</button>
+            </div>
+            <div className="mt-4 flex gap-2">
+              <button onClick={copyShareLink} className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm font-semibold text-gray-600 hover:bg-gray-50">
+                <Copy className="h-4 w-4" />{copied ? (cn ? '已复制' : 'Copied') : (cn ? '复制链接' : 'Copy Link')}
+              </button>
+              {shareImage && (
+                <a href={shareImage} download={`kicksonar-leaderboard-${activeYear}-${metric}.png`} className="inline-flex items-center gap-2 rounded-lg bg-ks-green px-3 py-2 text-sm font-semibold text-white hover:bg-ks-green-dark">
+                  <Download className="h-4 w-4" />{cn ? '保存图片' : 'Save Image'}
+                </a>
+              )}
+            </div>
+            <div className="mt-4 overflow-hidden rounded-lg border border-gray-100 bg-gray-50">
+              {shareImage ? (
+                <img src={shareImage} alt="" className="w-full" />
+              ) : (
+                <div className="flex h-80 items-center justify-center text-gray-400">
+                  <ImageIcon className="mr-2 h-5 w-5" />{cn ? '正在生成...' : 'Generating...'}
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       )}
-
-      <div className="rounded-lg border border-amber-100 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-        <div className="flex items-center gap-2 font-semibold"><Medal className="h-4 w-4" />{cn ? '统计说明' : 'Ranking note'}</div>
-        <p className="mt-1 text-xs leading-relaxed">
-          {cn
-            ? '榜单使用 usd_pledged 与实时快照中的有效金额，统一按美元排序；Kicktraq 的非美元原币快照不会参与美元榜单排序。'
-            : 'Rankings use usd_pledged plus valid live snapshots normalized to USD. Non-USD Kicktraq raw snapshots are excluded from USD ranking.'}
-        </p>
-      </div>
     </div>
   );
 }

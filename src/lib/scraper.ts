@@ -531,7 +531,11 @@ async function scrapeKicktraqViaOpenAI(pageUrl: string, cookieStr: string): Prom
       }),
       signal: AbortSignal.timeout(60_000),
     });
-    if (!res.ok) return [];
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '');
+      console.log('[OpenAI OCR] error status=' + res.status + ' body=' + errText.slice(0, 300));
+      return [];
+    }
     const data = await res.json() as { choices?: Array<{ message?: { content?: string } }> };
     const text = data.choices?.[0]?.message?.content ?? '';
     const jsonMatch = text.match(/\[[\s\S]*\]/);

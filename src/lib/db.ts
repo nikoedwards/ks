@@ -1231,10 +1231,10 @@ export function getLiveIntel(limit = 12) {
         COALESCE(ls.backers_count, p.backers_count) as live_backers_count,
         ls.captured_at as latest_snapshot_at,
         COALESCE(ls.state, p.state) as live_state,
-        COALESCE(ls.pledged_usd, p.usd_pledged) - COALESCE(p24.pledged_usd, COALESCE(ls.pledged_usd, p.usd_pledged)) as pledged_delta_24h,
-        COALESCE(ls.backers_count, p.backers_count) - COALESCE(p24.backers_count, COALESCE(ls.backers_count, p.backers_count)) as backers_delta_24h,
-        COALESCE(ls.pledged_usd, p.usd_pledged) - COALESCE(p6.pledged_usd, COALESCE(ls.pledged_usd, p.usd_pledged)) as pledged_delta_6h,
-        COALESCE(ls.backers_count, p.backers_count) - COALESCE(p6.backers_count, COALESCE(ls.backers_count, p.backers_count)) as backers_delta_6h,
+        MAX(0, COALESCE(ls.pledged_usd, p.usd_pledged) - COALESCE(p24.pledged_usd, COALESCE(ls.pledged_usd, p.usd_pledged))) as pledged_delta_24h,
+        MAX(0, COALESCE(ls.backers_count, p.backers_count) - COALESCE(p24.backers_count, COALESCE(ls.backers_count, p.backers_count))) as backers_delta_24h,
+        MAX(0, COALESCE(ls.pledged_usd, p.usd_pledged) - COALESCE(p6.pledged_usd, COALESCE(ls.pledged_usd, p.usd_pledged))) as pledged_delta_6h,
+        MAX(0, COALESCE(ls.backers_count, p.backers_count) - COALESCE(p6.backers_count, COALESCE(ls.backers_count, p.backers_count))) as backers_delta_6h,
         CASE WHEN p.goal > 0 THEN ROUND((COALESCE(ls.pledged_usd, p.usd_pledged) / p.goal) * 100, 1) ELSE 0 END as funded_pct,
         CASE
           WHEN p.deadline > @now AND p.launched_at IS NOT NULL AND p.launched_at < @now

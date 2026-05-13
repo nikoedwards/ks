@@ -32,7 +32,6 @@ export default function Sidebar() {
   const tr = t[lang].nav;
   const { user, logout, showLogin } = useAuth();
   const [navConfig, setNavConfig] = useState<{ nav_key: string }[]>([]);
-  const [favoritePreview, setFavoritePreview] = useState<Array<{ id: string; name: string; image_thumb_url?: string | null; image_url?: string | null }>>([]);
 
   const navMap = useMemo(() => ({
     dashboard: { href: '/dashboard', label: tr.overview, icon: LayoutDashboard, adminOnly: false },
@@ -50,14 +49,6 @@ export default function Sidebar() {
 
   useEffect(() => {
     fetch('/api/nav').then(r => r.json()).then(d => setNavConfig(d.items ?? [])).catch(() => setNavConfig([]));
-  }, [user]);
-
-  useEffect(() => {
-    if (!user) { setFavoritePreview([]); return; }
-    fetch('/api/favorites')
-      .then(r => r.ok ? r.json() : null)
-      .then(d => setFavoritePreview((d?.data ?? []).slice(0, 3)))
-      .catch(() => setFavoritePreview([]));
   }, [user]);
 
   const nav = (navConfig.length ? navConfig : [
@@ -79,7 +70,6 @@ export default function Sidebar() {
     <>
       <LoginModal />
       <aside className="w-56 bg-[#1a1a1a] text-white flex flex-col shrink-0">
-        {/* Logo — links back to landing */}
         <Link href="/" className="px-5 py-5 border-b border-white/10 hover:bg-white/5 transition-colors">
           <div className="flex items-center gap-2.5">
             <Image src="/logo.svg" alt="Kicksonar" width={28} height={28} className="shrink-0" />
@@ -126,27 +116,6 @@ export default function Sidebar() {
           })}
         </nav>
 
-        {user && favoritePreview.length > 0 && (
-          <div className="px-3 pb-3">
-            <div className="mb-2 px-2 text-[10px] font-semibold uppercase tracking-wide text-white/25">
-              {lang === 'cn' ? '收藏夹' : 'Favorites'}
-            </div>
-            <div className="space-y-1">
-              {favoritePreview.map(project => (
-                <Link key={project.id} href={`/projects/${project.id}`}
-                  className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-xs text-white/55 hover:bg-white/8 hover:text-white transition-colors">
-                  <span className="h-7 w-7 shrink-0 overflow-hidden rounded bg-white/10">
-                    {project.image_thumb_url || project.image_url ? (
-                      <img src={project.image_thumb_url || project.image_url || ''} alt="" className="h-full w-full object-cover" />
-                    ) : null}
-                  </span>
-                  <span className="truncate">{project.name}</span>
-                </Link>
-              ))}
-            </div>
-          </div>
-        )}
-
         <div className="px-2.5 py-3 border-t border-white/10 space-y-0.5">
           <Link
             href="/about"
@@ -169,7 +138,6 @@ export default function Sidebar() {
             {tr.github}
           </a>
 
-          {/* Language switcher */}
           <div className="flex items-center gap-1 px-3 py-2">
             <span className="text-[10px] text-white/30 mr-1">LANG</span>
             {(['en', 'cn'] as const).map(l => (
@@ -187,11 +155,10 @@ export default function Sidebar() {
             ))}
           </div>
 
-          {/* User avatar / login */}
           <div className="px-3 py-2">
             {user ? (
               <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 min-w-0">
                   <div className="w-6 h-6 rounded-full bg-ks-green flex items-center justify-center shrink-0">
                     <span className="text-white text-[10px] font-bold">{user.username[0].toUpperCase()}</span>
                   </div>

@@ -29,14 +29,16 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
     const days = await scrapeKicktraq(creatorSlug, projectSlug);
     if (!days.length) {
-      const hasOcr = !!process.env.ANTHROPIC_API_KEY || !!process.env.OPENAI_API_KEY;
+      const hasOpenAI = !!process.env.OPENAI_API_KEY?.trim();
+      const hasAnthropic = !!process.env.ANTHROPIC_API_KEY?.trim();
+      const hasOcr = hasOpenAI || hasAnthropic;
       return NextResponse.json({
         ok: false,
         noData: true,
         _v: 'ocr-v1',
         message: hasOcr
-          ? 'Kicktraq page was found, but no daily chart rows could be parsed.'
-          : 'Kicktraq exposes this project daily data as chart images. Configure OPENAI_API_KEY or ANTHROPIC_API_KEY on Railway to OCR dailychart.png, then import again.',
+          ? 'Kicktraq page was found and OCR is configured, but no daily chart rows could be parsed. This usually means Kicktraq blocked the chart image, returned an unreadable image, or the OCR model could not extract a valid table.'
+          : 'The running Railway service cannot read OPENAI_API_KEY or ANTHROPIC_API_KEY. If you already added it in Railway, redeploy or restart this same service/environment, then import again.',
       });
     }
 
