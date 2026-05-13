@@ -328,6 +328,26 @@ function extractOpenAIErrorMessage(raw: string): string {
   }
 }
 
+function rowsFromOcrText(text: string): Array<{ date?: string; pledged_usd?: number; backers?: number; comments?: number }> {
+  const cleaned = text.replace(/```(?:json)?/gi, '').replace(/```/g, '').trim();
+  const candidates = [
+    cleaned.match(/\[[\s\S]*\]/)?.[0],
+    cleaned.match(/\{[\s\S]*\}/)?.[0],
+  ].filter(Boolean) as string[];
+
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate) as
+        | Array<{ date?: string; pledged_usd?: number; backers?: number; comments?: number }>
+        | { rows?: Array<{ date?: string; pledged_usd?: number; backers?: number; comments?: number }>; data?: Array<{ date?: string; pledged_usd?: number; backers?: number; comments?: number }> };
+      if (Array.isArray(parsed)) return parsed;
+      if (Array.isArray(parsed.rows)) return parsed.rows;
+      if (Array.isArray(parsed.data)) return parsed.data;
+    } catch { /* try next candidate */ }
+  }
+  return [];
+}
+
 function parseDailyChartJson(json: DailyChartJson): KicktraqDay[] | null {
   const days: KicktraqDay[] = [];
   const src = json.data ?? json;
@@ -531,13 +551,7 @@ async function scrapeKicktraqViaOCR(pageUrl: string, cookieStr: string, diagnost
     console.log('[OCR] Claude response length=' + text.length + ' preview=' + text.slice(0, 100));
     if (diagnostics) diagnostics.ocrPreview = text.slice(0, 200);
 
-    const jsonMatch = text.match(/\[[\s\S]*\]/);
-    if (!jsonMatch) {
-      if (diagnostics) diagnostics.ocrRows = 0;
-      return [];
-    }
-
-    const rows = JSON.parse(jsonMatch[0]) as Array<{ date?: string; pledged_usd?: number; backers?: number; comments?: number }>;
+    const rows = rowsFromOcrText(text);
     console.log('[OCR] parsed rows=' + rows.length);
     if (diagnostics) diagnostics.ocrRows = rows.length;
 
@@ -634,12 +648,7 @@ async function scrapeKicktraqViaQwen(pageUrl: string, cookieStr: string, diagnos
     const data = await res.json() as { choices?: Array<{ message?: { content?: string } }> };
     const text = data.choices?.[0]?.message?.content ?? '';
     if (diagnostics) diagnostics.ocrPreview = text.slice(0, 200);
-    const jsonMatch = text.match(/\[[\s\S]*\]/);
-    if (!jsonMatch) {
-      if (diagnostics) diagnostics.ocrRows = 0;
-      return [];
-    }
-    const rows = JSON.parse(jsonMatch[0]) as Array<{ date?: string; pledged_usd?: number; backers?: number; comments?: number }>;
+    const rows = rowsFromOcrText(text);
     if (diagnostics) diagnostics.ocrRows = rows.length;
     return rows
       .filter(r => r.date)
@@ -735,12 +744,7 @@ async function scrapeKicktraqViaOpenAI(pageUrl: string, cookieStr: string, diagn
     const data = await res.json() as { choices?: Array<{ message?: { content?: string } }> };
     const text = data.choices?.[0]?.message?.content ?? '';
     if (diagnostics) diagnostics.ocrPreview = text.slice(0, 200);
-    const jsonMatch = text.match(/\[[\s\S]*\]/);
-    if (!jsonMatch) {
-      if (diagnostics) diagnostics.ocrRows = 0;
-      return [];
-    }
-    const rows = JSON.parse(jsonMatch[0]) as Array<{ date?: string; pledged_usd?: number; backers?: number; comments?: number }>;
+    const rows = rowsFromOcrText(text);
     if (diagnostics) diagnostics.ocrRows = rows.length;
     return rows
       .filter(r => r.date)
