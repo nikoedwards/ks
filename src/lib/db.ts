@@ -2166,7 +2166,7 @@ export function getSimilarProjects(projectId: string, category: string, goalUsd:
   const high = goalUsd * 5;
   return getDB().prepare(`
     SELECT id, name, blurb, state, category_parent, category_name, usd_pledged, goal, backers_count,
-           launched_at, source_url, slug,
+           launched_at, source_url, slug, image_url, image_thumb_url,
            (
              CASE WHEN category_parent = @category THEN 40 ELSE 0 END +
              CASE WHEN usd_pledged BETWEEN @low AND @high THEN 30 ELSE 0 END +

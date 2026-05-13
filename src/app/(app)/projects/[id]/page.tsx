@@ -34,6 +34,7 @@ interface SimilarProject {
   category_parent: string; category_name: string;
   usd_pledged: number; goal: number; backers_count: number;
   launched_at: number; source_url: string; slug: string;
+  image_url?: string | null; image_thumb_url?: string | null;
 }
 
 interface Snapshot {
@@ -46,6 +47,17 @@ interface KicktraqDebug {
   images?: Array<{ kind: string; url: string; status: number; contentType: string; bytes: number; dataUrl: string }>;
   modelOutput?: string;
   structuredRows?: Array<{ date: string; pledged_usd: number; backers: number; comments?: number }>;
+}
+
+interface KicktraqStatusPayload {
+  ok?: boolean;
+  status?: 'running' | 'complete' | 'failed';
+  phase?: string;
+  progress?: number;
+  message?: string;
+  debug?: KicktraqDebug;
+  diagnostics?: { debug?: KicktraqDebug };
+  structuredDays?: KicktraqDebug['structuredRows'];
 }
 
 interface Reward {
@@ -196,6 +208,8 @@ export default function ProjectDetailPage() {
   const [scraping, setScraping] = useState(false);
   const [autoSyncAttempted, setAutoSyncAttempted] = useState(false);
   const [ktImporting, setKtImporting] = useState(false);
+  const [ktProgress, setKtProgress] = useState(0);
+  const [ktPhase, setKtPhase] = useState('');
   const [syncError, setSyncError] = useState('');
   const [curveModes, setCurveModes] = useState<Record<CurveMetric, CurveMode>>({
     pledged: 'daily',
@@ -348,6 +362,56 @@ export default function ProjectDetailPage() {
   const [ktError, setKtError] = useState('');
   const [ktNoData, setKtNoData] = useState(false);
   const [ktNoDataMessage, setKtNoDataMessage] = useState('');
+  const [ktInfo, setKtInfo] = useState('');
+  const applyKicktraqPayload = useCallback((payload: KicktraqStatusPayload) => {
+    const debug = payload.debug ?? payload.diagnostics?.debug ?? (payload.structuredDays ? { structuredRows: payload.structuredDays } : null);
+    if (debug) setKtDebug(debug);
+    if (typeof payload.progress === 'number') setKtProgress(Math.max(0, Math.min(100, payload.progress)));
+    if (payload.phase) setKtPhase(payload.phase);
+    if (payload.status === 'running') {
+      setKtImporting(true);
+      setKtInfo(lang === 'cn' ? 'Kicktraq 导入任务正在服务器运行。' : 'Kicktraq import is running on the server.');
+    } else if (payload.status === 'complete') {
+      setKtImporting(false);
+      setKtNoData(false);
+      setKtInfo(lang === 'cn' ? `导入完成${payload.structuredDays?.length ? `，${payload.structuredDays.length} 条结构化数据已写入。` : '。'}` : 'Import complete.');
+    } else if (payload.status === 'failed') {
+      setKtImporting(false);
+      setKtNoData(true);
+      setKtInfo('');
+      setKtNoDataMessage(friendlyKicktraqMessage(payload.message));
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lang]);
+
+  const loadCachedKicktraqDebug = useCallback(async () => {
+    if (!id || !user) return null;
+    try {
+      const debugRes = await fetch(`/api/kicktraq/${id}`);
+      if (!debugRes.ok) return null;
+      const cached = await debugRes.json() as KicktraqStatusPayload;
+      applyKicktraqPayload(cached);
+      return cached;
+    } catch {
+      return null;
+    }
+  }, [applyKicktraqPayload, id, user]);
+
+  useEffect(() => {
+    loadCachedKicktraqDebug();
+  }, [loadCachedKicktraqDebug]);
+
+  useEffect(() => {
+    if (!ktImporting) return;
+    const timer = window.setInterval(async () => {
+      const cached = await loadCachedKicktraqDebug();
+      if (cached?.status === 'complete') {
+        await loadSnapshots();
+      }
+    }, 2500);
+    return () => window.clearInterval(timer);
+  }, [ktImporting, loadCachedKicktraqDebug, loadSnapshots]);
+
   const friendlyKicktraqMessage = (message?: string) => {
     if (message?.includes('cannot read OPENAI_API_KEY') || message?.includes('cannot read')) {
       return lang === 'cn'
@@ -368,34 +432,14 @@ export default function ProjectDetailPage() {
     setKtError('');
     setKtNoData(false);
     setKtNoDataMessage('');
+    setKtInfo(lang === 'cn' ? '正在连接 Kicktraq 并读取图表...' : 'Connecting to Kicktraq and reading charts...');
+    setKtProgress(8);
+    setKtPhase(lang === 'cn' ? '准备导入' : 'Preparing import');
     setKtDebug(null);
-    const loadCachedKicktraqDebug = async () => {
-      try {
-        const debugRes = await fetch(`/api/kicktraq/${id}`);
-        if (!debugRes.ok) return;
-        const cached = await debugRes.json() as {
-          ok?: boolean;
-          debug?: KicktraqDebug;
-          diagnostics?: { debug?: KicktraqDebug };
-          structuredDays?: KicktraqDebug['structuredRows'];
-        };
-        const debug = cached.debug ?? cached.diagnostics?.debug ?? (cached.structuredDays ? { structuredRows: cached.structuredDays } : null);
-        if (debug) setKtDebug(debug);
-      } catch {}
-    };
     try {
       const res = await fetch(`/api/kicktraq/${id}`, { method: 'POST' });
-      const data = await res.json() as {
-        ok: boolean;
-        noData?: boolean;
-        days?: number;
-        message?: string;
-        debug?: KicktraqDebug;
-        diagnostics?: { debug?: KicktraqDebug };
-        structuredDays?: KicktraqDebug['structuredRows'];
-      };
-      const debug = data.debug ?? data.diagnostics?.debug ?? (data.structuredDays ? { structuredRows: data.structuredDays } : null);
-      if (debug) setKtDebug(debug);
+      const data = await res.json() as KicktraqStatusPayload & { noData?: boolean; days?: number };
+      applyKicktraqPayload({ ...data, status: data.ok ? 'complete' : data.noData ? 'failed' : data.status });
       if (data.ok) {
         await loadSnapshots();
       } else if (data.noData) {
@@ -407,13 +451,12 @@ export default function ProjectDetailPage() {
     } catch {
       await new Promise(r => setTimeout(r, 1200));
       await loadSnapshots();
-      await loadCachedKicktraqDebug();
-      setKtNoData(true);
-      setKtNoDataMessage(lang === 'cn'
+      const cached = await loadCachedKicktraqDebug();
+      if (!cached || cached.status !== 'running') setKtImporting(false);
+      setKtInfo(lang === 'cn'
         ? '导入请求连接中断，但后台可能已经写入成功；已自动刷新快照并尝试读取调试信息。'
         : 'The import request disconnected, but the server may have completed it. Snapshots were refreshed and debug data was retried.');
     }
-    setKtImporting(false);
   };
 
   // ── Chart data ─────────────────────────────────────────────────────────────
@@ -523,6 +566,27 @@ export default function ProjectDetailPage() {
     textByField[tc.field].push(tc);
   }
 
+  const totalRewardBackers = rewards.reduce((sum, r) => sum + r.backers_count, 0);
+  const totalRewardValue = rewards.reduce((sum, r) => sum + r.amount_usd * r.backers_count, 0);
+  const topReward = [...rewards].sort((a, b) => b.backers_count - a.backers_count)[0] ?? null;
+  const limitedRewardCount = rewards.filter(r => r.is_limited || r.limit_count).length;
+  const rewardPriceBands = [
+    { label: '< 50', min: 0, max: 50 },
+    { label: '50-99', min: 50, max: 100 },
+    { label: '100-249', min: 100, max: 250 },
+    { label: '250-499', min: 250, max: 500 },
+    { label: '500+', min: 500, max: Infinity },
+  ].map(band => {
+    const rows = rewards.filter(r => r.amount_usd >= band.min && r.amount_usd < band.max);
+    return {
+      ...band,
+      skuCount: rows.length,
+      backers: rows.reduce((sum, r) => sum + r.backers_count, 0),
+    };
+  });
+  const maxBandBackers = Math.max(1, ...rewardPriceBands.map(b => b.backers));
+  const maxRewardBackers = Math.max(1, ...rewards.map(r => r.backers_count));
+
   return (
     <div className="max-w-6xl mx-auto space-y-0">
       {/* Back */}
@@ -597,9 +661,14 @@ export default function ProjectDetailPage() {
 
             <button onClick={importKicktraq} disabled={ktImporting}
               title={lang === 'cn' ? '从 Kicktraq 日图表导入历史逐日数据，必要时会使用 OCR。' : 'Import historical daily data from Kicktraq charts, using OCR when needed.'}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 text-white text-xs font-semibold hover:bg-blue-700 transition-colors disabled:opacity-50">
-              <TrendingUp className={`w-3.5 h-3.5 ${ktImporting ? 'animate-pulse' : ''}`} />
-              {ktImporting ? tr.importingFromKT : tr.importFromKT}
+              className="relative flex items-center gap-1.5 overflow-hidden px-3 py-1.5 rounded-lg bg-blue-600 text-white text-xs font-semibold hover:bg-blue-700 transition-colors disabled:opacity-90">
+              {ktImporting && (
+                <span className="absolute inset-y-0 left-0 bg-blue-400/45 transition-all duration-500" style={{ width: `${Math.max(8, ktProgress)}%` }} />
+              )}
+              <TrendingUp className={`relative w-3.5 h-3.5 ${ktImporting ? 'animate-pulse' : ''}`} />
+              <span className="relative">
+                {ktImporting ? (lang === 'cn' ? '正在导入...' : ktPhase || tr.importingFromKT) : tr.importFromKT}
+              </span>
             </button>
 
             {ksUrl && (
@@ -623,9 +692,17 @@ export default function ProjectDetailPage() {
             {syncError}
           </div>
         )}
-        {(ktError || ktNoData) && (
+        {(ktError || ktNoData || ktInfo) && (
           <div className="mb-4 rounded-lg border border-blue-700/50 bg-blue-900/30 px-3 py-2 text-xs text-blue-100">
-            {ktError || ktNoDataMessage || (lang === 'cn' ? 'Kicktraq 暂无可解析数据。' : 'No readable Kicktraq chart data was found.')}
+            <div className="flex items-center justify-between gap-3">
+              <span>{ktError || ktNoDataMessage || ktInfo || (lang === 'cn' ? 'Kicktraq 暂无可解析数据。' : 'No readable Kicktraq chart data was found.')}</span>
+              {ktImporting && <span className="font-semibold">{Math.round(ktProgress)}%</span>}
+            </div>
+            {ktImporting && (
+              <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-blue-950/60">
+                <div className="h-full rounded-full bg-blue-300 transition-all duration-500" style={{ width: `${Math.max(8, ktProgress)}%` }} />
+              </div>
+            )}
           </div>
         )}
 
@@ -957,14 +1034,9 @@ export default function ProjectDetailPage() {
               </div>
             ) : (
               <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6 text-center">
-                <p className="text-gray-400 text-sm mb-4">
+                <p className="text-gray-400 text-sm">
                   {hasRealData ? tr.notEnoughDataChart : tr.syncToSeeCurve}
                 </p>
-                <button onClick={triggerScrape} disabled={scraping}
-                  className="inline-flex items-center gap-2 px-4 py-2 bg-ks-green text-white rounded-lg text-sm font-semibold hover:bg-ks-green-dark disabled:opacity-50">
-                  <RefreshCw className={`w-4 h-4 ${scraping ? 'animate-spin' : ''}`} />
-                  {scraping ? tr.syncingBtn : tr.syncNow}
-                </button>
               </div>
             )}
           </div>
@@ -975,7 +1047,57 @@ export default function ProjectDetailPage() {
           <div className="space-y-4">
             <h3 className="font-semibold text-gray-700">{tr.rewardTiersLabel}</h3>
             {rewards.length ? (
-              <div className="space-y-3">
+              <div className="space-y-4">
+                <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+                  <StatCard label={lang === 'cn' ? 'SKU 数量' : 'SKU Count'} value={rewards.length.toLocaleString()} sub={lang === 'cn' ? `${limitedRewardCount} 个限量档位` : `${limitedRewardCount} limited tiers`} />
+                  <StatCard label={lang === 'cn' ? '档位支持者' : 'Reward Backers'} value={totalRewardBackers.toLocaleString()} sub={lang === 'cn' ? '来自奖励档位数据' : 'from reward tiers'} />
+                  <StatCard label={lang === 'cn' ? '档位均价' : 'Avg Tier Price'} value={fmtMoney(rewards.reduce((sum, r) => sum + r.amount_usd, 0) / Math.max(1, rewards.length), nativeCurrency)} sub={lang === 'cn' ? '简单平均' : 'simple average'} />
+                  <StatCard label={lang === 'cn' ? '估算档位金额' : 'Tier Value Est.'} value={fmtMoney(totalRewardValue, nativeCurrency)} sub={lang === 'cn' ? '价格 × backer' : 'price x backers'} />
+                </div>
+
+                <div className="grid gap-4 lg:grid-cols-2">
+                  <div className="rounded-xl border border-gray-100 bg-white p-5 shadow-sm">
+                    <h4 className="text-sm font-semibold text-gray-800">{lang === 'cn' ? '价格带分布' : 'Price Band Distribution'}</h4>
+                    <div className="mt-4 space-y-3">
+                      {rewardPriceBands.map(band => (
+                        <div key={band.label}>
+                          <div className="mb-1 flex items-center justify-between text-xs">
+                            <span className="font-semibold text-gray-600">{band.label}</span>
+                            <span className="text-gray-400">{band.skuCount} SKU · {band.backers.toLocaleString()} backers</span>
+                          </div>
+                          <div className="h-2 overflow-hidden rounded-full bg-gray-100">
+                            <div className="h-full rounded-full bg-ks-green" style={{ width: `${(band.backers / maxBandBackers) * 100}%` }} />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl border border-gray-100 bg-white p-5 shadow-sm">
+                    <h4 className="text-sm font-semibold text-gray-800">{lang === 'cn' ? 'Backer 集中度' : 'Backer Concentration'}</h4>
+                    {topReward && (
+                      <p className="mt-1 text-xs text-gray-400">
+                        {lang === 'cn'
+                          ? `最热档位：${topReward.title || 'Untitled'}，${topReward.backers_count.toLocaleString()} 位支持者。`
+                          : `Top tier: ${topReward.title || 'Untitled'}, ${topReward.backers_count.toLocaleString()} backers.`}
+                      </p>
+                    )}
+                    <div className="mt-4 space-y-3">
+                      {[...rewards].sort((a, b) => b.backers_count - a.backers_count).slice(0, 5).map(r => (
+                        <div key={`top-${r.reward_id}`}>
+                          <div className="mb-1 flex items-center justify-between gap-3 text-xs">
+                            <span className="truncate font-semibold text-gray-600">{r.title || fmtMoney(r.amount_usd, nativeCurrency)}</span>
+                            <span className="shrink-0 text-gray-400">{r.backers_count.toLocaleString()}</span>
+                          </div>
+                          <div className="h-2 overflow-hidden rounded-full bg-gray-100">
+                            <div className="h-full rounded-full bg-blue-500" style={{ width: `${(r.backers_count / maxRewardBackers) * 100}%` }} />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
                 {rewards.map(r => {
                   const fillPct = r.limit_count ? Math.min(100, (r.backers_count / r.limit_count) * 100) : null;
                   return (
@@ -983,7 +1105,7 @@ export default function ProjectDetailPage() {
                       <div className="flex items-start justify-between gap-4">
                         <div className="flex-1">
                           <div className="flex items-center gap-2 mb-1">
-                            <span className="text-lg font-black text-ks-green">${r.amount_usd}</span>
+                            <span className="text-lg font-black text-ks-green">{fmtMoney(r.amount_usd, nativeCurrency)}</span>
                             {r.title && <span className="font-semibold text-gray-800">{r.title}</span>}
                             {r.is_limited ? (
                               <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-amber-50 text-amber-600 border border-amber-100">{tr.limitedLabel}</span>
@@ -1013,12 +1135,7 @@ export default function ProjectDetailPage() {
               </div>
             ) : (
               <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6 text-center">
-                <p className="text-gray-400 text-sm mb-4">{tr.noRewardData}</p>
-                <button onClick={triggerScrape} disabled={scraping}
-                  className="inline-flex items-center gap-2 px-4 py-2 bg-ks-green text-white rounded-lg text-sm font-semibold hover:bg-ks-green-dark disabled:opacity-50">
-                  <RefreshCw className={`w-4 h-4 ${scraping ? 'animate-spin' : ''}`} />
-                  {scraping ? tr.syncingBtn : tr.syncNow}
-                </button>
+                <p className="text-gray-400 text-sm">{tr.noRewardData}</p>
               </div>
             )}
           </div>
@@ -1073,14 +1190,18 @@ export default function ProjectDetailPage() {
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                 {project.similar.map(s => {
                   const sRate = s.goal > 0 ? (s.usd_pledged / s.goal) * 100 : 0;
-                  const sg = fundingGrade(sRate);
+                  const similarImage = s.image_thumb_url || s.image_url;
                   return (
                     <button key={s.id} onClick={() => router.push(`/projects/${s.id}`)}
                       className="bg-white rounded-xl border border-gray-100 shadow-sm p-4 text-left hover:shadow-md hover:border-ks-green/30 transition-all">
                       <div className="flex items-start gap-3">
-                        <div className={`${sg.color} w-10 h-10 rounded-lg flex items-center justify-center shrink-0`}>
-                          <span className="text-white text-xs font-black">{sg.grade}</span>
-                        </div>
+                        {similarImage ? (
+                          <ImagePreview src={similarImage} className="shrink-0">
+                            <img src={similarImage} alt={s.name} className="h-16 w-24 rounded-lg object-cover" loading="lazy" referrerPolicy="no-referrer" />
+                          </ImagePreview>
+                        ) : (
+                          <div className="h-16 w-24 shrink-0 rounded-lg bg-gray-100" />
+                        )}
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-1.5 mb-1">
                             <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-semibold ${STATE_COLOR[s.state] ?? 'bg-gray-100 text-gray-500'}`}>

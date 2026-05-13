@@ -8,7 +8,12 @@ export const dynamic = 'force-dynamic';
 
 type KicktraqDebugCacheEntry = {
   ok: boolean;
+  status: 'running' | 'complete' | 'failed';
+  phase?: string;
+  progress?: number;
   days?: number;
+  startedAt?: number;
+  finishedAt?: number;
   cachedAt: number;
   diagnostics?: unknown;
   debug?: unknown;
@@ -57,6 +62,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       }, { status: 422 });
     }
 
+    cacheKicktraqDebug(id, {
+      ok: false,
+      status: 'running',
+      phase: 'Fetching Kicktraq charts',
+      progress: 20,
+      startedAt: Date.now(),
+    });
     const { days, diagnostics } = await scrapeKicktraqDetailed(creatorSlug, projectSlug);
     if (!days.length) {
       if ((diagnostics.zeroRowsRejected ?? 0) > 0) {
@@ -72,7 +84,16 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       const message = hasOcr
         ? `OCR is enabled, but no usable Daily Data rows were parsed. ${ocrHint} Diagnostics: page=${diagnostics.pageStatus ?? '-'}, json=${diagnostics.jsonStatus ?? '-'}, htmlRows=${diagnostics.htmlRows ?? 0}, image=${diagnostics.imageStatus ?? '-'} ${diagnostics.imageContentType ?? ''}, imageBytes=${diagnostics.imageBytes ?? '-'}, ocr=${diagnostics.ocrProvider ?? '-'} ${diagnostics.ocrStatus ?? '-'}, endpoint=${diagnostics.ocrEndpoint ?? '-'}, timeoutMs=${diagnostics.ocrTimeoutMs ?? '-'}, ocrRows=${diagnostics.ocrRows ?? 0}, fallbackRows=${diagnostics.ocrFallbackRows ?? 0}, zeroRowsRejected=${diagnostics.zeroRowsRejected ?? 0}. ${diagnostics.ocrError ? `OCR error: ${diagnostics.ocrError}.` : ''}${diagnostics.ocrPreview ? ` OCR preview: ${diagnostics.ocrPreview}.` : ''} ${diagnostics.reason ?? ''}`
         : 'The running Railway service cannot read QWEN_API_KEY, OPENAI_API_KEY, or ANTHROPIC_API_KEY. If you already added it in Railway, redeploy or restart this same service/environment, then import again.';
-      cacheKicktraqDebug(id, { ok: false, diagnostics, debug: diagnostics.debug, message });
+      cacheKicktraqDebug(id, {
+        ok: false,
+        status: 'failed',
+        phase: 'No usable rows parsed',
+        progress: 100,
+        diagnostics,
+        debug: diagnostics.debug,
+        message,
+        finishedAt: Date.now(),
+      });
       return NextResponse.json({
         ok: false,
         noData: true,
@@ -82,8 +103,27 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       });
     }
 
+    cacheKicktraqDebug(id, {
+      ok: false,
+      status: 'running',
+      phase: 'Writing structured rows',
+      progress: 85,
+      diagnostics,
+      debug: diagnostics.debug,
+      structuredDays: days,
+    });
     storeKicktraqDays(id, days);
-    cacheKicktraqDebug(id, { ok: true, days: days.length, diagnostics, debug: diagnostics.debug, structuredDays: days });
+    cacheKicktraqDebug(id, {
+      ok: true,
+      status: 'complete',
+      phase: 'Import complete',
+      progress: 100,
+      days: days.length,
+      diagnostics,
+      debug: diagnostics.debug,
+      structuredDays: days,
+      finishedAt: Date.now(),
+    });
     return NextResponse.json({ ok: true, days: days.length, diagnostics, debug: diagnostics.debug, structuredDays: days, _v: 'ocr-v1' });
   } catch (err) {
     return NextResponse.json({ ok: false, message: String(err) }, { status: 500 });
