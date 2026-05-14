@@ -111,10 +111,9 @@ async function fetchWithBrowser(input) {
     const status = response.status();
     const contentType = response.headers()['content-type'] || '';
     const finalUrl = page.url();
-    let text = await page.evaluate(() => document.body?.innerText || document.documentElement?.textContent || '');
-    if (!text && expect === 'html') {
-      text = await page.content();
-    }
+    const text = expect === 'html'
+      ? await page.content()
+      : await page.evaluate(() => document.body?.innerText || document.documentElement?.textContent || '');
     if (Buffer.byteLength(text) > MAX_BODY_BYTES) {
       text = text.slice(0, MAX_BODY_BYTES);
     }

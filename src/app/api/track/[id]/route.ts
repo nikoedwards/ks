@@ -81,11 +81,11 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
   }
   if (!jsonUrl) return NextResponse.json({ error: 'No valid KS URL for this project' }, { status: 422 });
 
-  const settings = getTrackingSettings(id);
   const ok = await scrapeAndStore(id, jsonUrl, {
-    track_rewards: settings?.track_rewards ?? 1,
-    track_comments: settings?.track_comments ?? 1,
-    track_text_diff: settings?.track_text_diff ?? 1,
+    track_rewards: 1,
+    track_comments: 1,
+    track_text_diff: 1,
+    manual: true,
   });
 
   return NextResponse.json({
@@ -93,6 +93,6 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
     scraped: ok,
     message: ok
       ? 'Synced from Kickstarter.'
-      : 'Kickstarter did not return readable JSON for this project. It may be blocked by Cloudflare from the server environment.',
+      : 'Kickstarter project sync failed.',
   });
 }

@@ -425,6 +425,7 @@ export interface ScrapeOptions {
   track_rewards?: number;
   track_comments?: number;
   track_text_diff?: number;
+  manual?: boolean;
 }
 
 export async function scrapeAndStore(projectId: string, jsonUrl: string, opts: ScrapeOptions = {}): Promise<boolean> {
@@ -432,6 +433,8 @@ export async function scrapeAndStore(projectId: string, jsonUrl: string, opts: S
   if (!p) return scrapeKickstarterHtmlFallback(projectId, jsonUrl);
 
   const now = Math.floor(Date.now() / 1000);
+  const projectState = p.state ?? 'unknown';
+  const isLive = projectState === 'live';
   const { pledgedUsd, goalUsd } = resolveUsdAmounts(p);
   const existing = await getProjectById(projectId) as { usd_pledged?: number; backers_count?: number } | null;
   const latestSnapshot = getSnapshots(projectId).at(-1);
@@ -450,21 +453,24 @@ export async function scrapeAndStore(projectId: string, jsonUrl: string, opts: S
   const safePledgedUsd = pledgedUsd > 0 ? pledgedUsd : baselinePledged;
   const safeBackers = fetchedBackers > 0 ? fetchedBackers : baselineBackers;
 
-  insertSnapshot({
-    project_id: projectId,
-    captured_at: now,
-    pledged_usd: safePledgedUsd,
-    backers_count: safeBackers,
-    days_to_go: daysToGo(p.deadline),
-    comments_count: p.comments_count ?? 0,
-    updates_count: p.updates_count ?? 0,
-    state: p.state ?? 'unknown',
-  });
+  if (isLive || !opts.manual) {
+    insertSnapshot({
+      project_id: projectId,
+      captured_at: now,
+      pledged_usd: safePledgedUsd,
+      backers_count: safeBackers,
+      days_to_go: daysToGo(p.deadline),
+      comments_count: p.comments_count ?? 0,
+      updates_count: p.updates_count ?? 0,
+      state: projectState,
+      source: opts.manual ? 'ks_manual' : 'ks',
+    });
+  }
 
   updateProjectLiveMetadata(projectId, {
     name: p.name,
     blurb: p.blurb ?? null,
-    state: p.state ?? null,
+    state: projectState,
     goal_usd: goalUsd > 0 ? goalUsd : null,
     pledged_usd: safePledgedUsd > 0 ? safePledgedUsd : null,
     backers_count: safeBackers > 0 ? safeBackers : null,
