@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSessionUser, SESSION_COOKIE } from '@/lib/auth';
-import { deleteKicktraqSnapshots, getProjectById } from '@/lib/db';
+import { deleteKicktraqSnapshots, getLatestKicktraqImportDebug, getProjectById, saveKicktraqImportDebug } from '@/lib/db';
 import { extractCreatorSlug, extractProjectSlug, getOptionalEnv, scrapeKicktraqDetailed, storeKicktraqDays } from '@/lib/scraper';
 
 export const runtime = 'nodejs';
@@ -18,13 +18,20 @@ type KicktraqDebugCacheEntry = {
   diagnostics?: unknown;
   debug?: unknown;
   structuredDays?: unknown;
+  writtenSnapshots?: unknown;
   message?: string;
 };
 
 const kicktraqDebugCache = new Map<string, KicktraqDebugCacheEntry>();
 
 function cacheKicktraqDebug(projectId: string, entry: Omit<KicktraqDebugCacheEntry, 'cachedAt'>) {
-  kicktraqDebugCache.set(projectId, { ...entry, cachedAt: Date.now() });
+  const cached = { ...entry, cachedAt: Date.now() };
+  kicktraqDebugCache.set(projectId, cached);
+  try {
+    saveKicktraqImportDebug(projectId, entry);
+  } catch (err) {
+    console.warn('Failed to persist Kicktraq debug data', err);
+  }
   if (kicktraqDebugCache.size > 50) {
     const oldest = kicktraqDebugCache.keys().next().value;
     if (oldest) kicktraqDebugCache.delete(oldest);
@@ -36,7 +43,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   const token = req.cookies.get(SESSION_COOKIE)?.value;
   const user = token ? getSessionUser(token) : null;
   if (!user) return NextResponse.json({ ok: false, message: 'Please sign in to view debug data.' }, { status: 401 });
-  const cached = kicktraqDebugCache.get(id);
+  const cached = kicktraqDebugCache.get(id) ?? getLatestKicktraqImportDebug(id);
   if (!cached) return NextResponse.json({ ok: false, message: 'No Kicktraq debug data cached for this project.' }, { status: 404 });
   return NextResponse.json({ ...cached, cacheHit: true });
 }
@@ -112,7 +119,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       debug: diagnostics.debug,
       structuredDays: days,
     });
-    storeKicktraqDays(id, days);
+    const writtenSnapshots = storeKicktraqDays(id, days);
     cacheKicktraqDebug(id, {
       ok: true,
       status: 'complete',
@@ -122,9 +129,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       diagnostics,
       debug: diagnostics.debug,
       structuredDays: days,
+      writtenSnapshots,
       finishedAt: Date.now(),
     });
-    return NextResponse.json({ ok: true, days: days.length, diagnostics, debug: diagnostics.debug, structuredDays: days, _v: 'ocr-v1' });
+    return NextResponse.json({ ok: true, days: days.length, diagnostics, debug: diagnostics.debug, structuredDays: days, writtenSnapshots, _v: 'ocr-v1' });
   } catch (err) {
     return NextResponse.json({ ok: false, message: String(err) }, { status: 500 });
   }

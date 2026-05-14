@@ -50,6 +50,7 @@ function ensureRuntimeMigrations(db: Database) {
   try { db.exec('ALTER TABLE tracking_settings ADD COLUMN subscriber_count INTEGER DEFAULT 0'); } catch { /* already exists */ }
   try { db.exec('ALTER TABLE tracking_settings ADD COLUMN priority_score INTEGER DEFAULT 0'); } catch { /* already exists */ }
   ensureAnnouncementTables(db);
+  ensureKicktraqDebugTables(db);
   const adminEmail = process.env.ADMIN_EMAIL?.trim().toLowerCase();
   if (adminEmail) db.prepare("UPDATE users SET role = 'admin' WHERE lower(email) = ?").run(adminEmail);
   const admin = db.prepare("SELECT id FROM users WHERE role = 'admin' LIMIT 1").get();
@@ -83,6 +84,27 @@ function ensureAnnouncementTables(db: Database) {
       FOREIGN KEY (announcement_id) REFERENCES announcements(id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS idx_announcement_events_user ON announcement_events(user_id, announcement_id, event_type, created_at);
+  `);
+}
+
+function ensureKicktraqDebugTables(db: Database) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS kicktraq_import_debug (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      project_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      phase TEXT,
+      progress INTEGER DEFAULT 0,
+      message TEXT,
+      diagnostics_json TEXT,
+      debug_json TEXT,
+      structured_json TEXT,
+      written_json TEXT,
+      started_at INTEGER,
+      finished_at INTEGER,
+      created_at INTEGER DEFAULT (unixepoch())
+    );
+    CREATE INDEX IF NOT EXISTS idx_kicktraq_debug_project ON kicktraq_import_debug(project_id, created_at);
   `);
 }
 
@@ -353,6 +375,7 @@ function getDB(): Database {
     );
   `);
   ensureAnnouncementTables(db);
+  ensureKicktraqDebugTables(db);
 
   ensureRuntimeMigrations(db);
 
@@ -2120,6 +2143,92 @@ export function deleteKicktraqSnapshots(projectId: string) {
     WHERE project_id = ?
       AND source = 'kicktraq'
   `).run(projectId);
+}
+
+export interface KicktraqImportDebugPayload {
+  ok?: boolean;
+  status: 'running' | 'complete' | 'failed';
+  phase?: string;
+  progress?: number;
+  message?: string;
+  diagnostics?: unknown;
+  debug?: unknown;
+  structuredDays?: unknown;
+  writtenSnapshots?: unknown;
+  startedAt?: number;
+  finishedAt?: number;
+}
+
+function parseDebugJson(value: unknown) {
+  if (typeof value !== 'string' || !value) return undefined;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return undefined;
+  }
+}
+
+export function saveKicktraqImportDebug(projectId: string, entry: KicktraqImportDebugPayload) {
+  getDB().prepare(`
+    INSERT INTO kicktraq_import_debug
+      (project_id, status, phase, progress, message, diagnostics_json, debug_json, structured_json, written_json, started_at, finished_at)
+    VALUES
+      (@project_id, @status, @phase, @progress, @message, @diagnostics_json, @debug_json, @structured_json, @written_json, @started_at, @finished_at)
+  `).run({
+    project_id: projectId,
+    status: entry.status,
+    phase: entry.phase ?? null,
+    progress: entry.progress ?? 0,
+    message: entry.message ?? null,
+    diagnostics_json: entry.diagnostics ? JSON.stringify(entry.diagnostics) : null,
+    debug_json: entry.debug ? JSON.stringify(entry.debug) : null,
+    structured_json: entry.structuredDays ? JSON.stringify(entry.structuredDays) : null,
+    written_json: entry.writtenSnapshots ? JSON.stringify(entry.writtenSnapshots) : null,
+    started_at: entry.startedAt ?? null,
+    finished_at: entry.finishedAt ?? null,
+  });
+}
+
+export function getLatestKicktraqImportDebug(projectId: string) {
+  const row = getDB().prepare(`
+    SELECT *
+    FROM kicktraq_import_debug
+    WHERE project_id = ?
+    ORDER BY created_at DESC, id DESC
+    LIMIT 1
+  `).get(projectId) as {
+    status: 'running' | 'complete' | 'failed';
+    phase: string | null;
+    progress: number | null;
+    message: string | null;
+    diagnostics_json: string | null;
+    debug_json: string | null;
+    structured_json: string | null;
+    written_json: string | null;
+    started_at: number | null;
+    finished_at: number | null;
+    created_at: number;
+  } | undefined;
+
+  if (!row) return null;
+  const debug = parseDebugJson(row.debug_json);
+  const structuredDays = parseDebugJson(row.structured_json);
+  const writtenSnapshots = parseDebugJson(row.written_json);
+  return {
+    ok: row.status === 'complete',
+    status: row.status,
+    phase: row.phase ?? undefined,
+    progress: row.progress ?? undefined,
+    message: row.message ?? undefined,
+    diagnostics: parseDebugJson(row.diagnostics_json),
+    debug,
+    structuredDays,
+    writtenSnapshots,
+    startedAt: row.started_at ?? undefined,
+    finishedAt: row.finished_at ?? undefined,
+    cachedAt: row.created_at * 1000,
+    persisted: true,
+  };
 }
 
 export function getSnapshots(projectId: string, limitRows = 500): Snapshot[] {

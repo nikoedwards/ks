@@ -1000,18 +1000,31 @@ function normalizeDate(raw: string): string {
   }
 }
 
-export function storeKicktraqDays(projectId: string, days: KicktraqDay[]) {
+export interface KicktraqWrittenSnapshot {
+  date: string;
+  captured_at: number;
+  pledged_usd: number;
+  backers_count: number;
+  comments_count: number;
+  daily_pledged_usd: number;
+  daily_backers: number;
+  daily_comments: number;
+  source: 'kicktraq';
+}
+
+export function storeKicktraqDays(projectId: string, days: KicktraqDay[]): KicktraqWrittenSnapshot[] {
   const validDays = days
     .filter(d => d.pledged_usd > 0 || d.backers > 0 || (d.comments ?? 0) > 0)
     .sort((a, b) => a.date.localeCompare(b.date));
 
-  if (!validDays.length) return;
+  if (!validDays.length) return [];
 
   deleteKicktraqSnapshots(projectId);
 
   let pledgedTotal = 0;
   let backersTotal = 0;
   let commentsTotal = 0;
+  const written: KicktraqWrittenSnapshot[] = [];
 
   for (const d of validDays) {
     pledgedTotal += d.pledged_usd;
@@ -1029,5 +1042,18 @@ export function storeKicktraqDays(projectId: string, days: KicktraqDay[]) {
       state: 'historical',
       source: 'kicktraq',
     });
+    written.push({
+      date: d.date,
+      captured_at: capturedAt,
+      pledged_usd: pledgedTotal,
+      backers_count: backersTotal,
+      comments_count: commentsTotal,
+      daily_pledged_usd: d.pledged_usd,
+      daily_backers: d.backers,
+      daily_comments: d.comments ?? 0,
+      source: 'kicktraq',
+    });
   }
+
+  return written;
 }
