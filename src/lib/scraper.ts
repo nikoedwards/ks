@@ -247,12 +247,14 @@ function isBlockedKickstarterText(text: string) {
 async function fetchViaBrowserProxy(url: string): Promise<KSProject | null> {
   const proxyUrl = getOptionalEnv('KICKSTARTER_BROWSER_FETCH_URL');
   if (!proxyUrl) return null;
+  const token = getOptionalEnv('BROWSER_WORKER_TOKEN');
 
   const res = await fetch(proxyUrl, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'Accept': 'application/json, text/plain, */*',
+      ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
     },
     body: JSON.stringify({ url, expect: 'json' }),
     signal: AbortSignal.timeout(Number(getOptionalEnv('KICKSTARTER_BROWSER_TIMEOUT_MS') || 60_000)),
