@@ -245,12 +245,13 @@ function isBlockedKickstarterText(text: string) {
     || text.includes('Cloudflare');
 }
 
-async function fetchViaBrowserProxy(url: string): Promise<KSProject | null> {
+async function fetchViaBrowserProxy(url: string, projectId?: string): Promise<KSProject | null> {
   const proxyUrl = getOptionalEnv('KICKSTARTER_BROWSER_FETCH_URL');
   if (!proxyUrl) {
     recordCrawlerError({
       source: 'ks_project',
       job_type: 'browser_json_fallback',
+      project_id: projectId ?? null,
       url,
       message: 'KICKSTARTER_BROWSER_FETCH_URL is not configured on the main service.',
     });
@@ -275,6 +276,7 @@ async function fetchViaBrowserProxy(url: string): Promise<KSProject | null> {
       recordCrawlerError({
         source: 'ks_project',
         job_type: 'browser_json_fallback',
+        project_id: projectId ?? null,
         url,
         status_code: res.status,
         message: `Browser worker JSON fallback HTTP ${res.status}: ${text.slice(0, 500)}`,
@@ -297,6 +299,7 @@ async function fetchViaBrowserProxy(url: string): Promise<KSProject | null> {
     recordCrawlerError({
       source: 'ks_project',
       job_type: 'browser_json_fallback',
+      project_id: projectId ?? null,
       url,
       message: err instanceof Error ? err.message : String(err),
     });
@@ -304,7 +307,7 @@ async function fetchViaBrowserProxy(url: string): Promise<KSProject | null> {
   }
 }
 
-async function fetchHtmlViaBrowserProxy(url: string): Promise<string | null> {
+async function fetchHtmlViaBrowserProxy(url: string, projectId?: string): Promise<string | null> {
   const proxyUrl = getOptionalEnv('KICKSTARTER_BROWSER_FETCH_URL');
   if (!proxyUrl) return null;
   const token = getOptionalEnv('BROWSER_WORKER_TOKEN');
@@ -326,6 +329,7 @@ async function fetchHtmlViaBrowserProxy(url: string): Promise<string | null> {
       recordCrawlerError({
         source: 'ks_project',
         job_type: 'browser_html_fallback',
+        project_id: projectId ?? null,
         url,
         status_code: res.status,
         message: `Browser worker HTML fallback HTTP ${res.status}: ${text.slice(0, 500)}`,
@@ -337,6 +341,7 @@ async function fetchHtmlViaBrowserProxy(url: string): Promise<string | null> {
     recordCrawlerError({
       source: 'ks_project',
       job_type: 'browser_html_fallback',
+      project_id: projectId ?? null,
       url,
       message: `Browser worker HTML fallback returned no text: ${text.slice(0, 500)}`,
     });
@@ -345,6 +350,7 @@ async function fetchHtmlViaBrowserProxy(url: string): Promise<string | null> {
     recordCrawlerError({
       source: 'ks_project',
       job_type: 'browser_html_fallback',
+      project_id: projectId ?? null,
       url,
       message: err instanceof Error ? err.message : String(err),
     });
@@ -352,7 +358,7 @@ async function fetchHtmlViaBrowserProxy(url: string): Promise<string | null> {
   }
 }
 
-export async function scrapeKSJson(jsonUrl: string): Promise<KSProject | null> {
+export async function scrapeKSJson(jsonUrl: string, projectId?: string): Promise<KSProject | null> {
   try {
     const res = await fetch(jsonUrl, {
       headers: {
@@ -364,13 +370,30 @@ export async function scrapeKSJson(jsonUrl: string): Promise<KSProject | null> {
     });
     const text = await res.text();
     if (!res.ok || isBlockedKickstarterText(text)) {
-      return fetchViaBrowserProxy(jsonUrl);
+      recordCrawlerError({
+        source: 'ks_project',
+        job_type: 'direct_json',
+        project_id: projectId ?? null,
+        url: jsonUrl,
+        status_code: res.status,
+        message: !res.ok
+          ? `Kickstarter JSON HTTP ${res.status}.`
+          : 'Kickstarter JSON returned a Cloudflare or HTML challenge.',
+      });
+      return fetchViaBrowserProxy(jsonUrl, projectId);
     }
     const data = JSON.parse(text) as KSProject | { project: KSProject };
     return 'project' in data ? data.project : data;
-  } catch {
+  } catch (err) {
+    recordCrawlerError({
+      source: 'ks_project',
+      job_type: 'direct_json',
+      project_id: projectId ?? null,
+      url: jsonUrl,
+      message: err instanceof Error ? err.message : String(err),
+    });
     try {
-      return await fetchViaBrowserProxy(jsonUrl);
+      return await fetchViaBrowserProxy(jsonUrl, projectId);
     } catch {
       return null;
     }
@@ -406,17 +429,25 @@ async function scrapeKickstarterHtmlFallback(projectId: string, jsonUrl: string)
       cache: 'no-store',
     });
     if (!res.ok) {
-      const browserHtml = await fetchHtmlViaBrowserProxy(pageUrl);
+      const browserHtml = await fetchHtmlViaBrowserProxy(pageUrl, projectId);
       return browserHtml ? applyHtml(browserHtml) : false;
     }
     const html = await res.text();
     if (isBlockedKickstarterText(html)) {
-      const browserHtml = await fetchHtmlViaBrowserProxy(pageUrl);
+      recordCrawlerError({
+        source: 'ks_project',
+        job_type: 'direct_html',
+        project_id: projectId,
+        url: pageUrl,
+        status_code: res.status,
+        message: 'Kickstarter project page returned a Cloudflare or HTML challenge.',
+      });
+      const browserHtml = await fetchHtmlViaBrowserProxy(pageUrl, projectId);
       return browserHtml ? applyHtml(browserHtml) : false;
     }
     return applyHtml(html);
   } catch {
-    const browserHtml = await fetchHtmlViaBrowserProxy(pageUrl);
+    const browserHtml = await fetchHtmlViaBrowserProxy(pageUrl, projectId);
     return browserHtml ? applyHtml(browserHtml) : false;
   }
 }
@@ -429,7 +460,7 @@ export interface ScrapeOptions {
 }
 
 export async function scrapeAndStore(projectId: string, jsonUrl: string, opts: ScrapeOptions = {}): Promise<boolean> {
-  const p = await scrapeKSJson(jsonUrl);
+  const p = await scrapeKSJson(jsonUrl, projectId);
   if (!p) return scrapeKickstarterHtmlFallback(projectId, jsonUrl);
 
   const now = Math.floor(Date.now() / 1000);

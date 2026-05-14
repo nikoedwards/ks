@@ -481,9 +481,9 @@ export default function ProjectDetailPage() {
     setSyncError('');
     try {
       const res = await fetch(`/api/track/${id}`, { method: 'POST' });
-      const data = await res.json().catch(() => ({})) as { ok?: boolean; message?: string; error?: string };
+      const data = await res.json().catch(() => ({})) as { ok?: boolean; message?: string; error?: string; detail?: string | null };
       if (!res.ok || !data.ok) {
-        setSyncError(data.message ?? data.error ?? 'Sync failed');
+        setSyncError(data.detail ?? data.message ?? data.error ?? 'Sync failed');
       }
       await new Promise(r => setTimeout(r, 500));
       await loadProject();

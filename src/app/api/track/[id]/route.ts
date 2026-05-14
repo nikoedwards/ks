@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getSessionUser, SESSION_COOKIE } from '@/lib/auth';
 import {
   getProjectById,
+  getRecentCrawlerErrors,
   getTrackingSettings,
   getUserProjectSubscription,
   removeUserProjectSubscription,
@@ -87,6 +88,13 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
     track_text_diff: 1,
     manual: true,
   });
+  const pageUrl = jsonUrl.replace(/\.json(?:[?#].*)?$/, '');
+  const recentErrors = ok ? [] : getRecentCrawlerErrors({
+    projectId: id,
+    urls: [jsonUrl, pageUrl],
+    limit: 4,
+  });
+  const latestDetail = recentErrors[0]?.message;
 
   return NextResponse.json({
     ok,
@@ -94,5 +102,7 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
     message: ok
       ? 'Synced from Kickstarter.'
       : 'Kickstarter project sync failed.',
+    detail: latestDetail ?? null,
+    recentErrors,
   });
 }

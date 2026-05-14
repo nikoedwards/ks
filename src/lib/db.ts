@@ -1200,6 +1200,49 @@ export function recordCrawlerError(error: {
   });
 }
 
+export interface RecentCrawlerError {
+  id: number;
+  source: string;
+  job_type: string | null;
+  project_id: string | null;
+  url: string | null;
+  status_code: number | null;
+  message: string;
+  occurred_at: number;
+}
+
+export function getRecentCrawlerErrors(filter: {
+  projectId?: string | null;
+  urls?: Array<string | null | undefined>;
+  limit?: number;
+} = {}): RecentCrawlerError[] {
+  const clauses: string[] = [];
+  const params: Record<string, unknown> = {
+    limit: Math.max(1, Math.min(filter.limit ?? 5, 20)),
+  };
+
+  if (filter.projectId) {
+    clauses.push('project_id = @project_id');
+    params.project_id = filter.projectId;
+  }
+
+  const urls = (filter.urls ?? []).filter((url): url is string => Boolean(url));
+  urls.forEach((url, index) => {
+    const key = `url_${index}`;
+    clauses.push(`url = @${key}`);
+    params[key] = url;
+  });
+
+  const where = clauses.length ? `WHERE ${clauses.join(' OR ')}` : '';
+  return getDB().prepare(`
+    SELECT id, source, job_type, project_id, url, status_code, message, occurred_at
+    FROM crawler_errors
+    ${where}
+    ORDER BY occurred_at DESC, id DESC
+    LIMIT @limit
+  `).all(params) as RecentCrawlerError[];
+}
+
 export function recordSourcePayload(payload: {
   source: string;
   source_key: string;

@@ -2,6 +2,7 @@ import {
   autoTrackLiveProjects,
   getDueProjects,
   getProjectById,
+  getRecentCrawlerErrors,
   recordCrawlerError,
   upsertTrackingSettings,
 } from './db';
@@ -109,12 +110,16 @@ async function scrapeDueProjects() {
       const ok = await scrapeAndStore(project_id, jsonUrl, { track_rewards, track_comments, track_text_diff });
       if (!ok) {
         console.warn(`[tracker] Scrape failed for ${project_id}, will retry in 30min`);
+        const pageUrl = jsonUrl.replace(/\.json(?:[?#].*)?$/, '');
+        const recentDetail = getRecentCrawlerErrors({ projectId: project_id, urls: [jsonUrl, pageUrl], limit: 1 })[0]?.message;
         recordCrawlerError({
           source: 'tracker',
           job_type: 'project_json',
           project_id,
           url: jsonUrl,
-          message: 'Kickstarter project JSON scrape failed.',
+          message: recentDetail
+            ? `Kickstarter project sync failed: ${recentDetail}`
+            : 'Kickstarter project JSON scrape failed.',
         });
         upsertTrackingSettings({ project_id, next_fetch: Math.floor(Date.now() / 1000) + 30 * 60 });
       }
