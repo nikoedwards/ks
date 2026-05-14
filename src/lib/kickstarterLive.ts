@@ -201,7 +201,15 @@ function getOptionalEnv(name: string) {
 
 async function fetchDiscoverViaBrowser(url: string) {
   const proxyUrl = getOptionalEnv('KICKSTARTER_BROWSER_FETCH_URL');
-  if (!proxyUrl) return null;
+  if (!proxyUrl) {
+    recordCrawlerError({
+      source: 'ks_live',
+      job_type: 'browser_fallback',
+      url,
+      message: 'KICKSTARTER_BROWSER_FETCH_URL is not configured on the main service.',
+    });
+    return null;
+  }
   const token = getOptionalEnv('BROWSER_WORKER_TOKEN');
 
   const res = await fetch(proxyUrl, {
@@ -215,9 +223,18 @@ async function fetchDiscoverViaBrowser(url: string) {
     signal: AbortSignal.timeout(Number(getOptionalEnv('KICKSTARTER_BROWSER_TIMEOUT_MS') || 60_000)),
     cache: 'no-store',
   });
-  if (!res.ok) return null;
-
   const text = await res.text();
+  if (!res.ok) {
+    recordCrawlerError({
+      source: 'ks_live',
+      job_type: 'browser_fallback',
+      url,
+      status_code: res.status,
+      message: `Browser worker HTTP ${res.status}: ${text.slice(0, 500)}`,
+    });
+    return null;
+  }
+
   const data = JSON.parse(text) as DiscoverResponse | { body?: DiscoverResponse | string; text?: string };
   if ('body' in data && data.body) {
     return typeof data.body === 'string' ? JSON.parse(data.body) as DiscoverResponse : data.body;
