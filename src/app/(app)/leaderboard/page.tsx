@@ -63,6 +63,9 @@ interface LeaderboardData {
   creatorsByPledged: LeaderboardCreator[];
   creatorsByCount: LeaderboardCreator[];
   creatorsByAverage: LeaderboardCreator[];
+  agenciesByPledged: LeaderboardCreator[];
+  agenciesByCount: LeaderboardCreator[];
+  agenciesByAverage: LeaderboardCreator[];
   categories: CategoryOption[];
   generatedAt: number;
   summary: {
@@ -73,7 +76,7 @@ interface LeaderboardData {
   };
 }
 
-type Metric = 'pledged' | 'backers' | 'creator';
+type Metric = 'pledged' | 'backers' | 'creator' | 'agency';
 type CreatorMetric = 'pledged' | 'count' | 'average';
 type ActiveYear = number | 'custom' | 'lifetime';
 
@@ -163,6 +166,29 @@ function rankClass(rank: number) {
   return 'bg-gray-100 text-gray-500';
 }
 
+function stateLabel(state: string, cn: boolean) {
+  const labels: Record<string, { cn: string; en: string }> = {
+    live: { cn: '进行中', en: 'Live' },
+    successful: { cn: '成功', en: 'Successful' },
+    failed: { cn: '失败', en: 'Failed' },
+    canceled: { cn: '已下线', en: 'Offline' },
+    suspended: { cn: '已下线', en: 'Offline' },
+  };
+  return cn ? (labels[state]?.cn ?? state) : (labels[state]?.en ?? state);
+}
+
+function statePillClass(state: string) {
+  if (state === 'live') return 'border-blue-100 bg-blue-50 text-blue-600';
+  if (state === 'successful') return 'border-emerald-100 bg-emerald-50 text-emerald-700';
+  if (state === 'failed') return 'border-red-100 bg-red-50 text-red-600';
+  return 'border-gray-100 bg-gray-50 text-gray-500';
+}
+
+function TrendMark({ state }: { state: string }) {
+  const up = state === 'live' || state === 'successful';
+  return <span className={`ml-1 text-sm font-black ${up ? 'text-emerald-500' : 'text-red-500'}`}>{up ? '↗' : '↘'}</span>;
+}
+
 export default function LeaderboardPage() {
   const [lang] = useLanguage();
   const cn = lang === 'cn';
@@ -189,10 +215,13 @@ export default function LeaderboardPage() {
     const params = new URLSearchParams(window.location.search);
     const metricParam = params.get('metric');
     const yearParam = params.get('year');
-    if (metricParam === 'backers' || metricParam === 'creator') setMetric(metricParam);
+    if (metricParam === 'backers' || metricParam === 'creator' || metricParam === 'agency') setMetric(metricParam);
     if (metricParam === 'creator-pledged') { setMetric('creator'); setCreatorMetric('pledged'); }
     if (metricParam === 'creator-count') { setMetric('creator'); setCreatorMetric('count'); }
     if (metricParam === 'creator-average') { setMetric('creator'); setCreatorMetric('average'); }
+    if (metricParam === 'agency-pledged') { setMetric('agency'); setCreatorMetric('pledged'); }
+    if (metricParam === 'agency-count') { setMetric('agency'); setCreatorMetric('count'); }
+    if (metricParam === 'agency-average') { setMetric('agency'); setCreatorMetric('average'); }
     const creatorMetricParam = params.get('creatorMetric');
     if (creatorMetricParam === 'pledged' || creatorMetricParam === 'count' || creatorMetricParam === 'average') setCreatorMetric(creatorMetricParam);
     if (yearParam === 'lifetime') {
@@ -229,19 +258,20 @@ export default function LeaderboardPage() {
     return (data?.categories ?? []).filter(c => !categoryParent || c.category_parent === categoryParent);
   }, [data, categoryParent]);
 
-  const creatorMetrics = metric === 'creator';
+  const creatorMetrics = metric === 'creator' || metric === 'agency';
+  const agencyMetrics = metric === 'agency';
   const projects = metric === 'backers' ? data?.byBackers ?? [] : data?.byPledged ?? [];
   const creators = creatorMetric === 'count'
-    ? data?.creatorsByCount ?? []
+    ? (agencyMetrics ? data?.agenciesByCount ?? [] : data?.creatorsByCount ?? [])
     : creatorMetric === 'average'
-    ? data?.creatorsByAverage ?? []
-    : data?.creatorsByPledged ?? [];
+    ? (agencyMetrics ? data?.agenciesByAverage ?? [] : data?.creatorsByAverage ?? [])
+    : (agencyMetrics ? data?.agenciesByPledged ?? [] : data?.creatorsByPledged ?? []);
   const rows = creatorMetrics ? creators : projects;
   const totalPages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
   const pageProjects = projects.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
   const pageCreators = creators.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
   const categoryLabel = categoryNameForShare(categoryName || categoryParent, cn);
-  const titleKind = creatorMetrics ? (cn ? 'Creator 榜单' : 'Creator Leaderboard') : (cn ? '项目榜单' : 'Projects');
+  const titleKind = agencyMetrics ? (cn ? '服务商榜单' : 'Agency Leaderboard') : creatorMetrics ? (cn ? 'Creator 榜单' : 'Creator Leaderboard') : (cn ? '项目榜单' : 'Projects');
   const title = cn
     ? `${activeYear === 'custom' ? '自定义区间' : `${activeYear}年`} ${categoryLabel} Kickstarter TOP100 ${titleKind}`
     : `${activeYear === 'custom' ? 'Custom Range' : activeYear} ${categoryLabel} Kickstarter Top 100 ${titleKind}`;
@@ -291,8 +321,8 @@ export default function LeaderboardPage() {
   };
 
   const switchMetric = (next: Metric) => {
-    if (next === 'creator') applyLifetime();
-    if (next !== 'creator' && activeYear === 'lifetime') applyYear(yearNow);
+    if (next === 'creator' || next === 'agency') applyLifetime();
+    if (next !== 'creator' && next !== 'agency' && activeYear === 'lifetime') applyYear(yearNow);
     setMetric(next);
     setPage(1);
   };
@@ -308,7 +338,7 @@ export default function LeaderboardPage() {
       url.searchParams.set('to', dateTo);
     }
     url.searchParams.set('metric', metric);
-    if (metric === 'creator') url.searchParams.set('creatorMetric', creatorMetric);
+    if (metric === 'creator' || metric === 'agency') url.searchParams.set('creatorMetric', creatorMetric);
     if (categoryParent) url.searchParams.set('categoryParent', categoryParent);
     if (categoryName) url.searchParams.set('categoryName', categoryName);
     return url.toString();
@@ -347,7 +377,7 @@ export default function LeaderboardPage() {
     canvas.height = 1680;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
-    const kickstarterLogo = await loadCanvasImage('/kickstarter-logo.svg');
+    const kickstarterLogo = await loadCanvasImage('/Kickstarter-Logo3.svg');
 
     ctx.fillStyle = '#51d88a';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -413,7 +443,9 @@ export default function LeaderboardPage() {
       ctx.fillText(String(i + 1), 92, y);
       const translatedName = names[i] || project.name;
       const maxNameLength = isCnShare ? 24 : 32;
-      const name = translatedName.length > maxNameLength ? `${translatedName.slice(0, maxNameLength - 1)}...` : translatedName;
+      const statusSuffix = project.state === 'live' ? (isCnShare ? '（进行中）' : ' (Live)') : '';
+      const nameWithStatus = `${translatedName}${statusSuffix}`;
+      const name = nameWithStatus.length > maxNameLength ? `${nameWithStatus.slice(0, maxNameLength - 1)}...` : nameWithStatus;
       ctx.fillText(name, 175, y);
       ctx.textAlign = 'right';
       ctx.fillText(fmtUsd(project.pledged_usd), 805, y);
@@ -543,6 +575,9 @@ export default function LeaderboardPage() {
             <button onClick={() => switchMetric('creator')} className={`inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-sm font-bold ${metric === 'creator' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500'}`}>
               <Users className="h-4 w-4" />{cn ? '发起者' : 'Creators'}
             </button>
+            <button onClick={() => switchMetric('agency')} className={`inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-sm font-bold ${metric === 'agency' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500'}`}>
+              <Users className="h-4 w-4" />{cn ? '服务商' : 'Agencies'}
+            </button>
           </div>
         </div>
 
@@ -552,9 +587,9 @@ export default function LeaderboardPage() {
           <>
             <div className="grid grid-cols-1 gap-3 border-b border-gray-100 p-5 md:grid-cols-3">
               {([
-                ['pledged', cn ? 'Creator 累计众筹金额榜' : 'Total pledged', cn ? '单次平均金额 × 众筹次数' : 'Average per launch × launch count'],
-                ['count', cn ? 'Creator 众筹次数榜' : 'Launch count', cn ? '按项目发起次数排序' : 'Ranked by number of launches'],
-                ['average', cn ? 'Creator 单次平均金额榜' : 'Average pledged', cn ? '按单次平均融资金额排序' : 'Ranked by average pledged amount'],
+                ['pledged', agencyMetrics ? (cn ? '服务商累计众筹金额榜' : 'Agency total pledged') : (cn ? 'Creator 累计众筹金额榜' : 'Creator total pledged'), cn ? '单次平均金额 × 众筹次数' : 'Average per launch × launch count'],
+                ['count', agencyMetrics ? (cn ? '服务商项目次数榜' : 'Agency project count') : (cn ? 'Creator 众筹次数榜' : 'Creator launch count'), cn ? '按项目次数排序' : 'Ranked by number of projects'],
+                ['average', agencyMetrics ? (cn ? '服务商单次平均金额榜' : 'Agency average pledged') : (cn ? 'Creator 单次平均金额榜' : 'Creator average pledged'), cn ? '按单次平均融资金额排序' : 'Ranked by average pledged amount'],
               ] as [CreatorMetric, string, string][]).map(([key, label, hint]) => (
                 <button
                   key={key}
@@ -574,7 +609,7 @@ export default function LeaderboardPage() {
                 return (
                   <div key={creator.creator_key} className={`grid grid-cols-[44px_88px_1fr_auto] items-center gap-4 px-5 py-4 transition-colors hover:bg-gray-50 ${rank <= 3 ? 'bg-amber-50/30' : ''}`}>
                   <span className={`flex h-9 min-w-9 items-center justify-center rounded-full px-2 text-sm font-black ${rankClass(rank)}`}>{rank}</span>
-                  <Link href={creator.best_project_id ? `/projects/${creator.best_project_id}` : '/projects'} className="h-16 w-24 overflow-hidden rounded-md bg-gray-100">
+                  <Link href={creator.best_project_id ? `/projects/${creator.best_project_id}` : '/projects'} target="_blank" rel="noopener noreferrer" className="h-16 w-24 overflow-hidden rounded-md bg-gray-100">
                     {preview ? (
                       <ImagePreview src={preview} className="block h-full w-full">
                         <img src={preview} alt="" className="h-full w-full object-cover" loading="lazy" referrerPolicy="no-referrer" />
@@ -612,7 +647,7 @@ export default function LeaderboardPage() {
             {pageProjects.map((project, index) => {
               const rank = (page - 1) * PAGE_SIZE + index + 1;
               return (
-                <Link key={project.id} href={`/projects/${project.id}`} className={`group grid grid-cols-[44px_88px_1fr_auto] items-center gap-4 px-5 py-4 transition-colors hover:bg-gray-50 ${rank <= 3 ? 'bg-amber-50/30' : ''}`}>
+                <Link key={project.id} href={`/projects/${project.id}`} target="_blank" rel="noopener noreferrer" className={`group grid grid-cols-[44px_88px_1fr_auto] items-center gap-4 px-5 py-4 transition-colors hover:bg-gray-50 ${rank <= 3 ? 'bg-amber-50/30' : ''}`}>
                   <span className={`flex h-9 min-w-9 items-center justify-center rounded-full px-2 text-sm font-black ${rankClass(rank)}`}>{rank}</span>
                   <span className="h-16 w-24 overflow-hidden rounded-md bg-gray-100">
                     <Thumb project={project} />
@@ -626,6 +661,7 @@ export default function LeaderboardPage() {
                       {project.category_parent ?? 'Uncategorized'} / {project.category_name ?? '-'} / {project.country ?? '--'}
                     </span>
                     <span className="mt-2 flex flex-wrap gap-2 text-xs">
+                      <span className={`rounded-full border px-2 py-1 font-semibold ${statePillClass(project.state)}`}>{stateLabel(project.state, cn)}</span>
                       <span className="rounded-md bg-ks-green-light px-2 py-1 font-bold text-ks-green-dark">{fmtUsd(project.pledged_usd)}</span>
                       <span className="rounded-md bg-blue-50 px-2 py-1 font-semibold text-blue-600">{fmtNum(project.backers_count)} {cn ? '支持者' : 'backers'}</span>
                       <span className="py-1 text-gray-400">{Number(project.funded_pct ?? 0).toFixed(0)}% {cn ? '完成' : 'funded'}</span>
@@ -634,6 +670,7 @@ export default function LeaderboardPage() {
                   <span className="w-28 text-right">
                     <span className="block text-xl font-black tabular-nums text-gray-900">
                       {metric === 'pledged' ? fmtUsd(project.pledged_usd) : fmtNum(project.backers_count)}
+                      <TrendMark state={project.state} />
                     </span>
                     <span className="text-xs text-gray-400">{metric === 'pledged' ? (cn ? '总金额' : 'pledged') : (cn ? '支持者' : 'backers')}</span>
                   </span>

@@ -10,7 +10,10 @@ export async function POST(req: NextRequest) {
     const { email, password } = await req.json();
     if (!email || !password) return NextResponse.json({ error: 'Email and password are required.' }, { status: 400 });
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return NextResponse.json({ error: 'Invalid email address.' }, { status: 400 });
-    if (password.length < 6) return NextResponse.json({ error: 'Password must be at least 6 characters.' }, { status: 400 });
+    if (password.length < 8) return NextResponse.json({ error: 'Password must be at least 8 characters.' }, { status: 400 });
+    if (!/[A-Za-z]/.test(password) || !/\d/.test(password)) {
+      return NextResponse.json({ error: 'Password must include at least one letter and one number.' }, { status: 400 });
+    }
     if (emailExists(email)) return NextResponse.json({ error: 'This email is already registered.' }, { status: 409 });
 
     const normalizedEmail = email.trim().toLowerCase();

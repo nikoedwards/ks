@@ -12,6 +12,7 @@ export async function GET(req: NextRequest) {
       category: sp.get('category') ?? undefined,
       categoryName: sp.get('categoryName') ?? undefined,
       country: sp.get('country') ?? undefined,
+      serviceAgency: sp.get('serviceAgency') ?? undefined,
       search: sp.get('search') ?? undefined,
       sort: sp.get('sort') ?? undefined,
       sortDir: (sp.get('sortDir') as 'asc' | 'desc') || 'desc',

@@ -171,6 +171,14 @@ export default function LoginModal() {
               />
             </div>
 
+            {tab === 'register' && (
+              <p className="text-[11px] leading-relaxed text-gray-400">
+                {lang === 'cn'
+                  ? '密码至少 8 位，需同时包含字母和数字。'
+                  : 'Password must be at least 8 characters and include both letters and numbers.'}
+              </p>
+            )}
+
             {error && <p className="text-xs text-red-600 bg-red-50 rounded-lg px-3 py-2">{error}</p>}
 
             <button type="submit" disabled={busy}

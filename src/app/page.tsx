@@ -55,10 +55,24 @@ function landingStateLabel(state: string, lang: string) {
 }
 
 function landingStateClass(state: string) {
-  if (state === 'live') return 'bg-blue-50 text-blue-600';
-  if (state === 'successful') return 'bg-ks-green-light text-ks-green-dark';
-  if (state === 'failed') return 'bg-red-50 text-red-600';
-  return 'bg-gray-100 text-gray-500';
+  if (state === 'live') return 'border-blue-100 bg-blue-50 text-blue-600';
+  if (state === 'successful') return 'border-emerald-100 bg-emerald-50 text-emerald-700';
+  if (state === 'failed') return 'border-red-100 bg-red-50 text-red-600';
+  return 'border-gray-100 bg-gray-50 text-gray-500';
+}
+
+function LandingStatePill({ state, lang }: { state: string; lang: string }) {
+  return (
+    <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-semibold ${landingStateClass(state)}`}>
+      {state === 'live' && <span className="h-1.5 w-1.5 rounded-full bg-blue-500" />}
+      {landingStateLabel(state, lang)}
+    </span>
+  );
+}
+
+function LandingTrendMark({ state }: { state: string }) {
+  const up = state === 'live' || state === 'successful';
+  return <span className={`text-xs font-black ${up ? 'text-emerald-500' : 'text-red-500'}`}>{up ? '↗' : '↘'}</span>;
 }
 
 // ── FAQ accordion ──────────────────────────────────────────────────────────────
@@ -120,7 +134,7 @@ function ProjectTableMockup({ lang, rows: liveRows }: { lang: string; rows?: Lan
                 </td>
                 <td className="py-1.5">
                   <div className="font-semibold text-gray-800 text-[10px] truncate max-w-[80px]">{r.name}</div>
-                  <span className={`mt-0.5 inline-flex rounded-full px-1.5 py-0.5 text-[8px] font-bold ${landingStateClass(r.state)}`}>
+                  <span className={`mt-0.5 inline-flex rounded-full border px-1.5 py-0.5 text-[8px] font-bold ${landingStateClass(r.state)}`}>
                     {landingStateLabel(r.state, lang)}
                   </span>
                 </td>
@@ -467,7 +481,13 @@ export default function LandingPage() {
                       </span>
                       <div className="min-w-0">
                         <div className="text-sm font-medium text-gray-800 truncate">{s.name}</div>
-                        <div className="text-xs text-gray-400">{s.category_parent} · {landingStateLabel(s.state, lang)}</div>
+                        <div className="mt-1 flex items-center gap-2 text-xs text-gray-400">
+                          <span>{s.category_parent}</span>
+                          <LandingStatePill state={s.state} lang={lang} />
+                          {typeof s.usd_pledged === 'number' && (
+                            <span className="inline-flex items-center gap-1">{fmtMoneyCompact(s.usd_pledged)} <LandingTrendMark state={s.state} /></span>
+                          )}
+                        </div>
                       </div>
                     </button>
                   )) : (
@@ -481,7 +501,11 @@ export default function LandingPage() {
                             </span>
                             <span className="min-w-0">
                               <span className="block truncate text-sm font-semibold text-gray-800">{s.name}</span>
-                              <span className="block text-xs text-gray-400">{s.category_parent} · {landingStateLabel(s.state, lang)} · {fmtMoneyCompact(s.usd_pledged ?? 0)}</span>
+                              <span className="mt-1 flex items-center gap-2 text-xs text-gray-400">
+                                <span>{s.category_parent}</span>
+                                <LandingStatePill state={s.state} lang={lang} />
+                                <span className="inline-flex items-center gap-1">{fmtMoneyCompact(s.usd_pledged ?? 0)} <LandingTrendMark state={s.state} /></span>
+                              </span>
                             </span>
                           </button>
                         );

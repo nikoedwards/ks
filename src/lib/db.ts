@@ -34,6 +34,8 @@ function ensureRuntimeMigrations(db: Database) {
   try { db.exec('ALTER TABLE projects ADD COLUMN ks_live_synced_at INTEGER'); } catch { /* already exists */ }
   try { db.exec('ALTER TABLE projects ADD COLUMN image_url TEXT'); } catch { /* already exists */ }
   try { db.exec('ALTER TABLE projects ADD COLUMN image_thumb_url TEXT'); } catch { /* already exists */ }
+  try { db.exec('ALTER TABLE projects ADD COLUMN has_service_agency INTEGER DEFAULT 0'); } catch { /* already exists */ }
+  try { db.exec('ALTER TABLE projects ADD COLUMN service_agency_name TEXT'); } catch { /* already exists */ }
   db.exec(`
     CREATE TABLE IF NOT EXISTS project_collaborators (
       project_id TEXT NOT NULL,
@@ -42,11 +44,33 @@ function ensureRuntimeMigrations(db: Database) {
       role TEXT,
       avatar_url TEXT,
       profile_url TEXT,
+      is_service_agency INTEGER DEFAULT 0,
       captured_at INTEGER DEFAULT (unixepoch()),
       PRIMARY KEY (project_id, collaborator_key)
     );
     CREATE INDEX IF NOT EXISTS idx_collaborators_project ON project_collaborators(project_id);
   `);
+  try { db.exec('ALTER TABLE project_collaborators ADD COLUMN is_service_agency INTEGER DEFAULT 0'); } catch { /* already exists */ }
+  try {
+    db.exec(`
+      UPDATE project_collaborators
+      SET is_service_agency = 1
+      WHERE lower(COALESCE(name, '') || ' ' || COALESCE(role, '')) LIKE '%longham%'
+         OR lower(COALESCE(name, '') || ' ' || COALESCE(role, '')) LIKE '%global oneclick%'
+         OR lower(COALESCE(name, '') || ' ' || COALESCE(role, '')) LIKE '%global one click%'
+         OR lower(COALESCE(name, '') || ' ' || COALESCE(role, '')) LIKE '%vinyl%';
+      UPDATE projects
+      SET has_service_agency = 1,
+          service_agency_name = (
+            SELECT GROUP_CONCAT(DISTINCT pc.name)
+            FROM project_collaborators pc
+            WHERE pc.project_id = projects.id AND pc.is_service_agency = 1
+          )
+      WHERE id IN (
+        SELECT DISTINCT project_id FROM project_collaborators WHERE is_service_agency = 1
+      );
+    `);
+  } catch { /* best-effort backfill */ }
   try { db.exec('ALTER TABLE tracking_settings ADD COLUMN subscriber_count INTEGER DEFAULT 0'); } catch { /* already exists */ }
   try { db.exec('ALTER TABLE tracking_settings ADD COLUMN priority_score INTEGER DEFAULT 0'); } catch { /* already exists */ }
   ensureAnnouncementTables(db);
@@ -147,6 +171,8 @@ function getDB(): Database {
       slug TEXT,
       image_url TEXT,
       image_thumb_url TEXT,
+      has_service_agency INTEGER DEFAULT 0,
+      service_agency_name TEXT,
       data_source TEXT DEFAULT 'webrobots',
       first_seen_at INTEGER,
       last_seen_at INTEGER,
@@ -282,6 +308,7 @@ function getDB(): Database {
       role TEXT,
       avatar_url TEXT,
       profile_url TEXT,
+      is_service_agency INTEGER DEFAULT 0,
       captured_at INTEGER DEFAULT (unixepoch()),
       PRIMARY KEY (project_id, collaborator_key)
     );
@@ -457,11 +484,12 @@ export interface ProjectFilter {
   limit?: number;
   dateFrom?: number;
   dateTo?: number;
+  serviceAgency?: string;
 }
 
 export async function getProjects(filter: ProjectFilter = {}) {
   const db = getDB();
-  const { state, category, categoryName, country, search, sort = 'usd_pledged', sortDir = 'desc', page = 1, limit = 20, dateFrom, dateTo } = filter;
+  const { state, category, categoryName, country, search, sort = 'usd_pledged', sortDir = 'desc', page = 1, limit = 20, dateFrom, dateTo, serviceAgency } = filter;
 
   const conditions: string[] = [];
   const params: Record<string, unknown> = {};
@@ -473,6 +501,14 @@ export async function getProjects(filter: ProjectFilter = {}) {
   if (search) { conditions.push('(p.name LIKE @search OR p.blurb LIKE @search)'); params.search = `%${search}%`; }
   if (dateFrom) { conditions.push('p.launched_at >= @dateFrom'); params.dateFrom = dateFrom; }
   if (dateTo) { conditions.push('p.launched_at <= @dateTo'); params.dateTo = dateTo; }
+  if (serviceAgency) {
+    if (serviceAgency === '__has_agency__') {
+      conditions.push('p.has_service_agency = 1');
+    } else {
+      conditions.push('p.service_agency_name LIKE @serviceAgency');
+      params.serviceAgency = `%${serviceAgency}%`;
+    }
+  }
 
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
 
@@ -501,6 +537,7 @@ export async function getProjects(filter: ProjectFilter = {}) {
             p.creator_name, p.creator_slug, p.creator_url,
             p.source_url, p.slug,
             p.image_url, p.image_thumb_url, p.data_source,
+            p.has_service_agency, p.service_agency_name,
             CASE
               WHEN s.source = 'kicktraq_active' AND COALESCE(p.currency, 'USD') <> 'USD' THEN NULL
               WHEN s.pledged_usd IS NOT NULL AND (s.pledged_usd > 0 OR p.usd_pledged = 0) THEN s.pledged_usd
@@ -675,6 +712,8 @@ export interface LeaderboardCreator {
   country: string | null;
 }
 
+export type LeaderboardAgency = LeaderboardCreator;
+
 function leaderboardWhere(filter: LeaderboardFilter) {
   const clauses = ['p.launched_at IS NOT NULL'];
   const params: Record<string, unknown> = {};
@@ -703,11 +742,11 @@ function leaderboardBaseSql(where: string) {
         p.id, p.name, p.blurb, p.state, p.slug, p.creator_name, p.creator_slug,
         p.category_parent, p.category_name, p.country, p.country_name,
         p.launched_at, p.deadline, p.source_url, p.image_url, p.image_thumb_url,
-        MAX(COALESCE(p.usd_pledged, 0), COALESCE(l.pledged_usd, 0)) as pledged_usd,
-        MAX(COALESCE(p.backers_count, 0), COALESCE(l.backers_count, 0)) as backers_count,
+        CASE WHEN COALESCE(l.pledged_usd, 0) > 0 THEN l.pledged_usd ELSE COALESCE(p.usd_pledged, 0) END as pledged_usd,
+        CASE WHEN COALESCE(l.backers_count, 0) > 0 THEN l.backers_count ELSE COALESCE(p.backers_count, 0) END as backers_count,
         COALESCE(p.goal, 0) as goal,
         CASE WHEN COALESCE(p.goal, 0) > 0
-          THEN ROUND((MAX(COALESCE(p.usd_pledged, 0), COALESCE(l.pledged_usd, 0)) / p.goal) * 100, 1)
+          THEN ROUND(((CASE WHEN COALESCE(l.pledged_usd, 0) > 0 THEN l.pledged_usd ELSE COALESCE(p.usd_pledged, 0) END) / p.goal) * 100, 1)
           ELSE 0
         END as funded_pct,
         CASE
@@ -817,7 +856,61 @@ export function getLeaderboard(filter: LeaderboardFilter = {}) {
     ORDER BY avg_pledged_usd DESC, total_pledged_usd DESC
     LIMIT @limit
   `).all({ ...params, limit }) as LeaderboardCreator[];
-  return { byPledged, byBackers, creatorsByPledged, creatorsByCount, creatorsByAverage, summary };
+  const agencyBase = `
+    WITH ranked AS (${base}),
+    agency_rows AS (
+      SELECT r.*,
+        lower(trim(pc.name)) as creator_key,
+        pc.name as creator_name
+      FROM ranked r
+      JOIN project_collaborators pc ON pc.project_id = r.id
+      WHERE pc.is_service_agency = 1 AND COALESCE(pc.name, '') <> ''
+    ),
+    grouped AS (
+      SELECT
+        creator_key,
+        MAX(creator_name) as creator_name,
+        NULL as creator_slug,
+        COUNT(*) as project_count,
+        SUM(pledged_usd) as total_pledged_usd,
+        AVG(pledged_usd) as avg_pledged_usd,
+        SUM(backers_count) as total_backers,
+        MAX(category_parent) as category_parent,
+        MAX(country) as country
+      FROM agency_rows
+      GROUP BY creator_key
+    ),
+    best_projects AS (
+      SELECT creator_key, id, name, image_url, image_thumb_url,
+        ROW_NUMBER() OVER (PARTITION BY creator_key ORDER BY pledged_usd DESC, backers_count DESC) as rn
+      FROM agency_rows
+    )
+    SELECT
+      g.creator_key, g.creator_name, g.creator_slug, g.project_count,
+      g.total_pledged_usd, g.avg_pledged_usd, g.total_backers,
+      b.id as best_project_id, b.name as best_project_name,
+      b.image_url as best_project_image_url, b.image_thumb_url as best_project_thumb_url,
+      g.category_parent, g.country
+    FROM grouped g
+    LEFT JOIN best_projects b ON b.creator_key = g.creator_key AND b.rn = 1
+  `;
+  const agenciesByPledged = getDB().prepare(`
+    ${agencyBase}
+    ORDER BY total_pledged_usd DESC, project_count DESC
+    LIMIT @limit
+  `).all({ ...params, limit }) as LeaderboardAgency[];
+  const agenciesByCount = getDB().prepare(`
+    ${agencyBase}
+    ORDER BY project_count DESC, total_pledged_usd DESC
+    LIMIT @limit
+  `).all({ ...params, limit }) as LeaderboardAgency[];
+  const agenciesByAverage = getDB().prepare(`
+    ${agencyBase}
+    WHERE project_count > 0
+    ORDER BY avg_pledged_usd DESC, total_pledged_usd DESC
+    LIMIT @limit
+  `).all({ ...params, limit }) as LeaderboardAgency[];
+  return { byPledged, byBackers, creatorsByPledged, creatorsByCount, creatorsByAverage, agenciesByPledged, agenciesByCount, agenciesByAverage, summary };
 }
 
 export function getLeaderboardCategoryOptions(filter: { dateFrom?: number; dateTo?: number } = {}) {
@@ -2298,6 +2391,7 @@ export interface ProjectCollaborator {
   role: string | null;
   avatar_url: string | null;
   profile_url: string | null;
+  is_service_agency?: number;
   captured_at: number;
 }
 
@@ -2305,27 +2399,39 @@ export function upsertProjectCollaborators(projectId: string, collaborators: Pro
   if (!collaborators.length) return;
   const stmt = getDB().prepare(`
     INSERT INTO project_collaborators
-      (project_id, collaborator_key, name, role, avatar_url, profile_url, captured_at)
-    VALUES (@project_id, @collaborator_key, @name, @role, @avatar_url, @profile_url, @captured_at)
+      (project_id, collaborator_key, name, role, avatar_url, profile_url, is_service_agency, captured_at)
+    VALUES (@project_id, @collaborator_key, @name, @role, @avatar_url, @profile_url, @is_service_agency, @captured_at)
     ON CONFLICT(project_id, collaborator_key) DO UPDATE SET
       name = excluded.name,
       role = excluded.role,
       avatar_url = excluded.avatar_url,
       profile_url = excluded.profile_url,
+      is_service_agency = excluded.is_service_agency,
       captured_at = excluded.captured_at
   `);
   const tx = getDB().transaction(() => {
-    for (const c of collaborators) stmt.run({ project_id: projectId, ...c });
+    for (const c of collaborators) stmt.run({ project_id: projectId, ...c, is_service_agency: c.is_service_agency ?? 0 });
+    const agencies = collaborators.filter(c => c.is_service_agency).map(c => c.name).filter(Boolean);
+    getDB().prepare(`
+      UPDATE projects
+      SET has_service_agency = @has_service_agency,
+          service_agency_name = @service_agency_name
+      WHERE id = @project_id
+    `).run({
+      project_id: projectId,
+      has_service_agency: agencies.length ? 1 : 0,
+      service_agency_name: agencies.length ? [...new Set(agencies)].join(', ') : null,
+    });
   });
   tx();
 }
 
 export function getProjectCollaborators(projectId: string): ProjectCollaborator[] {
   return getDB().prepare(`
-    SELECT collaborator_key, name, role, avatar_url, profile_url, captured_at
+    SELECT collaborator_key, name, role, avatar_url, profile_url, is_service_agency, captured_at
     FROM project_collaborators
     WHERE project_id = ?
-    ORDER BY name ASC
+    ORDER BY is_service_agency DESC, name ASC
   `).all(projectId) as ProjectCollaborator[];
 }
 

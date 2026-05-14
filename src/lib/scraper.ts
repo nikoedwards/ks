@@ -126,6 +126,17 @@ function stripTags(value: string) {
   return value.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
+const SERVICE_AGENCY_PATTERNS = [
+  { pattern: /longham/i, label: 'Longham - Crowdfunding Expert' },
+  { pattern: /global\s*one\s*click|goc/i, label: 'Global OneClick' },
+  { pattern: /vinyl/i, label: 'Vinyl - Full Service Crowdfunding Expert' },
+];
+
+function detectServiceAgency(name: string, role?: string | null) {
+  const haystack = `${name} ${role ?? ''}`;
+  return SERVICE_AGENCY_PATTERNS.find(item => item.pattern.test(haystack))?.label ?? null;
+}
+
 function normalizeCollaborators(projectId: string, p: KSProject, now: number): ProjectCollaborator[] {
   const raw = [
     ...((p.collaborators ?? []) as KSCollaborator[]),
@@ -135,14 +146,16 @@ function normalizeCollaborators(projectId: string, p: KSProject, now: number): P
   for (const c of raw) {
     const name = c.name?.trim();
     if (!name) continue;
+    const agencyName = detectServiceAgency(name, c.role);
     const key = String(c.id ?? c.slug ?? name.toLowerCase().replace(/\s+/g, '-'));
     if (key === projectId) continue;
     rows.set(key, {
       collaborator_key: key,
-      name,
-      role: c.role ?? null,
+      name: agencyName ?? name,
+      role: agencyName ? 'Service agency' : c.role ?? null,
       avatar_url: c.avatar?.small ?? c.avatar?.thumb ?? c.photo?.small ?? c.photo?.thumb ?? c.photo?.med ?? c.photo?.full ?? null,
       profile_url: c.urls?.web?.user ?? c.urls?.web?.profile ?? (c.slug ? `https://www.kickstarter.com/profile/${c.slug}` : null),
+      is_service_agency: agencyName ? 1 : 0,
       captured_at: now,
     });
   }

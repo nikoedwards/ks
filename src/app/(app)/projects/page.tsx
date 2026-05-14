@@ -35,6 +35,8 @@ interface Project {
   data_source?: string;
   image_url?: string | null;
   image_thumb_url?: string | null;
+  has_service_agency?: number;
+  service_agency_name?: string | null;
   // Live snapshot fields
   live_pledged_usd?: number | null;
   live_backers_count?: number | null;
@@ -144,6 +146,7 @@ const VIEW_COLUMNS = [
   { id: 'creator', labelCn: '项目所有者', labelEn: 'Creator' },
   { id: 'status', labelCn: '状态', labelEn: 'Status' },
   { id: 'category', labelCn: '类目', labelEn: 'Category' },
+  { id: 'agency', labelCn: '服务商', labelEn: 'Agency' },
   { id: 'goal', labelCn: '目标', labelEn: 'Goal' },
   { id: 'pledged', labelCn: '已筹', labelEn: 'Pledged' },
   { id: 'funded', labelCn: '完成率', labelEn: 'Funded' },
@@ -167,14 +170,15 @@ export default function ProjectsPage() {
   const [empty, setEmpty] = useState(false);
 
   const [search, setSearch] = useState('');
-  const [state, setState] = useState('all');
+  const [state, setState] = useState('live');
   const [category, setCategory] = useState('');
   const [categoryName, setCategoryName] = useState('');
   const [country, setCountry] = useState('');
+  const [serviceAgency, setServiceAgency] = useState('');
   const [sort, setSort] = useState('usd_pledged');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
   const [page, setPage] = useState(1);
-  const [timePeriod, setTimePeriod] = useState<TimePeriod>('month');
+  const [timePeriod, setTimePeriod] = useState<TimePeriod>('all');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
   const [viewOpen, setViewOpen] = useState(false);
@@ -204,6 +208,7 @@ export default function ProjectsPage() {
     if (sp.get('category')) setCategory(sp.get('category')!);
     if (sp.get('categoryName')) setCategoryName(sp.get('categoryName')!);
     if (sp.get('country')) setCountry(sp.get('country')!);
+    if (sp.get('serviceAgency')) setServiceAgency(sp.get('serviceAgency')!);
     if (sp.get('sort')) setSort(sp.get('sort')!);
     if (sp.get('sortDir')) setSortDir(sp.get('sortDir') as SortDir);
     if (sp.get('page')) setPage(Number(sp.get('page')));
@@ -218,19 +223,20 @@ export default function ProjectsPage() {
     if (!urlInitDone.current) return;
     const params = new URLSearchParams();
     if (search) params.set('search', search);
-    if (state !== 'all') params.set('state', state);
+    if (state !== 'live') params.set('state', state);
     if (category) params.set('category', category);
     if (categoryName) params.set('categoryName', categoryName);
     if (country) params.set('country', country);
+    if (serviceAgency) params.set('serviceAgency', serviceAgency);
     if (sort !== 'usd_pledged') params.set('sort', sort);
     if (sortDir !== 'desc') params.set('sortDir', sortDir);
     if (page !== 1) params.set('page', String(page));
-    if (timePeriod !== 'month') params.set('timePeriod', timePeriod);
+    if (timePeriod !== 'all') params.set('timePeriod', timePeriod);
     if (dateFrom) params.set('dateFrom', dateFrom);
     if (dateTo) params.set('dateTo', dateTo);
     const qs = params.toString();
     window.history.replaceState(null, '', qs ? `?${qs}` : window.location.pathname);
-  }, [search, state, category, categoryName, country, sort, sortDir, page, timePeriod, dateFrom, dateTo]);
+  }, [search, state, category, categoryName, country, serviceAgency, sort, sortDir, page, timePeriod, dateFrom, dateTo]);
 
   // Cross-page selection: Set for re-render, Map for data cache
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -288,6 +294,7 @@ export default function ProjectsPage() {
       ...(category ? { category } : {}),
       ...(categoryName ? { categoryName } : {}),
       ...(country ? { country } : {}),
+      ...(serviceAgency ? { serviceAgency } : {}),
       ...(search ? { search } : {}),
       ...(tsFrom ? { dateFrom: String(tsFrom) } : {}),
       ...(tsTo ? { dateTo: String(tsTo) } : {}),
@@ -300,7 +307,7 @@ export default function ProjectsPage() {
         setLoading(false);
       })
       .catch(() => setLoading(false));
-  }, [page, sort, sortDir, state, category, categoryName, country, search, timePeriod, dateFrom, dateTo]);
+  }, [page, sort, sortDir, state, category, categoryName, country, serviceAgency, search, timePeriod, dateFrom, dateTo]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
@@ -311,10 +318,11 @@ export default function ProjectsPage() {
     setCategory('');
     setCategoryName('');
     setCountry('');
+    setServiceAgency('');
     setSort('usd_pledged');
     setSortDir('desc');
     setPage(1);
-    setTimePeriod('month');
+    setTimePeriod('all');
     setDateFrom('');
     setDateTo('');
   };
@@ -487,6 +495,17 @@ export default function ProjectsPage() {
             </select>
           </div>
 
+          <div>
+            <label className="text-xs font-medium text-gray-400 mb-1 block">{lang === 'cn' ? '服务商' : 'Agency'}</label>
+            <select value={serviceAgency} onChange={e => gate(() => { setServiceAgency(e.target.value); setPage(1); })} className={selectCls}>
+              <option value="">{lang === 'cn' ? '全部服务商' : 'All agencies'}</option>
+              <option value="__has_agency__">{lang === 'cn' ? '有服务商' : 'Has agency'}</option>
+              <option value="Longham">{lang === 'cn' ? 'Longham' : 'Longham'}</option>
+              <option value="Global OneClick">{lang === 'cn' ? 'Global OneClick' : 'Global OneClick'}</option>
+              <option value="Vinyl">{lang === 'cn' ? 'Vinyl' : 'Vinyl'}</option>
+            </select>
+          </div>
+
           <button type="submit"
             className="bg-ks-green hover:bg-ks-green-dark text-white px-4 py-2 rounded-lg text-sm font-semibold transition-colors shadow-sm">
             {tr.searchBtn}
@@ -565,6 +584,7 @@ export default function ProjectsPage() {
                   {showCol('creator') && <col className="w-36" />}
                   {showCol('status') && <col className="w-28" />}
                   {showCol('category') && <col className="w-40" />}
+                  {showCol('agency') && <col className="w-44" />}
                   {showCol('goal') && <col className="w-28" />}
                   {showCol('pledged') && <col className="w-32" />}
                   {showCol('funded') && <col className="w-24" />}
@@ -591,6 +611,7 @@ export default function ProjectsPage() {
                     {showCol('creator') && <th className="px-4 py-3 whitespace-nowrap align-middle">Creator</th>}
                     {showCol('status') && <th className="px-4 py-3 whitespace-nowrap align-middle">{tr.colStatus}</th>}
                     {showCol('category') && <th className="px-4 py-3 whitespace-nowrap align-middle">{tr.colCategory}</th>}
+                    {showCol('agency') && <th className="px-4 py-3 whitespace-nowrap align-middle">{lang === 'cn' ? '服务商' : 'Agency'}</th>}
                     {showCol('goal') && <SortableTh col={colSortKey['goal']} right>{tr.colGoal}</SortableTh>}
                     {showCol('pledged') && <SortableTh col={colSortKey['usd_pledged']} right>{tr.colPledged}</SortableTh>}
                     {showCol('funded') && <SortableTh col={colSortKey['funding_rate']} right>{tr.colFunded}</SortableTh>}
@@ -664,6 +685,15 @@ export default function ProjectsPage() {
                         {showCol('category') && <td className="px-4 py-3">
                           <div className="text-xs text-gray-700 font-medium">{p.category_parent}</div>
                           <div className="text-xs text-gray-400">{p.category_name}</div>
+                        </td>}
+                        {showCol('agency') && <td className="px-4 py-3">
+                          {p.has_service_agency ? (
+                            <span className="inline-flex max-w-[9rem] items-center rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-xs font-semibold text-emerald-700">
+                              <span className="truncate">{p.service_agency_name || (lang === 'cn' ? '已识别服务商' : 'Agency detected')}</span>
+                            </span>
+                          ) : (
+                            <span className="text-xs text-gray-300">-</span>
+                          )}
                         </td>}
                         {showCol('goal') && <td className="px-4 py-3 text-right font-mono text-gray-500 text-xs">{fmtMoney(money.goal, money.currency)}</td>}
                         {showCol('pledged') && <td className="px-4 py-3 text-right">

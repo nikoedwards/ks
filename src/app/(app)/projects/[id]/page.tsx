@@ -87,6 +87,7 @@ interface Collaborator {
   role: string | null;
   avatar_url: string | null;
   profile_url: string | null;
+  is_service_agency?: number;
   captured_at: number;
 }
 
@@ -1361,7 +1362,9 @@ export default function ProjectDetailPage() {
                     href={c.profile_url ?? undefined}
                     target={c.profile_url ? '_blank' : undefined}
                     rel="noopener noreferrer"
-                    className="flex items-center gap-3 rounded-xl border border-gray-100 bg-white p-4 shadow-sm transition-all hover:border-ks-green/30 hover:shadow-md"
+                    className={`flex items-center gap-3 rounded-xl border p-4 shadow-sm transition-all hover:border-ks-green/30 hover:shadow-md ${
+                      c.is_service_agency ? 'border-emerald-200 bg-emerald-50/70' : 'border-gray-100 bg-white'
+                    }`}
                   >
                     <span className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-full bg-gray-100 text-sm font-black text-gray-400">
                       {c.avatar_url ? (
@@ -1369,8 +1372,17 @@ export default function ProjectDetailPage() {
                       ) : c.name.slice(0, 2).toUpperCase()}
                     </span>
                     <span className="min-w-0">
-                      <span className="block truncate text-sm font-bold text-gray-900">{c.name}</span>
-                      <span className="block truncate text-xs text-gray-400">{c.role || (lang === 'cn' ? '合作者' : 'Collaborator')}</span>
+                      <span className="flex items-center gap-2">
+                        <span className="block truncate text-sm font-bold text-gray-900">{c.name}</span>
+                        {c.is_service_agency ? (
+                          <span className="shrink-0 rounded-full bg-emerald-600 px-2 py-0.5 text-[10px] font-bold text-white">
+                            {lang === 'cn' ? '服务商 Agency' : 'Agency'}
+                          </span>
+                        ) : null}
+                      </span>
+                      <span className="block truncate text-xs text-gray-400">
+                        {c.is_service_agency ? (lang === 'cn' ? '本次项目众筹服务商' : 'Crowdfunding service provider') : (c.role || (lang === 'cn' ? '合作者' : 'Collaborator'))}
+                      </span>
                     </span>
                     {c.profile_url && <ExternalLink className="ml-auto h-4 w-4 text-gray-300" />}
                   </a>
