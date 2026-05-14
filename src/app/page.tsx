@@ -36,6 +36,31 @@ function RollingValue({ value, className }: { value: string; className?: string 
   return <span key={value} className={`inline-block animate-[bounce_0.45s_ease-out_1] ${className ?? ''}`}>{value}</span>;
 }
 
+function landingStateLabel(state: string, lang: string) {
+  const cn: Record<string, string> = {
+    live: '进行中',
+    successful: '成功',
+    failed: '失败',
+    canceled: '已下线',
+    suspended: '已下线',
+  };
+  const en: Record<string, string> = {
+    live: 'Live',
+    successful: 'Successful',
+    failed: 'Failed',
+    canceled: 'Offline',
+    suspended: 'Offline',
+  };
+  return (lang === 'cn' ? cn : en)[state] ?? state;
+}
+
+function landingStateClass(state: string) {
+  if (state === 'live') return 'bg-blue-50 text-blue-600';
+  if (state === 'successful') return 'bg-ks-green-light text-ks-green-dark';
+  if (state === 'failed') return 'bg-red-50 text-red-600';
+  return 'bg-gray-100 text-gray-500';
+}
+
 // ── FAQ accordion ──────────────────────────────────────────────────────────────
 
 function FaqItem({ q, a }: { q: string; a: string }) {
@@ -95,6 +120,9 @@ function ProjectTableMockup({ lang, rows: liveRows }: { lang: string; rows?: Lan
                 </td>
                 <td className="py-1.5">
                   <div className="font-semibold text-gray-800 text-[10px] truncate max-w-[80px]">{r.name}</div>
+                  <span className={`mt-0.5 inline-flex rounded-full px-1.5 py-0.5 text-[8px] font-bold ${landingStateClass(r.state)}`}>
+                    {landingStateLabel(r.state, lang)}
+                  </span>
                 </td>
                 <td className="py-1.5 text-gray-400 text-[10px]">{r.category_parent}</td>
                 <td className="py-1.5 text-right text-gray-800 font-semibold text-[10px]">{fmtMoneyCompact(r.usd_pledged ?? 0)}</td>
@@ -199,6 +227,7 @@ export default function LandingPage() {
   const router = useRouter();
 
   const [stats, setStats] = useState<PlatformStats | null>(null);
+  const [statsFactor, setStatsFactor] = useState(0.92);
   const [liveSummary, setLiveSummary] = useState<LiveSummary | null>(null);
   const [statsFetchedAt, setStatsFetchedAt] = useState<number | null>(null);
   const [clock, setClock] = useState(Date.now());
@@ -231,13 +260,24 @@ export default function LandingPage() {
 
   useEffect(() => {
     loadStats();
-    const poll = window.setInterval(loadStats, 15000);
+    const poll = window.setInterval(loadStats, 5000);
     const tick = window.setInterval(() => setClock(Date.now()), 1000);
     return () => {
       window.clearInterval(poll);
       window.clearInterval(tick);
     };
   }, [loadStats]);
+
+  useEffect(() => {
+    setStatsFactor(0.92);
+    const started = Date.now();
+    const timer = window.setInterval(() => {
+      const progress = Math.min(1, (Date.now() - started) / 3600);
+      setStatsFactor(0.92 + 0.08 * progress);
+      if (progress >= 1) window.clearInterval(timer);
+    }, 120);
+    return () => window.clearInterval(timer);
+  }, [stats?.total, stats?.total_pledged_usd, stats?.category_count]);
 
   const fetchSuggestions = useCallback((q: string) => {
     if (!q.trim()) {
@@ -290,17 +330,17 @@ export default function LandingPage() {
 
   const elapsedSeconds = statsFetchedAt ? Math.max(0, (clock - statsFetchedAt) / 1000) : 0;
   const projectedPledgedM = stats
-    ? stats.total_pledged_usd + ((liveSummary?.pledged_delta_24h ?? 0) / 1_000_000 / 86400) * elapsedSeconds
+    ? (stats.total_pledged_usd + ((liveSummary?.pledged_delta_24h ?? 0) / 1_000_000 / 86400) * elapsedSeconds) * statsFactor
     : 0;
   const projectedProjectTotal = stats
-    ? stats.total + Math.floor(((liveSummary?.launched_24h ?? 0) / 86400) * elapsedSeconds)
+    ? (stats.total + Math.floor(((liveSummary?.launched_24h ?? 0) / 86400) * elapsedSeconds)) * statsFactor
     : 0;
 
   const platformStats = [
     { label: tr.stats.projects,   value: stats ? fmtNum(projectedProjectTotal)  : '200K+', color: 'text-ks-green' },
-    { label: tr.stats.rate,       value: stats ? `${stats.success_rate}%`        : '35%',   color: 'text-white' },
+    { label: tr.stats.rate,       value: stats ? `${(stats.success_rate * statsFactor).toFixed(1)}%` : '35%',   color: 'text-white' },
     { label: tr.stats.raised,     value: stats ? `$${projectedPledgedM.toFixed(2)}M` : '$2B+',  color: 'text-white' },
-    { label: tr.stats.categories, value: stats?.category_count ? String(stats.category_count) : '18', color: 'text-white' },
+    { label: tr.stats.categories, value: stats?.category_count ? String(Math.max(1, Math.round(stats.category_count * statsFactor))) : '18', color: 'text-white' },
   ];
 
   const featureSections = lang === 'cn' ? [
@@ -418,15 +458,20 @@ export default function LandingPage() {
                       className="w-full px-4 py-2.5 text-left hover:bg-gray-50 transition-colors flex items-center gap-3 border-b border-gray-50 last:border-0"
                       onClick={() => { router.push(`/projects/${s.id}`); setShowSuggestions(false); setNavSearch(''); }}
                     >
-                      <Search className="w-3.5 h-3.5 text-gray-300 shrink-0" />
+                      <span className="h-10 w-16 shrink-0 overflow-hidden rounded-md bg-gray-100">
+                        {(s.image_thumb_url || s.image_url) ? (
+                          <img src={s.image_thumb_url || s.image_url || ''} alt="" className="h-full w-full object-cover" loading="lazy" referrerPolicy="no-referrer" />
+                        ) : (
+                          <Search className="m-3 h-4 w-4 text-gray-300" />
+                        )}
+                      </span>
                       <div className="min-w-0">
                         <div className="text-sm font-medium text-gray-800 truncate">{s.name}</div>
-                        <div className="text-xs text-gray-400">{s.category_parent}</div>
+                        <div className="text-xs text-gray-400">{s.category_parent} · {landingStateLabel(s.state, lang)}</div>
                       </div>
                     </button>
                   )) : (
                     <div>
-                      <p className="px-4 py-2 text-xs font-bold text-gray-400">{lang === 'cn' ? '近一个月新发起金额 Top 5' : 'Top funded launches in 30 days'}</p>
                       {defaultSuggestions.latestMonth.slice(0, 5).map(s => {
                         const img = s.image_thumb_url || s.image_url;
                         return (
@@ -436,7 +481,7 @@ export default function LandingPage() {
                             </span>
                             <span className="min-w-0">
                               <span className="block truncate text-sm font-semibold text-gray-800">{s.name}</span>
-                              <span className="block text-xs text-gray-400">{s.category_parent} · {fmtMoneyCompact(s.usd_pledged ?? 0)}</span>
+                              <span className="block text-xs text-gray-400">{s.category_parent} · {landingStateLabel(s.state, lang)} · {fmtMoneyCompact(s.usd_pledged ?? 0)}</span>
                             </span>
                           </button>
                         );
@@ -455,7 +500,7 @@ export default function LandingPage() {
 
             {/* Right nav */}
             <div className="flex items-center gap-3 shrink-0">
-              <Link href="/dashboard" className="hidden sm:flex text-sm font-medium text-gray-600 hover:text-gray-900 transition-colors">
+              <Link href="/live-intel" className="hidden sm:flex text-sm font-medium text-gray-600 hover:text-gray-900 transition-colors">
                 {tr.nav.dashboard}
               </Link>
               <Link href="/about" className="hidden md:flex text-sm font-medium text-gray-500 hover:text-gray-700 transition-colors">
@@ -653,7 +698,7 @@ export default function LandingPage() {
               <span>© 2026 Kicksonar · Data: <a href="https://webrobots.io" target="_blank" rel="noopener noreferrer" className="hover:text-gray-600 transition-colors">webrobots.io</a></span>
             </div>
             <div className="flex items-center gap-4 flex-wrap justify-center">
-              <Link href="/dashboard" className="hover:text-gray-600 transition-colors">{tr.nav.dashboard}</Link>
+              <Link href="/live-intel" className="hover:text-gray-600 transition-colors">{tr.nav.dashboard}</Link>
               <Link href="/about" className="hover:text-gray-600 transition-colors">{tr.nav.about}</Link>
               <a href="https://github.com/nikoedwards/ks" target="_blank" rel="noopener noreferrer" className="hover:text-gray-600 transition-colors">GitHub</a>
               <div className="flex items-center gap-0.5 bg-gray-100 rounded-lg p-0.5">

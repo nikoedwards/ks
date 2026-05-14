@@ -75,6 +75,7 @@ interface LeaderboardData {
 
 type Metric = 'pledged' | 'backers' | 'creator';
 type CreatorMetric = 'pledged' | 'count' | 'average';
+type ActiveYear = number | 'custom' | 'lifetime';
 
 const PAGE_SIZE = 20;
 
@@ -169,7 +170,7 @@ export default function LeaderboardPage() {
   const defaultRange = yearRange(yearNow);
   const [dateFrom, setDateFrom] = useState(defaultRange.from);
   const [dateTo, setDateTo] = useState(defaultRange.to);
-  const [activeYear, setActiveYear] = useState<number | 'custom'>(yearNow);
+  const [activeYear, setActiveYear] = useState<ActiveYear>(yearNow);
   const [categoryParent, setCategoryParent] = useState('');
   const [categoryName, setCategoryName] = useState('');
   const [metric, setMetric] = useState<Metric>('pledged');
@@ -194,7 +195,11 @@ export default function LeaderboardPage() {
     if (metricParam === 'creator-average') { setMetric('creator'); setCreatorMetric('average'); }
     const creatorMetricParam = params.get('creatorMetric');
     if (creatorMetricParam === 'pledged' || creatorMetricParam === 'count' || creatorMetricParam === 'average') setCreatorMetric(creatorMetricParam);
-    if (yearParam && /^\d{4}$/.test(yearParam)) {
+    if (yearParam === 'lifetime') {
+      setActiveYear('lifetime');
+      setDateFrom('');
+      setDateTo('');
+    } else if (yearParam && /^\d{4}$/.test(yearParam)) {
       const y = Number(yearParam);
       const range = yearRange(y);
       setActiveYear(y);
@@ -240,6 +245,14 @@ export default function LeaderboardPage() {
   const title = cn
     ? `${activeYear === 'custom' ? '自定义区间' : `${activeYear}年`} ${categoryLabel} Kickstarter TOP100 ${titleKind}`
     : `${activeYear === 'custom' ? 'Custom Range' : activeYear} ${categoryLabel} Kickstarter Top 100 ${titleKind}`;
+  const rangeLabel = activeYear === 'lifetime'
+    ? (cn ? '历史至今' : 'Lifetime')
+    : activeYear === 'custom'
+      ? (cn ? '自定义区间' : 'Custom Range')
+      : (cn ? `${activeYear}年` : String(activeYear));
+  const displayTitle = cn
+    ? `${rangeLabel} ${categoryLabel} Kickstarter TOP100 ${titleKind}`
+    : `${rangeLabel} ${categoryLabel} Kickstarter Top 100 ${titleKind}`;
   const dataDate = data?.generatedAt
     ? new Date(data.generatedAt * 1000).toLocaleString(cn ? 'zh-CN' : 'en-US', { year: 'numeric', month: 'short', day: 'numeric' })
     : new Date().toLocaleDateString(cn ? 'zh-CN' : 'en-US');
@@ -249,8 +262,8 @@ export default function LeaderboardPage() {
     setPage(1);
     const params = new URLSearchParams({
       limit: '100',
-      ...(toTs(dateFrom) ? { dateFrom: String(toTs(dateFrom)) } : {}),
-      ...(toTs(dateTo, true) ? { dateTo: String(toTs(dateTo, true)) } : {}),
+      ...(activeYear !== 'lifetime' && toTs(dateFrom) ? { dateFrom: String(toTs(dateFrom)) } : {}),
+      ...(activeYear !== 'lifetime' && toTs(dateTo, true) ? { dateTo: String(toTs(dateTo, true)) } : {}),
       ...(categoryParent ? { categoryParent } : {}),
       ...(categoryName ? { categoryName } : {}),
     });
@@ -271,11 +284,25 @@ export default function LeaderboardPage() {
     setDateTo(range.to);
   };
 
+  const applyLifetime = () => {
+    setActiveYear('lifetime');
+    setDateFrom('');
+    setDateTo('');
+  };
+
+  const switchMetric = (next: Metric) => {
+    if (next === 'creator') applyLifetime();
+    if (next !== 'creator' && activeYear === 'lifetime') applyYear(yearNow);
+    setMetric(next);
+    setPage(1);
+  };
+
   const shareUrl = () => {
     const url = new URL(window.location.href);
     url.pathname = '/leaderboard';
     url.search = '';
-    if (activeYear !== 'custom') url.searchParams.set('year', String(activeYear));
+    if (activeYear === 'lifetime') url.searchParams.set('year', 'lifetime');
+    else if (activeYear !== 'custom') url.searchParams.set('year', String(activeYear));
     else {
       url.searchParams.set('from', dateFrom);
       url.searchParams.set('to', dateTo);
@@ -344,7 +371,7 @@ export default function LeaderboardPage() {
       ctx.fillText('KICKSTARTER', 286, 76);
     }
     ctx.font = '900 82px Arial, sans-serif';
-    ctx.fillText(activeYear === 'custom' ? 'CUSTOM' : `${activeYear}`, 64, 190);
+    ctx.fillText(activeYear === 'custom' ? 'CUSTOM' : activeYear === 'lifetime' ? 'LIFETIME' : `${activeYear}`, 64, 190);
     ctx.font = '900 62px Arial, sans-serif';
     ctx.fillText(isCnShare ? `${shareCategory} TOP100 项目榜单` : `${shareCategory} TOP100`, 64, 285);
     ctx.fillStyle = '#0f3f29';
@@ -445,6 +472,14 @@ export default function LeaderboardPage() {
             >
               {cn ? '自定义' : 'Custom'}
             </button>
+            <button
+              onClick={applyLifetime}
+              className={`rounded-full px-4 py-2 text-sm font-semibold transition-colors ${
+                activeYear === 'lifetime' ? 'bg-gray-900 text-white' : 'bg-gray-100/80 text-gray-500 hover:bg-gray-200'
+              }`}
+            >
+              {cn ? '历史至今' : 'Lifetime'}
+            </button>
           </div>
           <button onClick={load} className="rounded-lg bg-ks-green px-3 py-2 text-sm font-semibold text-white hover:bg-ks-green-dark">
             {cn ? '应用筛选' : 'Apply'}
@@ -495,17 +530,17 @@ export default function LeaderboardPage() {
       <section className="overflow-hidden rounded-lg border border-gray-100 bg-white shadow-sm">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-100 px-5 py-4">
           <div>
-            <h2 className="text-lg font-black text-gray-900">{title}</h2>
+            <h2 className="text-lg font-black text-gray-900">{displayTitle}</h2>
             <p className="text-xs text-gray-400">{cn ? '最多显示前 100 名，每页 20 个项目。' : 'Up to 100 projects, 20 per page.'}</p>
           </div>
           <div className="flex flex-wrap rounded-lg bg-gray-100 p-1">
-            <button onClick={() => { setMetric('pledged'); setPage(1); }} className={`inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-sm font-bold ${metric === 'pledged' ? 'bg-white text-ks-green shadow-sm' : 'text-gray-500'}`}>
+            <button onClick={() => switchMetric('pledged')} className={`inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-sm font-bold ${metric === 'pledged' ? 'bg-white text-ks-green shadow-sm' : 'text-gray-500'}`}>
               <DollarSign className="h-4 w-4" />{cn ? '总金额' : 'Pledged'}
             </button>
-            <button onClick={() => { setMetric('backers'); setPage(1); }} className={`inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-sm font-bold ${metric === 'backers' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500'}`}>
+            <button onClick={() => switchMetric('backers')} className={`inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-sm font-bold ${metric === 'backers' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500'}`}>
               <Users className="h-4 w-4" />{cn ? '支持者' : 'Backers'}
             </button>
-            <button onClick={() => { setMetric('creator'); setPage(1); }} className={`inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-sm font-bold ${metric === 'creator' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500'}`}>
+            <button onClick={() => switchMetric('creator')} className={`inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-sm font-bold ${metric === 'creator' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500'}`}>
               <Users className="h-4 w-4" />{cn ? '发起者' : 'Creators'}
             </button>
           </div>

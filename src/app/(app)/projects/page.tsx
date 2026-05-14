@@ -174,7 +174,7 @@ export default function ProjectsPage() {
   const [sort, setSort] = useState('usd_pledged');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
   const [page, setPage] = useState(1);
-  const [timePeriod, setTimePeriod] = useState<TimePeriod>('all');
+  const [timePeriod, setTimePeriod] = useState<TimePeriod>('month');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
   const [viewOpen, setViewOpen] = useState(false);
@@ -225,7 +225,7 @@ export default function ProjectsPage() {
     if (sort !== 'usd_pledged') params.set('sort', sort);
     if (sortDir !== 'desc') params.set('sortDir', sortDir);
     if (page !== 1) params.set('page', String(page));
-    if (timePeriod !== 'all') params.set('timePeriod', timePeriod);
+    if (timePeriod !== 'month') params.set('timePeriod', timePeriod);
     if (dateFrom) params.set('dateFrom', dateFrom);
     if (dateTo) params.set('dateTo', dateTo);
     const qs = params.toString();
@@ -314,7 +314,7 @@ export default function ProjectsPage() {
     setSort('usd_pledged');
     setSortDir('desc');
     setPage(1);
-    setTimePeriod('all');
+    setTimePeriod('month');
     setDateFrom('');
     setDateTo('');
   };

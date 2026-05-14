@@ -34,6 +34,19 @@ function ensureRuntimeMigrations(db: Database) {
   try { db.exec('ALTER TABLE projects ADD COLUMN ks_live_synced_at INTEGER'); } catch { /* already exists */ }
   try { db.exec('ALTER TABLE projects ADD COLUMN image_url TEXT'); } catch { /* already exists */ }
   try { db.exec('ALTER TABLE projects ADD COLUMN image_thumb_url TEXT'); } catch { /* already exists */ }
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS project_collaborators (
+      project_id TEXT NOT NULL,
+      collaborator_key TEXT NOT NULL,
+      name TEXT NOT NULL,
+      role TEXT,
+      avatar_url TEXT,
+      profile_url TEXT,
+      captured_at INTEGER DEFAULT (unixepoch()),
+      PRIMARY KEY (project_id, collaborator_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_collaborators_project ON project_collaborators(project_id);
+  `);
   try { db.exec('ALTER TABLE tracking_settings ADD COLUMN subscriber_count INTEGER DEFAULT 0'); } catch { /* already exists */ }
   try { db.exec('ALTER TABLE tracking_settings ADD COLUMN priority_score INTEGER DEFAULT 0'); } catch { /* already exists */ }
   ensureAnnouncementTables(db);
@@ -240,10 +253,22 @@ function getDB(): Database {
       fetched_at INTEGER DEFAULT (unixepoch())
     );
 
+    CREATE TABLE IF NOT EXISTS project_collaborators (
+      project_id TEXT NOT NULL,
+      collaborator_key TEXT NOT NULL,
+      name TEXT NOT NULL,
+      role TEXT,
+      avatar_url TEXT,
+      profile_url TEXT,
+      captured_at INTEGER DEFAULT (unixepoch()),
+      PRIMARY KEY (project_id, collaborator_key)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_snapshots_project ON project_snapshots(project_id, captured_at);
     CREATE INDEX IF NOT EXISTS idx_rewards_project ON reward_snapshots(project_id, captured_at);
     CREATE INDEX IF NOT EXISTS idx_text_project ON project_text_history(project_id, captured_at);
     CREATE INDEX IF NOT EXISTS idx_comments_project ON project_comments(project_id, posted_at);
+    CREATE INDEX IF NOT EXISTS idx_collaborators_project ON project_collaborators(project_id);
     CREATE INDEX IF NOT EXISTS idx_tracking_next ON tracking_settings(next_fetch);
     CREATE INDEX IF NOT EXISTS idx_subscriptions_project ON user_project_subscriptions(project_id, is_tracking);
     CREATE INDEX IF NOT EXISTS idx_subscriptions_user ON user_project_subscriptions(user_id, is_tracking);
@@ -546,6 +571,38 @@ export async function getCountries(filter: { dateFrom?: number; dateTo?: number 
     ${where}
     GROUP BY country ORDER BY total DESC LIMIT 20
   `).all(params);
+}
+
+export function getTimeAnalysis(filter: { categoryParent?: string; categoryName?: string; country?: string } = {}) {
+  const clauses = ['launched_at IS NOT NULL'];
+  const params: Record<string, unknown> = {};
+  if (filter.categoryParent) { clauses.push('category_parent = @categoryParent'); params.categoryParent = filter.categoryParent; }
+  if (filter.categoryName) { clauses.push('category_name = @categoryName'); params.categoryName = filter.categoryName; }
+  if (filter.country) { clauses.push('country = @country'); params.country = filter.country; }
+  const where = `WHERE ${clauses.join(' AND ')}`;
+  return getDB().prepare(`
+    SELECT
+      strftime('%Y', datetime(launched_at, 'unixepoch')) as year,
+      COUNT(*) as total,
+      SUM(CASE WHEN state='successful' THEN 1 ELSE 0 END) as successful,
+      SUM(CASE WHEN state='failed' THEN 1 ELSE 0 END) as failed,
+      ROUND(AVG(CASE WHEN state IN ('successful','failed')
+        THEN CASE WHEN state='successful' THEN 1.0 ELSE 0.0 END END) * 100, 1) as success_rate,
+      ROUND(SUM(COALESCE(usd_pledged, 0)) / 1000000.0, 2) as total_pledged_m,
+      SUM(COALESCE(backers_count, 0)) as total_backers
+    FROM projects
+    ${where}
+    GROUP BY year
+    ORDER BY year ASC
+  `).all(params) as {
+    year: string;
+    total: number;
+    successful: number;
+    failed: number;
+    success_rate: number;
+    total_pledged_m: number;
+    total_backers: number;
+  }[];
 }
 
 export interface LeaderboardFilter {
@@ -2124,6 +2181,43 @@ export function getLatestRewards(projectId: string): RewardSnapshot[] {
     SELECT reward_id, title, description, amount_usd, backers_count, limit_count, is_limited
     FROM reward_snapshots WHERE project_id = ? AND captured_at = ? ORDER BY amount_usd ASC
   `).all(projectId, latest.ts) as RewardSnapshot[];
+}
+
+export interface ProjectCollaborator {
+  collaborator_key: string;
+  name: string;
+  role: string | null;
+  avatar_url: string | null;
+  profile_url: string | null;
+  captured_at: number;
+}
+
+export function upsertProjectCollaborators(projectId: string, collaborators: ProjectCollaborator[]) {
+  if (!collaborators.length) return;
+  const stmt = getDB().prepare(`
+    INSERT INTO project_collaborators
+      (project_id, collaborator_key, name, role, avatar_url, profile_url, captured_at)
+    VALUES (@project_id, @collaborator_key, @name, @role, @avatar_url, @profile_url, @captured_at)
+    ON CONFLICT(project_id, collaborator_key) DO UPDATE SET
+      name = excluded.name,
+      role = excluded.role,
+      avatar_url = excluded.avatar_url,
+      profile_url = excluded.profile_url,
+      captured_at = excluded.captured_at
+  `);
+  const tx = getDB().transaction(() => {
+    for (const c of collaborators) stmt.run({ project_id: projectId, ...c });
+  });
+  tx();
+}
+
+export function getProjectCollaborators(projectId: string): ProjectCollaborator[] {
+  return getDB().prepare(`
+    SELECT collaborator_key, name, role, avatar_url, profile_url, captured_at
+    FROM project_collaborators
+    WHERE project_id = ?
+    ORDER BY name ASC
+  `).all(projectId) as ProjectCollaborator[];
 }
 
 // ─── Text history ─────────────────────────────────────────────────────────────

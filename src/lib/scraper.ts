@@ -4,10 +4,12 @@ import {
   getSnapshots,
   insertSnapshot,
   insertRewardSnapshots,
+  upsertProjectCollaborators,
   insertTextIfChanged,
   insertComment,
   markFetched,
   updateProjectLiveMetadata,
+  type ProjectCollaborator,
   type RewardSnapshot,
 } from './db';
 
@@ -49,6 +51,8 @@ interface KSProject {
   deadline?: number;
   rewards?: KSReward[];
   creator?: { name?: string; slug?: string; urls?: { web?: { user?: string } } };
+  collaborators?: KSCollaborator[];
+  project_collaborators?: KSCollaborator[];
   photo?: {
     full?: string;
     little?: string;
@@ -59,6 +63,16 @@ interface KSProject {
     '1024x576'?: string;
     '1536x864'?: string;
   };
+}
+
+interface KSCollaborator {
+  id?: number | string;
+  name?: string;
+  slug?: string;
+  role?: string;
+  avatar?: { thumb?: string; small?: string; medium?: string };
+  photo?: { thumb?: string; small?: string; med?: string; full?: string };
+  urls?: { web?: { user?: string; profile?: string } };
 }
 
 interface KicktraqSummary {
@@ -110,6 +124,29 @@ function daysToGo(deadline: number | undefined): number {
 
 function stripTags(value: string) {
   return value.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function normalizeCollaborators(projectId: string, p: KSProject, now: number): ProjectCollaborator[] {
+  const raw = [
+    ...((p.collaborators ?? []) as KSCollaborator[]),
+    ...((p.project_collaborators ?? []) as KSCollaborator[]),
+  ];
+  const rows = new Map<string, ProjectCollaborator>();
+  for (const c of raw) {
+    const name = c.name?.trim();
+    if (!name) continue;
+    const key = String(c.id ?? c.slug ?? name.toLowerCase().replace(/\s+/g, '-'));
+    if (key === projectId) continue;
+    rows.set(key, {
+      collaborator_key: key,
+      name,
+      role: c.role ?? null,
+      avatar_url: c.avatar?.small ?? c.avatar?.thumb ?? c.photo?.small ?? c.photo?.thumb ?? c.photo?.med ?? c.photo?.full ?? null,
+      profile_url: c.urls?.web?.user ?? c.urls?.web?.profile ?? (c.slug ? `https://www.kickstarter.com/profile/${c.slug}` : null),
+      captured_at: now,
+    });
+  }
+  return [...rows.values()];
 }
 
 function parseMoney(raw: string | undefined): { amount: number; currency: string | null } {
@@ -204,6 +241,39 @@ export async function scrapeKSJson(jsonUrl: string): Promise<KSProject | null> {
   }
 }
 
+async function scrapeKickstarterHtmlFallback(projectId: string, jsonUrl: string): Promise<boolean> {
+  const pageUrl = jsonUrl.replace(/\.json(?:[?#].*)?$/, '');
+  if (!pageUrl.startsWith('https://www.kickstarter.com/projects/')) return false;
+  try {
+    const res = await fetch(pageUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'text/html,application/xhtml+xml',
+      },
+      signal: AbortSignal.timeout(18_000),
+      cache: 'no-store',
+    });
+    if (!res.ok) return false;
+    const html = await res.text();
+    const image = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i)?.[1]
+      ?? html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i)?.[1]
+      ?? null;
+    const title = stripTags(html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i)?.[1] ?? '');
+    const description = stripTags(html.match(/<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']+)["']/i)?.[1] ?? '');
+    if (!image && !title && !description) return false;
+    updateProjectLiveMetadata(projectId, {
+      name: title || undefined,
+      blurb: description || undefined,
+      image_url: image,
+      image_thumb_url: image,
+    });
+    markFetched(projectId);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export interface ScrapeOptions {
   track_rewards?: number;
   track_comments?: number;
@@ -212,7 +282,7 @@ export interface ScrapeOptions {
 
 export async function scrapeAndStore(projectId: string, jsonUrl: string, opts: ScrapeOptions = {}): Promise<boolean> {
   const p = await scrapeKSJson(jsonUrl);
-  if (!p) return false;
+  if (!p) return scrapeKickstarterHtmlFallback(projectId, jsonUrl);
 
   const now = Math.floor(Date.now() / 1000);
   const { pledgedUsd, goalUsd } = resolveUsdAmounts(p);
@@ -270,6 +340,8 @@ export async function scrapeAndStore(projectId: string, jsonUrl: string, opts: S
     }));
     insertRewardSnapshots(projectId, now, rewards);
   }
+
+  upsertProjectCollaborators(projectId, normalizeCollaborators(projectId, p, now));
 
   if (opts.track_text_diff) {
     if (p.name) insertTextIfChanged(projectId, now, 'name', p.name);

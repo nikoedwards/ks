@@ -42,6 +42,16 @@ interface CountryRow {
   total_backers: number;
 }
 
+interface TimeRow {
+  year: string;
+  total: number;
+  successful: number;
+  failed: number;
+  success_rate: number;
+  total_pledged_m: number;
+  total_backers: number;
+}
+
 interface StatsResponse {
   stats: Record<string, number>;
   stateDistribution: { state: string; count: number }[];
@@ -75,7 +85,7 @@ function buildQuery(dateFrom?: number, dateTo?: number): string {
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-type Tab = 'overview' | 'categories' | 'trends' | 'countries';
+type Tab = 'overview' | 'categories' | 'trends' | 'countries' | 'time';
 type Period = 'all' | typeof YEAR_PRESETS[number] | 'custom';
 
 export default function AnalysisPage() {
@@ -98,6 +108,11 @@ export default function AnalysisPage() {
   const [categories, setCategories] = useState<CategoryRow[]>([]);
   const [trends, setTrends]         = useState<TrendRow[]>([]);
   const [countries, setCountries]   = useState<CountryRow[]>([]);
+  const [timeRows, setTimeRows]     = useState<TimeRow[]>([]);
+  const [timeCategory, setTimeCategory] = useState('');
+  const [timeCountry, setTimeCountry] = useState('');
+  const [compareA, setCompareA] = useState('2024');
+  const [compareB, setCompareB] = useState('2025');
   const [statsData, setStatsData]   = useState<StatsResponse | null>(null);
   const [loading, setLoading]       = useState(false);
   const [empty, setEmpty]           = useState(false);
@@ -113,7 +128,7 @@ export default function AnalysisPage() {
   }, [period, customFrom, customTo]);
 
   const fetchAll = useCallback(() => {
-    const { dateFrom, dateTo } = getDateRange();
+    const { dateFrom, dateTo } = tab === 'time' ? {} : getDateRange();
     const qs = buildQuery(dateFrom, dateTo);
     setLoading(true);
     setEmpty(false);
@@ -123,7 +138,11 @@ export default function AnalysisPage() {
       fetch(`/api/categories${qs}`).then(r => r.json()),
       fetch(`/api/trends${qs}`).then(r => r.json()),
       fetch(`/api/countries${qs}`).then(r => r.json()),
-    ]).then(([stats, cat, trend, coun]) => {
+      fetch(`/api/analysis/time?${new URLSearchParams({
+        ...(timeCategory ? { categoryParent: timeCategory } : {}),
+        ...(timeCountry ? { country: timeCountry } : {}),
+      }).toString()}`).then(r => r.json()),
+    ]).then(([stats, cat, trend, coun, time]) => {
       const catData   = cat.data   ?? [];
       const trendData = trend.data ?? [];
       const counData  = coun.data  ?? [];
@@ -131,23 +150,31 @@ export default function AnalysisPage() {
       setCategories(catData);
       setTrends(trendData);
       setCountries(counData);
+      setTimeRows(time.data ?? []);
       if (!stats?.stats && !catData.length && !trendData.length && !counData.length) setEmpty(true);
       setLoading(false);
     }).catch(() => setLoading(false));
-  }, [getDateRange]);
+  }, [getDateRange, tab, timeCategory, timeCountry]);
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
 
   // ── Period filter UI ────────────────────────────────────────────────────────
 
+  const globalPeriodDisabled = tab === 'time';
+  const periodButtonClass = (active: boolean) => globalPeriodDisabled
+    ? 'bg-gray-100 text-gray-300 cursor-not-allowed'
+    : active
+      ? 'bg-ks-green text-white'
+      : 'bg-gray-100 text-gray-600 hover:bg-gray-200';
   const periodBar = (
-    <div className="bg-white rounded-xl border border-gray-100 shadow-sm px-5 py-4">
+    <div className={`bg-white rounded-xl border border-gray-100 shadow-sm px-5 py-4 ${globalPeriodDisabled ? 'opacity-60' : ''}`}>
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-xs font-semibold text-gray-400 uppercase tracking-wide mr-1">{tr.period}</span>
 
         <button
+          disabled={globalPeriodDisabled}
           onClick={() => gate(() => setPeriod('all'))}
-          className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${period === 'all' ? 'bg-ks-green text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+          className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${periodButtonClass(period === 'all')}`}
         >
           {tr.allTime}
         </button>
@@ -155,16 +182,18 @@ export default function AnalysisPage() {
         {YEAR_PRESETS.map(y => (
           <button
             key={y}
+            disabled={globalPeriodDisabled}
             onClick={() => gate(() => setPeriod(y))}
-            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${period === y ? 'bg-ks-green text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${periodButtonClass(period === y)}`}
           >
             {y}
           </button>
         ))}
 
         <button
+          disabled={globalPeriodDisabled}
           onClick={() => gate(() => setPeriod('custom'))}
-          className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${period === 'custom' ? 'bg-ks-green text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+          className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${periodButtonClass(period === 'custom')}`}
         >
           {tr.customRange}
         </button>
@@ -199,6 +228,7 @@ export default function AnalysisPage() {
     { key: 'categories', label: tr.tabCategories },
     { key: 'trends',     label: tr.tabTrends },
     { key: 'countries',  label: tr.tabCountries },
+    { key: 'time',       label: lang === 'cn' ? '时间分析' : 'Time Analysis' },
   ];
 
   const tabBar = (
@@ -548,6 +578,77 @@ export default function AnalysisPage() {
 
   // ── Render ──────────────────────────────────────────────────────────────────
 
+  const timeYears = timeRows.map(r => r.year).filter(Boolean).sort();
+  const aRow = timeRows.find(r => r.year === compareA);
+  const bRow = timeRows.find(r => r.year === compareB);
+  const yoy = (a?: number, b?: number) => {
+    if (!a || !Number.isFinite(a)) return 'N/A';
+    const pct = (((b ?? 0) - a) / a) * 100;
+    return `${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%`;
+  };
+  const timeContent = (
+    <div className="space-y-5">
+      <div className="rounded-xl border border-gray-100 bg-white p-4 shadow-sm">
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
+          <label className="space-y-1">
+            <span className="text-xs font-semibold text-gray-400">{lang === 'cn' ? '类目' : 'Category'}</span>
+            <select value={timeCategory} onChange={e => setTimeCategory(e.target.value)} className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm">
+              <option value="">{lang === 'cn' ? '全部类目' : 'All categories'}</option>
+              {categories.map(c => <option key={c.category} value={c.category}>{c.category}</option>)}
+            </select>
+          </label>
+          <label className="space-y-1">
+            <span className="text-xs font-semibold text-gray-400">{lang === 'cn' ? '国家' : 'Country'}</span>
+            <select value={timeCountry} onChange={e => setTimeCountry(e.target.value)} className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm">
+              <option value="">{lang === 'cn' ? '全部国家' : 'All countries'}</option>
+              {countries.map(c => <option key={c.country} value={c.country}>{c.country_name || c.country}</option>)}
+            </select>
+          </label>
+          <label className="space-y-1">
+            <span className="text-xs font-semibold text-gray-400">{lang === 'cn' ? '对比年份 A' : 'Compare A'}</span>
+            <select value={compareA} onChange={e => setCompareA(e.target.value)} className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm">
+              {timeYears.map(y => <option key={y} value={y}>{y}</option>)}
+            </select>
+          </label>
+          <label className="space-y-1">
+            <span className="text-xs font-semibold text-gray-400">{lang === 'cn' ? '对比年份 B' : 'Compare B'}</span>
+            <select value={compareB} onChange={e => setCompareB(e.target.value)} className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm">
+              {timeYears.map(y => <option key={y} value={y}>{y}</option>)}
+            </select>
+          </label>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+        <StatCard title={lang === 'cn' ? '项目数同比' : 'Projects YoY'} value={yoy(aRow?.total, bRow?.total)} sub={`${compareA} -> ${compareB}`} />
+        <StatCard title={lang === 'cn' ? '融资同比' : 'Pledged YoY'} value={yoy(aRow?.total_pledged_m, bRow?.total_pledged_m)} sub={`${compareA} -> ${compareB}`} accent />
+        <StatCard title={lang === 'cn' ? '支持者同比' : 'Backers YoY'} value={yoy(aRow?.total_backers, bRow?.total_backers)} sub={`${compareA} -> ${compareB}`} />
+      </div>
+
+      <LineChart
+        data={timeRows}
+        xKey="year"
+        lines={[
+          { key: 'total', name: lang === 'cn' ? '项目数' : 'Projects', color: '#3B82F6' },
+          { key: 'successful', name: lang === 'cn' ? '成功项目' : 'Successful', color: '#05CE78' },
+        ]}
+        title={lang === 'cn' ? '年度项目数量趋势' : 'Yearly Project Trend'}
+        height={320}
+      />
+      <LineChart
+        data={timeRows}
+        xKey="year"
+        lines={[
+          { key: 'total_pledged_m', name: lang === 'cn' ? '融资额' : 'Pledged', color: '#F59E0B' },
+          { key: 'total_backers', name: lang === 'cn' ? '支持者' : 'Backers', color: '#6366F1' },
+        ]}
+        title={lang === 'cn' ? '年度融资与支持者趋势' : 'Yearly Pledged and Backers'}
+        yFormatter={v => Number(v) > 10000 ? Number(v).toLocaleString() : String(v)}
+        height={320}
+      />
+    </div>
+  );
+
   return (
     <div className="max-w-7xl mx-auto space-y-5">
       <div>
@@ -564,6 +665,7 @@ export default function AnalysisPage() {
           {tab === 'categories' && categoryContent}
           {tab === 'trends'     && trendsContent}
           {tab === 'countries'  && countriesContent}
+          {tab === 'time'       && timeContent}
         </div>
       </div>
 

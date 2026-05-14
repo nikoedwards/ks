@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
   ArrowLeft, ExternalLink, TrendingUp, Calendar, Award, Heart,
-  Activity, Gift, FileText, Layers, RefreshCw, Radio,
+  Activity, Gift, FileText, Layers, RefreshCw, Radio, Users,
 } from 'lucide-react';
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -69,6 +69,15 @@ interface TextChange {
   field: string; captured_at: number; content: string;
 }
 
+interface Collaborator {
+  collaborator_key: string;
+  name: string;
+  role: string | null;
+  avatar_url: string | null;
+  profile_url: string | null;
+  captured_at: number;
+}
+
 interface TrackingSettings {
   is_tracking: number; track_rewards: number; track_comments: number;
   analyze_comments: number; track_text_diff: number; priority: number;
@@ -86,7 +95,7 @@ const STATE_COLOR: Record<string, string> = {
   suspended: 'bg-purple-50 text-purple-600 border border-purple-100',
 };
 
-const TAB_IDS = ['overview', 'curve', 'rewards', 'changes', 'similar'] as const;
+const TAB_IDS = ['overview', 'curve', 'rewards', 'changes', 'collaborators', 'similar'] as const;
 type TabId = typeof TAB_IDS[number];
 type CurveMetric = 'pledged' | 'backers' | 'comments';
 type CurveMode = 'daily' | 'cumulative';
@@ -192,6 +201,7 @@ export default function ProjectDetailPage() {
     { id: 'curve' as TabId, label: tr.tabCurve, icon: TrendingUp },
     { id: 'rewards' as TabId, label: tr.tabRewards, icon: Gift },
     { id: 'changes' as TabId, label: tr.tabChanges, icon: FileText },
+    { id: 'collaborators' as TabId, label: lang === 'cn' ? '合作者' : 'Collaborators', icon: Users },
     { id: 'similar' as TabId, label: tr.tabSimilar, icon: Layers },
   ];
 
@@ -221,6 +231,7 @@ export default function ProjectDetailPage() {
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
   const [rewards, setRewards] = useState<Reward[]>([]);
   const [textHistory, setTextHistory] = useState<TextChange[]>([]);
+  const [collaborators, setCollaborators] = useState<Collaborator[]>([]);
 
   const [ktDebug, setKtDebug] = useState<KicktraqDebug | null>(null);
 
@@ -288,6 +299,7 @@ export default function ProjectDetailPage() {
       setSnapshots(d.snapshots ?? []);
       setRewards(d.rewards ?? []);
       setTextHistory(d.textHistory ?? []);
+      setCollaborators(d.collaborators ?? []);
     } catch {}
   }, [id]);
 
@@ -533,8 +545,10 @@ export default function ProjectDetailPage() {
   const displayCurrency = nativeKicktraqLooksCurrent ? nativeCurrency : 'USD';
   const displayPledged = nativeKicktraqLooksCurrent
     ? latestNativeKicktraqSnapshot!.pledged_usd
-    : latestUsdSnapshot?.pledged_usd ?? project.usd_pledged;
-  const displayBackers = (nativeKicktraqLooksCurrent ? latestNativeKicktraqSnapshot?.backers_count : latestUsdSnapshot?.backers_count) ?? project.backers_count;
+    : Math.max(Number(project.usd_pledged ?? 0), Number(latestUsdSnapshot?.pledged_usd ?? 0));
+  const displayBackers = nativeKicktraqLooksCurrent
+    ? latestNativeKicktraqSnapshot?.backers_count ?? project.backers_count
+    : Math.max(Number(project.backers_count ?? 0), Number(latestUsdSnapshot?.backers_count ?? 0));
   const inferredGoalUsd = nativeCurrency !== 'USD' && project.pledged > 0 && project.usd_pledged > 0 && project.usd_pledged < project.pledged
     ? project.goal * (project.usd_pledged / project.pledged)
     : project.goal;
@@ -1180,6 +1194,51 @@ export default function ProjectDetailPage() {
         )}
 
         {/* ── SIMILAR PROJECTS ── */}
+        {activeTab === 'collaborators' && (
+          <div className="space-y-4">
+            <div>
+              <h3 className="font-semibold text-gray-700">{lang === 'cn' ? '项目合作者' : 'Collaborators'}</h3>
+              <p className="text-xs text-gray-400 mt-0.5">
+                {lang === 'cn'
+                  ? '从 Kickstarter Creator 数据中识别到的合作方、服务商和参与者。'
+                  : 'Collaborators, vendors, and partners detected from Kickstarter creator data.'}
+              </p>
+            </div>
+            {collaborators.length ? (
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                {collaborators.map(c => (
+                  <a
+                    key={c.collaborator_key}
+                    href={c.profile_url ?? undefined}
+                    target={c.profile_url ? '_blank' : undefined}
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-3 rounded-xl border border-gray-100 bg-white p-4 shadow-sm transition-all hover:border-ks-green/30 hover:shadow-md"
+                  >
+                    <span className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-full bg-gray-100 text-sm font-black text-gray-400">
+                      {c.avatar_url ? (
+                        <img src={c.avatar_url} alt="" className="h-full w-full object-cover" loading="lazy" referrerPolicy="no-referrer" />
+                      ) : c.name.slice(0, 2).toUpperCase()}
+                    </span>
+                    <span className="min-w-0">
+                      <span className="block truncate text-sm font-bold text-gray-900">{c.name}</span>
+                      <span className="block truncate text-xs text-gray-400">{c.role || (lang === 'cn' ? '合作者' : 'Collaborator')}</span>
+                    </span>
+                    {c.profile_url && <ExternalLink className="ml-auto h-4 w-4 text-gray-300" />}
+                  </a>
+                ))}
+              </div>
+            ) : (
+              <div className="rounded-xl border border-gray-100 bg-white p-6 text-center shadow-sm">
+                <p className="text-sm text-gray-400">
+                  {lang === 'cn'
+                    ? '暂未抓取到合作者数据。若 Kickstarter 页面被服务器环境拦截，下一次成功同步后会自动补充。'
+                    : 'No collaborator data has been captured yet. A successful Kickstarter sync will fill this when the page exposes it.'}
+                </p>
+              </div>
+            )}
+          </div>
+        )}
+
         {activeTab === 'similar' && (
           <div className="space-y-4">
             <div>
