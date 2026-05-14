@@ -15,7 +15,7 @@ let lastLiveSync = 0;
 let lastKicktraqSync = 0;
 let lastAutoTrack = 0;
 
-const LIVE_SYNC_INTERVAL = 2 * 60 * 60 * 1000;
+const LIVE_SYNC_INTERVAL = Number(process.env.LIVE_DISCOVERY_INTERVAL_MS ?? 15 * 60 * 1000);
 const KICKTRAQ_SYNC_INTERVAL = 6 * 60 * 60 * 1000;
 const AUTO_TRACK_INTERVAL = 15 * 60 * 1000;
 const TRACKER_CYCLE_INTERVAL = 5 * 60 * 1000;
@@ -39,6 +39,26 @@ async function runCycle() {
   await enrollLiveProjects(now);
   await scrapeDueProjects();
   startDiscoveryJobs(now);
+}
+
+export async function runOfficialPipelineOnce(options: {
+  maxPages?: number;
+  lookbackDays?: number;
+  scrapeDue?: boolean;
+} = {}) {
+  const now = Date.now();
+  const live = await runKickstarterLiveSync({
+    state: 'live',
+    maxPages: options.maxPages ?? Number(process.env.LIVE_DISCOVERY_MAX_PAGES ?? 5),
+    since: Math.floor(Date.now() / 1000) - (options.lookbackDays ?? Number(process.env.LIVE_DISCOVERY_LOOKBACK_DAYS ?? 3)) * 24 * 3600,
+  });
+  const auto = autoTrackLiveProjects(AUTO_TRACK_BATCH_SIZE);
+  if (options.scrapeDue ?? true) {
+    await scrapeDueProjects();
+  }
+  lastLiveSync = now;
+  lastAutoTrack = now;
+  return { live, auto };
 }
 
 async function enrollLiveProjects(now: number) {
@@ -117,8 +137,8 @@ function startDiscoveryJobs(now: number) {
     console.log('[tracker] Starting KS live discovery sync...');
     runKickstarterLiveSync({
       state: 'live',
-      maxPages: 10,
-      since: Math.floor(Date.now() / 1000) - 3 * 24 * 3600,
+      maxPages: Number(process.env.LIVE_DISCOVERY_MAX_PAGES ?? 5),
+      since: Math.floor(Date.now() / 1000) - Number(process.env.LIVE_DISCOVERY_LOOKBACK_DAYS ?? 3) * 24 * 3600,
     }).then(result => {
       console.log(`[tracker] KS live sync done: ${result.insertedOrUpdated} upserted, stopped=${result.stoppedReason}`);
       const auto = autoTrackLiveProjects(AUTO_TRACK_BATCH_SIZE);

@@ -192,6 +192,40 @@ function isBlockedHtml(text: string) {
   return text.includes('cf_chl') || text.includes('Just a moment') || text.includes('Enable JavaScript and cookies');
 }
 
+function getOptionalEnv(name: string) {
+  const direct = process.env[name]?.trim();
+  if (direct) return direct;
+  const match = Object.entries(process.env).find(([key]) => key.trim() === name);
+  return match?.[1]?.trim() ?? '';
+}
+
+async function fetchDiscoverViaBrowser(url: string) {
+  const proxyUrl = getOptionalEnv('KICKSTARTER_BROWSER_FETCH_URL');
+  if (!proxyUrl) return null;
+
+  const res = await fetch(proxyUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json, text/plain, */*',
+    },
+    body: JSON.stringify({ url, expect: 'json' }),
+    signal: AbortSignal.timeout(Number(getOptionalEnv('KICKSTARTER_BROWSER_TIMEOUT_MS') || 60_000)),
+    cache: 'no-store',
+  });
+  if (!res.ok) return null;
+
+  const text = await res.text();
+  const data = JSON.parse(text) as DiscoverResponse | { body?: DiscoverResponse | string; text?: string };
+  if ('body' in data && data.body) {
+    return typeof data.body === 'string' ? JSON.parse(data.body) as DiscoverResponse : data.body;
+  }
+  if ('text' in data && typeof data.text === 'string') {
+    return JSON.parse(data.text) as DiscoverResponse;
+  }
+  return data as DiscoverResponse;
+}
+
 async function fetchDiscoverPage(page: number, opts: Required<Pick<LiveSyncOptions, 'state'>>) {
   const params = new URLSearchParams({
     sort: 'newest',
@@ -200,7 +234,8 @@ async function fetchDiscoverPage(page: number, opts: Required<Pick<LiveSyncOptio
   });
   if (opts.state !== 'all') params.set('state', opts.state);
 
-  const res = await fetch(`${DISCOVER_URL}?${params.toString()}`, {
+  const url = `${DISCOVER_URL}?${params.toString()}`;
+  const res = await fetch(url, {
     headers: {
       'Accept': 'application/json, text/plain, */*',
       'User-Agent': 'Mozilla/5.0 (compatible; KicksonarBot/0.1; +https://kicksonar.local)',
@@ -211,12 +246,20 @@ async function fetchDiscoverPage(page: number, opts: Required<Pick<LiveSyncOptio
 
   const text = await res.text();
   if (isBlockedHtml(text)) {
+    const body = await fetchDiscoverViaBrowser(url).catch(() => null);
+    if (body) return { blocked: false as const, status: 200, body };
     return { blocked: true as const, status: res.status, body: null };
   }
   if (!res.ok) {
     throw new Error(`Kickstarter discover HTTP ${res.status}`);
   }
-  return { blocked: false as const, status: res.status, body: JSON.parse(text) as DiscoverResponse };
+  try {
+    return { blocked: false as const, status: res.status, body: JSON.parse(text) as DiscoverResponse };
+  } catch (err) {
+    const body = await fetchDiscoverViaBrowser(url).catch(() => null);
+    if (body) return { blocked: false as const, status: 200, body };
+    throw err;
+  }
 }
 
 export async function runKickstarterLiveSync(options: LiveSyncOptions = {}): Promise<LiveSyncResult> {

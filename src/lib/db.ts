@@ -2192,24 +2192,56 @@ export function syncTrackingSettingsFromSubscriptions(projectId: string) {
 
 export function markFetched(projectId: string) {
   const now = Math.floor(Date.now() / 1000);
-  const s = getDB().prepare(
-    'SELECT priority, subscriber_count, priority_score FROM tracking_settings WHERE project_id = ?'
-  ).get(projectId) as { priority: number; subscriber_count: number; priority_score: number } | null;
+  const s = getDB().prepare(`
+    SELECT
+      t.priority,
+      t.subscriber_count,
+      t.priority_score,
+      p.state,
+      p.launched_at,
+      p.deadline,
+      p.usd_pledged,
+      p.backers_count
+    FROM tracking_settings t
+    LEFT JOIN projects p ON p.id = t.project_id
+    WHERE t.project_id = ?
+  `).get(projectId) as {
+    priority: number;
+    subscriber_count: number;
+    priority_score: number;
+    state: string | null;
+    launched_at: number | null;
+    deadline: number | null;
+    usd_pledged: number | null;
+    backers_count: number | null;
+  } | null;
   const score = s?.priority_score ?? 0;
-  const interval = s?.priority === 2 || score >= 20
-    ? 3600
-    : score >= 8 || (s?.subscriber_count ?? 0) >= 2
-      ? 2 * 3600
-      : 4 * 3600;
+  let interval = 24 * 3600;
+  if ((s?.state ?? '') === 'live') {
+    const launchedAt = Number(s?.launched_at ?? 0);
+    const deadline = Number(s?.deadline ?? 0);
+    const firstDay = launchedAt > 0 && now - launchedAt <= 24 * 3600;
+    const lastTwoDays = deadline > 0 && deadline - now <= 48 * 3600;
+    const hotProject = Number(s?.usd_pledged ?? 0) >= 500_000 || Number(s?.backers_count ?? 0) >= 5_000;
+    interval = firstDay || lastTwoDays || s?.priority === 2 || score >= 20
+      ? 3600
+      : hotProject || score >= 8 || (s?.subscriber_count ?? 0) >= 2
+        ? 2 * 3600
+        : 6 * 3600;
+  }
   getDB().prepare('UPDATE tracking_settings SET last_fetched = ?, next_fetch = ? WHERE project_id = ?').run(now, now + interval, projectId);
 }
 
 export function getDueProjects(limit = 25): { project_id: string; priority: number; track_rewards: number; track_comments: number; track_text_diff: number }[] {
   const now = Math.floor(Date.now() / 1000);
   return getDB().prepare(`
-    SELECT project_id, priority, track_rewards, track_comments, track_text_diff
-    FROM tracking_settings WHERE is_tracking = 1 AND (next_fetch IS NULL OR next_fetch <= ?)
-    ORDER BY priority DESC, priority_score DESC, COALESCE(next_fetch, 0) ASC, last_fetched ASC
+    SELECT t.project_id, t.priority, t.track_rewards, t.track_comments, t.track_text_diff
+    FROM tracking_settings t
+    JOIN projects p ON p.id = t.project_id
+    WHERE t.is_tracking = 1
+      AND p.state = 'live'
+      AND (t.next_fetch IS NULL OR t.next_fetch <= ?)
+    ORDER BY t.priority DESC, t.priority_score DESC, COALESCE(t.next_fetch, 0) ASC, t.last_fetched ASC
     LIMIT ?
   `).all(now, limit) as { project_id: string; priority: number; track_rewards: number; track_comments: number; track_text_diff: number }[];
 }
@@ -2248,12 +2280,13 @@ export function autoTrackLiveProjects(limit = 250): { inserted: number; reactiva
       (project_id, is_tracking, track_rewards, track_comments, analyze_comments, track_text_diff,
        priority, subscriber_count, priority_score, next_fetch)
     VALUES
-      (@project_id, 1, 1, 0, 0, 1, 1, 0, 1, @next_fetch)
+      (@project_id, 1, 1, 1, 0, 1, 1, 0, 1, @next_fetch)
   `);
   const reactivate = db.prepare(`
     UPDATE tracking_settings
     SET is_tracking = 1,
         track_rewards = 1,
+        track_comments = 1,
         track_text_diff = 1,
         priority = MAX(priority, 1),
         priority_score = MAX(priority_score, 1),

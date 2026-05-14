@@ -237,6 +237,43 @@ export function storeKicktraqSummary(projectId: string, summary: KicktraqSummary
 
 // ─── KS JSON scraper ─────────────────────────────────────────────────────────
 
+function isBlockedKickstarterText(text: string) {
+  return text.includes('cf_chl')
+    || text.includes('Just a moment')
+    || text.includes('Enable JavaScript and cookies')
+    || text.includes('Cloudflare');
+}
+
+async function fetchViaBrowserProxy(url: string): Promise<KSProject | null> {
+  const proxyUrl = getOptionalEnv('KICKSTARTER_BROWSER_FETCH_URL');
+  if (!proxyUrl) return null;
+
+  const res = await fetch(proxyUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json, text/plain, */*',
+    },
+    body: JSON.stringify({ url, expect: 'json' }),
+    signal: AbortSignal.timeout(Number(getOptionalEnv('KICKSTARTER_BROWSER_TIMEOUT_MS') || 60_000)),
+    cache: 'no-store',
+  });
+  if (!res.ok) return null;
+
+  const text = await res.text();
+  const data = JSON.parse(text) as KSProject | { project?: KSProject; body?: KSProject | { project?: KSProject }; text?: string };
+  if ('project' in data && data.project) return data.project;
+  if ('body' in data && data.body) {
+    const body = data.body;
+    return 'project' in body && body.project ? body.project : body as KSProject;
+  }
+  if ('text' in data && typeof data.text === 'string') {
+    const parsed = JSON.parse(data.text) as KSProject | { project: KSProject };
+    return 'project' in parsed ? parsed.project : parsed;
+  }
+  return data as KSProject;
+}
+
 export async function scrapeKSJson(jsonUrl: string): Promise<KSProject | null> {
   try {
     const res = await fetch(jsonUrl, {
@@ -245,12 +282,20 @@ export async function scrapeKSJson(jsonUrl: string): Promise<KSProject | null> {
         'Accept': 'application/json',
       },
       signal: AbortSignal.timeout(15_000),
+      cache: 'no-store',
     });
-    if (!res.ok) return null;
-    const data = await res.json() as KSProject | { project: KSProject };
+    const text = await res.text();
+    if (!res.ok || isBlockedKickstarterText(text)) {
+      return fetchViaBrowserProxy(jsonUrl);
+    }
+    const data = JSON.parse(text) as KSProject | { project: KSProject };
     return 'project' in data ? data.project : data;
   } catch {
-    return null;
+    try {
+      return await fetchViaBrowserProxy(jsonUrl);
+    } catch {
+      return null;
+    }
   }
 }
 
