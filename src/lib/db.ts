@@ -1705,6 +1705,28 @@ export function getDataQualityReport() {
     LIMIT 10
   `).all();
 
+  const recentKsLiveProjects = db.prepare(`
+    SELECT
+      id,
+      name,
+      state,
+      category_parent,
+      category_name,
+      country,
+      usd_pledged,
+      backers_count,
+      image_thumb_url,
+      image_url,
+      source_url,
+      ks_live_synced_at,
+      first_seen_at
+    FROM projects
+    WHERE data_source LIKE '%ks_live%'
+       OR ks_live_synced_at IS NOT NULL
+    ORDER BY COALESCE(ks_live_synced_at, first_seen_at, last_seen_at, 0) DESC
+    LIMIT 20
+  `).all();
+
   const syncSources = db.prepare(`
     SELECT
       CASE
@@ -1753,6 +1775,7 @@ export function getDataQualityReport() {
     syncSources,
     recentRuns,
     recentErrors,
+    recentKsLiveProjects,
   };
 }
 

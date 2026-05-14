@@ -44,6 +44,22 @@ interface CrawlerError {
   occurred_at: number;
 }
 
+interface RecentKsLiveProject {
+  id: string;
+  name: string;
+  state: string;
+  category_parent: string | null;
+  category_name: string | null;
+  country: string | null;
+  usd_pledged: number | null;
+  backers_count: number | null;
+  image_thumb_url: string | null;
+  image_url: string | null;
+  source_url: string | null;
+  ks_live_synced_at: number | null;
+  first_seen_at: number | null;
+}
+
 interface QualityReport {
   generatedAt: number;
   totals: {
@@ -74,6 +90,7 @@ interface QualityReport {
   syncSources: SourceHealth[];
   recentRuns: CrawlRun[];
   recentErrors: CrawlerError[];
+  recentKsLiveProjects: RecentKsLiveProject[];
 }
 
 function fmtNum(value: number | null | undefined) {
@@ -85,11 +102,25 @@ function fmtTime(ts: number | null | undefined, lang: string) {
   return new Date(ts * 1000).toLocaleString(lang === 'cn' ? 'zh-CN' : 'en-US');
 }
 
+function fmtMoney(value: number | null | undefined) {
+  const n = Number(value ?? 0);
+  if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `$${(n / 1_000).toFixed(1)}K`;
+  return `$${Math.round(n).toLocaleString()}`;
+}
+
 function statusClass(status: string) {
   if (status === 'completed') return 'bg-green-50 text-green-700';
   if (status === 'blocked') return 'bg-amber-50 text-amber-700';
   if (status === 'running') return 'bg-blue-50 text-blue-700';
   return 'bg-red-50 text-red-700';
+}
+
+function projectStateClass(state: string) {
+  if (state === 'live') return 'bg-blue-50 text-blue-700';
+  if (state === 'successful') return 'bg-green-50 text-green-700';
+  if (state === 'failed' || state === 'canceled') return 'bg-red-50 text-red-700';
+  return 'bg-gray-100 text-gray-600';
 }
 
 function sourceLabel(source: string) {
@@ -255,6 +286,66 @@ export default function DataQualityPage() {
             ? '后台会分批纳入 live 项目并按优先级刷新 JSON、奖励档位和文案快照。'
             : 'The background tracker enrolls live projects in batches and refreshes JSON, reward tiers, and text snapshots by priority.'}
         </p>
+      </section>
+
+      <section className="bg-white border border-gray-100 rounded-lg overflow-hidden">
+        <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <RadioTower className="w-4 h-4 text-ks-green" />
+            <h2 className="font-semibold text-gray-800">{cn ? '最近 KS Live 入库项目' : 'Recent KS Live Projects'}</h2>
+          </div>
+          <span className="text-xs text-gray-400">{cn ? '最多 20 个' : 'Latest 20'}</span>
+        </div>
+        <div className="divide-y divide-gray-50">
+          {report.recentKsLiveProjects.map(project => (
+            <a
+              key={project.id}
+              href={`/projects/${project.id}`}
+              target="_blank"
+              rel="noreferrer"
+              className="px-5 py-3 flex items-center gap-4 hover:bg-gray-50 transition-colors"
+            >
+              <div className="w-24 h-14 rounded-md bg-gray-100 overflow-hidden flex-shrink-0">
+                {(project.image_thumb_url || project.image_url) && (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={project.image_thumb_url || project.image_url || ''}
+                    alt=""
+                    className="w-full h-full object-cover"
+                  />
+                )}
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2 min-w-0">
+                  <p className="text-sm font-semibold text-gray-900 truncate">{project.name}</p>
+                  <span className={`text-xs px-2 py-0.5 rounded-full flex-shrink-0 ${projectStateClass(project.state)}`}>{project.state}</span>
+                </div>
+                <p className="text-xs text-gray-400 mt-1 truncate">
+                  {[project.category_parent, project.category_name, project.country].filter(Boolean).join(' / ') || '-'}
+                </p>
+              </div>
+              <div className="hidden md:grid grid-cols-3 gap-4 text-right text-xs min-w-[280px]">
+                <div>
+                  <p className="text-gray-400">{cn ? '金额' : 'Pledged'}</p>
+                  <p className="font-semibold text-gray-900">{fmtMoney(project.usd_pledged)}</p>
+                </div>
+                <div>
+                  <p className="text-gray-400">{cn ? '支持者' : 'Backers'}</p>
+                  <p className="font-semibold text-gray-900">{fmtNum(project.backers_count)}</p>
+                </div>
+                <div>
+                  <p className="text-gray-400">{cn ? '同步' : 'Synced'}</p>
+                  <p className="font-semibold text-gray-900">{fmtTime(project.ks_live_synced_at ?? project.first_seen_at, lang)}</p>
+                </div>
+              </div>
+            </a>
+          ))}
+          {!report.recentKsLiveProjects.length && (
+            <div className="px-5 py-8 text-center text-sm text-gray-400">
+              {cn ? '下一次 KS Live 成功入库后，这里会显示项目。' : 'Projects will appear here after the next KS Live import.'}
+            </div>
+          )}
+        </div>
       </section>
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">

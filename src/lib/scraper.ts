@@ -8,6 +8,7 @@ import {
   insertTextIfChanged,
   insertComment,
   markFetched,
+  recordCrawlerError,
   updateProjectLiveMetadata,
   type ProjectCollaborator,
   type RewardSnapshot,
@@ -246,34 +247,109 @@ function isBlockedKickstarterText(text: string) {
 
 async function fetchViaBrowserProxy(url: string): Promise<KSProject | null> {
   const proxyUrl = getOptionalEnv('KICKSTARTER_BROWSER_FETCH_URL');
+  if (!proxyUrl) {
+    recordCrawlerError({
+      source: 'ks_project',
+      job_type: 'browser_json_fallback',
+      url,
+      message: 'KICKSTARTER_BROWSER_FETCH_URL is not configured on the main service.',
+    });
+    return null;
+  }
+  const token = getOptionalEnv('BROWSER_WORKER_TOKEN');
+
+  try {
+    const res = await fetch(proxyUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json, text/plain, */*',
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ url, expect: 'json' }),
+      signal: AbortSignal.timeout(Number(getOptionalEnv('KICKSTARTER_BROWSER_TIMEOUT_MS') || 60_000)),
+      cache: 'no-store',
+    });
+    const text = await res.text();
+    if (!res.ok) {
+      recordCrawlerError({
+        source: 'ks_project',
+        job_type: 'browser_json_fallback',
+        url,
+        status_code: res.status,
+        message: `Browser worker JSON fallback HTTP ${res.status}: ${text.slice(0, 500)}`,
+      });
+      return null;
+    }
+
+    const data = JSON.parse(text) as KSProject | { project?: KSProject; body?: KSProject | { project?: KSProject }; text?: string };
+    if ('project' in data && data.project) return data.project;
+    if ('body' in data && data.body) {
+      const body = data.body;
+      return 'project' in body && body.project ? body.project : body as KSProject;
+    }
+    if ('text' in data && typeof data.text === 'string') {
+      const parsed = JSON.parse(data.text) as KSProject | { project: KSProject };
+      return 'project' in parsed ? parsed.project : parsed;
+    }
+    return data as KSProject;
+  } catch (err) {
+    recordCrawlerError({
+      source: 'ks_project',
+      job_type: 'browser_json_fallback',
+      url,
+      message: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  }
+}
+
+async function fetchHtmlViaBrowserProxy(url: string): Promise<string | null> {
+  const proxyUrl = getOptionalEnv('KICKSTARTER_BROWSER_FETCH_URL');
   if (!proxyUrl) return null;
   const token = getOptionalEnv('BROWSER_WORKER_TOKEN');
 
-  const res = await fetch(proxyUrl, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Accept': 'application/json, text/plain, */*',
-      ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
-    },
-    body: JSON.stringify({ url, expect: 'json' }),
-    signal: AbortSignal.timeout(Number(getOptionalEnv('KICKSTARTER_BROWSER_TIMEOUT_MS') || 60_000)),
-    cache: 'no-store',
-  });
-  if (!res.ok) return null;
-
-  const text = await res.text();
-  const data = JSON.parse(text) as KSProject | { project?: KSProject; body?: KSProject | { project?: KSProject }; text?: string };
-  if ('project' in data && data.project) return data.project;
-  if ('body' in data && data.body) {
-    const body = data.body;
-    return 'project' in body && body.project ? body.project : body as KSProject;
+  try {
+    const res = await fetch(proxyUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json, text/plain, */*',
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ url, expect: 'html' }),
+      signal: AbortSignal.timeout(Number(getOptionalEnv('KICKSTARTER_BROWSER_TIMEOUT_MS') || 60_000)),
+      cache: 'no-store',
+    });
+    const text = await res.text();
+    if (!res.ok) {
+      recordCrawlerError({
+        source: 'ks_project',
+        job_type: 'browser_html_fallback',
+        url,
+        status_code: res.status,
+        message: `Browser worker HTML fallback HTTP ${res.status}: ${text.slice(0, 500)}`,
+      });
+      return null;
+    }
+    const data = JSON.parse(text) as { text?: string; error?: string };
+    if (typeof data.text === 'string' && data.text.trim()) return data.text;
+    recordCrawlerError({
+      source: 'ks_project',
+      job_type: 'browser_html_fallback',
+      url,
+      message: `Browser worker HTML fallback returned no text: ${text.slice(0, 500)}`,
+    });
+    return null;
+  } catch (err) {
+    recordCrawlerError({
+      source: 'ks_project',
+      job_type: 'browser_html_fallback',
+      url,
+      message: err instanceof Error ? err.message : String(err),
+    });
+    return null;
   }
-  if ('text' in data && typeof data.text === 'string') {
-    const parsed = JSON.parse(data.text) as KSProject | { project: KSProject };
-    return 'project' in parsed ? parsed.project : parsed;
-  }
-  return data as KSProject;
 }
 
 export async function scrapeKSJson(jsonUrl: string): Promise<KSProject | null> {
@@ -304,17 +380,7 @@ export async function scrapeKSJson(jsonUrl: string): Promise<KSProject | null> {
 async function scrapeKickstarterHtmlFallback(projectId: string, jsonUrl: string): Promise<boolean> {
   const pageUrl = jsonUrl.replace(/\.json(?:[?#].*)?$/, '');
   if (!pageUrl.startsWith('https://www.kickstarter.com/projects/')) return false;
-  try {
-    const res = await fetch(pageUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Accept': 'text/html,application/xhtml+xml',
-      },
-      signal: AbortSignal.timeout(18_000),
-      cache: 'no-store',
-    });
-    if (!res.ok) return false;
-    const html = await res.text();
+  const applyHtml = (html: string) => {
     const image = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i)?.[1]
       ?? html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i)?.[1]
       ?? null;
@@ -329,8 +395,29 @@ async function scrapeKickstarterHtmlFallback(projectId: string, jsonUrl: string)
     });
     markFetched(projectId);
     return true;
+  };
+  try {
+    const res = await fetch(pageUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'text/html,application/xhtml+xml',
+      },
+      signal: AbortSignal.timeout(18_000),
+      cache: 'no-store',
+    });
+    if (!res.ok) {
+      const browserHtml = await fetchHtmlViaBrowserProxy(pageUrl);
+      return browserHtml ? applyHtml(browserHtml) : false;
+    }
+    const html = await res.text();
+    if (isBlockedKickstarterText(html)) {
+      const browserHtml = await fetchHtmlViaBrowserProxy(pageUrl);
+      return browserHtml ? applyHtml(browserHtml) : false;
+    }
+    return applyHtml(html);
   } catch {
-    return false;
+    const browserHtml = await fetchHtmlViaBrowserProxy(pageUrl);
+    return browserHtml ? applyHtml(browserHtml) : false;
   }
 }
 
