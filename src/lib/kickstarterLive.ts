@@ -59,6 +59,7 @@ export interface KSDiscoverProject {
 interface DiscoverResponse {
   projects?: KSDiscoverProject[];
   has_more_projects?: boolean;
+  has_more?: boolean;
   total_hits?: number;
 }
 
@@ -235,14 +236,34 @@ async function fetchDiscoverViaBrowser(url: string) {
     return null;
   }
 
-  const data = JSON.parse(text) as DiscoverResponse | { body?: DiscoverResponse | string; text?: string };
-  if ('body' in data && data.body) {
-    return typeof data.body === 'string' ? JSON.parse(data.body) as DiscoverResponse : data.body;
+  try {
+    const data = JSON.parse(text) as DiscoverResponse | { body?: DiscoverResponse | string; text?: string; ok?: boolean; error?: string };
+    const body = 'body' in data && data.body
+      ? (typeof data.body === 'string' ? JSON.parse(data.body) as DiscoverResponse : data.body)
+      : 'text' in data && typeof data.text === 'string'
+        ? JSON.parse(data.text) as DiscoverResponse
+        : data as DiscoverResponse;
+    if (!Array.isArray(body.projects)) {
+      recordCrawlerError({
+        source: 'ks_live',
+        job_type: 'browser_fallback',
+        url,
+        status_code: res.status,
+        message: `Browser worker response did not contain projects. Keys=${Object.keys(body as Record<string, unknown>).join(',')}; preview=${text.slice(0, 500)}`,
+      });
+      return null;
+    }
+    return body;
+  } catch (err) {
+    recordCrawlerError({
+      source: 'ks_live',
+      job_type: 'browser_fallback',
+      url,
+      status_code: res.status,
+      message: `Browser worker JSON parse failed: ${err instanceof Error ? err.message : String(err)}; preview=${text.slice(0, 500)}`,
+    });
+    return null;
   }
-  if ('text' in data && typeof data.text === 'string') {
-    return JSON.parse(data.text) as DiscoverResponse;
-  }
-  return data as DiscoverResponse;
 }
 
 async function fetchDiscoverPage(page: number, opts: Required<Pick<LiveSyncOptions, 'state'>>) {
@@ -265,7 +286,7 @@ async function fetchDiscoverPage(page: number, opts: Required<Pick<LiveSyncOptio
 
   const text = await res.text();
   if (isBlockedHtml(text)) {
-    const body = await fetchDiscoverViaBrowser(url).catch(() => null);
+    const body = await fetchDiscoverViaBrowser(url);
     if (body) return { blocked: false as const, status: 200, body };
     return { blocked: true as const, status: res.status, body: null };
   }
@@ -275,7 +296,7 @@ async function fetchDiscoverPage(page: number, opts: Required<Pick<LiveSyncOptio
   try {
     return { blocked: false as const, status: res.status, body: JSON.parse(text) as DiscoverResponse };
   } catch (err) {
-    const body = await fetchDiscoverViaBrowser(url).catch(() => null);
+    const body = await fetchDiscoverViaBrowser(url);
     if (body) return { blocked: false as const, status: 200, body };
     throw err;
   }
@@ -394,7 +415,7 @@ export async function runKickstarterLiveSync(options: LiveSyncOptions = {}): Pro
         return { discovered, insertedOrUpdated, snapshots, pages, stoppedReason: 'since_reached' };
       }
 
-      if (!pageData.body.has_more_projects) {
+      if (!(pageData.body.has_more_projects ?? pageData.body.has_more)) {
         completeCrawlRun(crawlRunId, {
           status: 'completed',
           discovered_count: discovered,
