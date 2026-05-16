@@ -480,7 +480,21 @@ export interface ScrapeOptions {
 
 export async function scrapeAndStore(projectId: string, jsonUrl: string, opts: ScrapeOptions = {}): Promise<boolean> {
   const p = await scrapeKSJson(jsonUrl, projectId);
-  if (!p) return scrapeKickstarterHtmlFallback(projectId, jsonUrl);
+  if (!p) {
+    if (await scrapeKickstarterHtmlFallback(projectId, jsonUrl)) return true;
+    // Last resort: Kicktraq for live funding data (bypasses Cloudflare entirely)
+    const ksUrl = jsonUrl.replace(/\.json(?:[?#].*)?$/, '');
+    const creatorSlug = extractCreatorSlug(ksUrl);
+    const projectSlug = extractProjectSlug(ksUrl);
+    if (creatorSlug && projectSlug) {
+      const ktSummary = await scrapeKicktraqProjectSummary(creatorSlug, projectSlug);
+      if (ktSummary && (ktSummary.pledged_usd > 0 || ktSummary.backers_count > 0)) {
+        storeKicktraqSummary(projectId, ktSummary);
+        return true;
+      }
+    }
+    return false;
+  }
 
   const now = Math.floor(Date.now() / 1000);
   const projectState = p.state ?? 'unknown';
