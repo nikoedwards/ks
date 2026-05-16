@@ -99,7 +99,7 @@ async function fetchWithBrowser(input) {
   const startedAt = Date.now();
   try {
     const response = await page.goto(targetUrl, {
-      waitUntil: expect === 'json' ? 'domcontentloaded' : 'networkidle',
+      waitUntil: 'load',
       timeout: timeoutMs,
     });
     if (!response) {

@@ -753,7 +753,7 @@ function leaderboardWhere(filter: LeaderboardFilter) {
 function leaderboardBaseSql(where: string) {
   return `
     WITH latest AS (
-      SELECT ps.project_id, ps.pledged_usd, ps.backers_count, ps.source
+      SELECT ps.project_id, ps.pledged_usd, ps.backers_count
       FROM project_snapshots ps
       JOIN (
         SELECT project_id, MAX(id) as id
@@ -769,32 +769,8 @@ function leaderboardBaseSql(where: string) {
         p.category_parent, p.category_name, p.country, p.country_name,
         p.launched_at, p.deadline, p.source_url, p.image_url, p.image_thumb_url,
         CASE
-          WHEN COALESCE(l.pledged_usd, 0) > 0 THEN
-            CASE
-              WHEN COALESCE(p.currency, 'USD') <> 'USD'
-                   AND (l.source = 'kicktraq_active' OR l.pledged_usd >= MAX(1, COALESCE(p.pledged, 0)) * 0.8)
-                THEN l.pledged_usd * CASE COALESCE(p.currency, 'USD')
-                  WHEN 'JPY' THEN 0.0067 WHEN 'HKD' THEN 0.128 WHEN 'AUD' THEN 0.65
-                  WHEN 'CAD' THEN 0.73 WHEN 'GBP' THEN 1.25 WHEN 'EUR' THEN 1.08
-                  WHEN 'SEK' THEN 0.093 WHEN 'DKK' THEN 0.145 WHEN 'NOK' THEN 0.093
-                  WHEN 'CHF' THEN 1.10 WHEN 'MXN' THEN 0.059 WHEN 'SGD' THEN 0.74
-                  WHEN 'NZD' THEN 0.60 ELSE 1
-                END
-              ELSE l.pledged_usd
-            END
-          WHEN COALESCE(p.usd_pledged, 0) > 0 THEN
-            CASE
-              WHEN COALESCE(p.currency, 'USD') <> 'USD'
-                   AND p.usd_pledged >= MAX(1, COALESCE(p.pledged, 0)) * 0.8
-                THEN p.usd_pledged * CASE COALESCE(p.currency, 'USD')
-                  WHEN 'JPY' THEN 0.0067 WHEN 'HKD' THEN 0.128 WHEN 'AUD' THEN 0.65
-                  WHEN 'CAD' THEN 0.73 WHEN 'GBP' THEN 1.25 WHEN 'EUR' THEN 1.08
-                  WHEN 'SEK' THEN 0.093 WHEN 'DKK' THEN 0.145 WHEN 'NOK' THEN 0.093
-                  WHEN 'CHF' THEN 1.10 WHEN 'MXN' THEN 0.059 WHEN 'SGD' THEN 0.74
-                  WHEN 'NZD' THEN 0.60 ELSE 1
-                END
-              ELSE p.usd_pledged
-            END
+          WHEN COALESCE(l.pledged_usd, 0) > 0 THEN l.pledged_usd
+          WHEN COALESCE(p.usd_pledged, 0) > 0 THEN p.usd_pledged
           WHEN COALESCE(p.currency, 'USD') <> 'USD' AND COALESCE(p.pledged, 0) > 0
             THEN p.pledged * CASE COALESCE(p.currency, 'USD')
               WHEN 'JPY' THEN 0.0067 WHEN 'HKD' THEN 0.128 WHEN 'AUD' THEN 0.65
@@ -820,29 +796,11 @@ function leaderboardBaseSql(where: string) {
         CASE WHEN COALESCE(p.goal, 0) > 0
           THEN ROUND((
             CASE
-              WHEN COALESCE(l.pledged_usd, 0) > 0 THEN
-                CASE
-                  WHEN COALESCE(p.currency, 'USD') <> 'USD'
-                       AND (l.source = 'kicktraq_active' OR l.pledged_usd >= MAX(1, COALESCE(p.pledged, 0)) * 0.8)
-                    THEN l.pledged_usd
-                  ELSE l.pledged_usd
-                END
-              WHEN COALESCE(p.usd_pledged, 0) > 0 THEN
-                CASE
-                  WHEN COALESCE(p.currency, 'USD') <> 'USD'
-                       AND p.usd_pledged < MAX(1, COALESCE(p.pledged, 0)) * 0.8
-                    THEN p.usd_pledged / CASE COALESCE(p.currency, 'USD')
-                      WHEN 'JPY' THEN 0.0067 WHEN 'HKD' THEN 0.128 WHEN 'AUD' THEN 0.65
-                      WHEN 'CAD' THEN 0.73 WHEN 'GBP' THEN 1.25 WHEN 'EUR' THEN 1.08
-                      WHEN 'SEK' THEN 0.093 WHEN 'DKK' THEN 0.145 WHEN 'NOK' THEN 0.093
-                      WHEN 'CHF' THEN 1.10 WHEN 'MXN' THEN 0.059 WHEN 'SGD' THEN 0.74
-                      WHEN 'NZD' THEN 0.60 ELSE 1
-                    END
-                  ELSE p.usd_pledged
-                END
+              WHEN COALESCE(l.pledged_usd, 0) > 0 THEN l.pledged_usd
+              WHEN COALESCE(p.usd_pledged, 0) > 0 THEN p.usd_pledged
               ELSE COALESCE(p.pledged, 0)
             END
-          ) / p.goal) * 100, 1)
+          ) / p.goal * 100, 1)
           ELSE 0
         END as funded_pct,
         CASE

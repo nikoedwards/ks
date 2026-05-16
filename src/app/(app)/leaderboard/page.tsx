@@ -205,6 +205,7 @@ export default function LeaderboardPage() {
   const [data, setData] = useState<LeaderboardData | null>(null);
   const [loading, setLoading] = useState(true);
   const [initialized, setInitialized] = useState(false);
+  const [yearFallbackApplied, setYearFallbackApplied] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
   const [shareImage, setShareImage] = useState('');
   const [shareLang, setShareLang] = useState<'cn' | 'en'>(cn ? 'cn' : 'en');
@@ -299,6 +300,14 @@ export default function LeaderboardPage() {
     });
     const res = await fetch(`/api/leaderboard?${params.toString()}`, { cache: 'no-store' });
     const json = await res.json();
+
+    // On first load, if current year has no data, silently fall back to the previous year
+    if (!yearFallbackApplied && activeYear === yearNow && (json.summary?.total_projects ?? 0) === 0) {
+      setYearFallbackApplied(true);
+      applyYear(yearNow - 1);
+      return;
+    }
+
     setData(json);
     setLoading(false);
   };
