@@ -770,8 +770,9 @@ function leaderboardBaseSql(where: string) {
         p.launched_at, p.deadline, p.source_url, p.image_url, p.image_thumb_url,
         CASE
           WHEN COALESCE(l.pledged_usd, 0) > 0 THEN l.pledged_usd
-          WHEN COALESCE(p.usd_pledged, 0) > 0 THEN p.usd_pledged
-          WHEN COALESCE(p.currency, 'USD') <> 'USD' AND COALESCE(p.pledged, 0) > 0
+          WHEN COALESCE(p.currency, 'USD') = 'USD'
+            THEN COALESCE(p.usd_pledged, COALESCE(p.pledged, 0))
+          WHEN COALESCE(p.pledged, 0) > 0
             THEN p.pledged * CASE COALESCE(p.currency, 'USD')
               WHEN 'JPY' THEN 0.0067 WHEN 'HKD' THEN 0.128 WHEN 'AUD' THEN 0.65
               WHEN 'CAD' THEN 0.73 WHEN 'GBP' THEN 1.25 WHEN 'EUR' THEN 1.08
@@ -779,6 +780,7 @@ function leaderboardBaseSql(where: string) {
               WHEN 'CHF' THEN 1.10 WHEN 'MXN' THEN 0.059 WHEN 'SGD' THEN 0.74
               WHEN 'NZD' THEN 0.60 ELSE 1
             END
+          WHEN COALESCE(p.usd_pledged, 0) > 0 THEN p.usd_pledged
           ELSE 0
         END as pledged_usd,
         CASE WHEN COALESCE(l.backers_count, 0) > 0 THEN l.backers_count ELSE COALESCE(p.backers_count, 0) END as backers_count,

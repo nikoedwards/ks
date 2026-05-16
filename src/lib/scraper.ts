@@ -380,7 +380,10 @@ export async function scrapeKSJson(jsonUrl: string, projectId?: string): Promise
           ? `Kickstarter JSON HTTP ${res.status}.`
           : 'Kickstarter JSON returned a Cloudflare or HTML challenge.',
       });
-      return fetchViaBrowserProxy(jsonUrl, projectId);
+      const browserJson = await fetchViaBrowserProxy(jsonUrl, projectId);
+      if (browserJson) return browserJson;
+      const pageUrl = jsonUrl.replace(/\.json(?:[?#].*)?$/, '');
+      return fetchProjectViaHtmlProxy(pageUrl, projectId);
     }
     const data = JSON.parse(text) as KSProject | { project: KSProject };
     return 'project' in data ? data.project : data;
@@ -393,10 +396,26 @@ export async function scrapeKSJson(jsonUrl: string, projectId?: string): Promise
       message: err instanceof Error ? err.message : String(err),
     });
     try {
-      return await fetchViaBrowserProxy(jsonUrl, projectId);
+      const browserJson = await fetchViaBrowserProxy(jsonUrl, projectId);
+      if (browserJson) return browserJson;
+      const pageUrl = jsonUrl.replace(/\.json(?:[?#].*)?$/, '');
+      return fetchProjectViaHtmlProxy(pageUrl, projectId);
     } catch {
       return null;
     }
+  }
+}
+
+async function fetchProjectViaHtmlProxy(pageUrl: string, projectId?: string): Promise<KSProject | null> {
+  const html = await fetchHtmlViaBrowserProxy(pageUrl, projectId);
+  if (!html) return null;
+  const m = html.match(/<script[^>]*id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/);
+  if (!m) return null;
+  try {
+    const data = JSON.parse(m[1]) as { props?: { pageProps?: { project?: KSProject }; initialProps?: { project?: KSProject } } };
+    return data?.props?.pageProps?.project ?? data?.props?.initialProps?.project ?? null;
+  } catch {
+    return null;
   }
 }
 

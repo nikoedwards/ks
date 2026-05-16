@@ -86,9 +86,17 @@ function parseRecord(raw: RawRecord): Record<string, unknown> | null {
 
   const goal = parseFloat(raw.goal || '0') || 0;
   const pledged = parseFloat(raw.pledged || '0') || 0;
-  const usd_rate = parseFloat(raw.static_usd_rate || '1') || 1;
-  const usd_pledged = parseFloat(raw.usd_pledged || String(pledged * usd_rate)) || 0;
-  const goal_usd = goal * usd_rate;
+  const currency = raw.currency ?? 'USD';
+  const usd_rate_raw = raw.static_usd_rate?.trim() || '';
+  const usd_rate = usd_rate_raw ? (parseFloat(usd_rate_raw) || 1) : 1;
+  const has_valid_rate = !!usd_rate_raw;
+  const usd_pledged_csv = parseFloat(raw.usd_pledged || '0') || 0;
+  // Only fall back to pledged*rate when the rate is explicitly provided or this is a USD project.
+  // Without a valid rate for non-USD projects, storing pledged*1 would save local currency as USD.
+  const usd_pledged = usd_pledged_csv > 0
+    ? usd_pledged_csv
+    : (has_valid_rate || currency === 'USD') ? pledged * usd_rate : 0;
+  const goal_usd = (has_valid_rate || currency === 'USD') ? goal * usd_rate : 0;
 
   const projectSlug = raw.slug ?? null;
   const source_url = creator_slug && projectSlug
