@@ -111,7 +111,7 @@ async function fetchWithBrowser(input) {
     const status = response.status();
     const contentType = response.headers()['content-type'] || '';
     const finalUrl = page.url();
-    const text = expect === 'html'
+    let text = expect === 'html'
       ? await page.content()
       : await page.evaluate(() => document.body?.innerText || document.documentElement?.textContent || '');
     if (Buffer.byteLength(text) > MAX_BODY_BYTES) {
@@ -119,14 +119,33 @@ async function fetchWithBrowser(input) {
     }
 
     if (expect === 'json') {
-      const parsed = JSON.parse(text);
+      let body;
+      try {
+        body = JSON.parse(text);
+      } catch {
+        // KS redirects .json URLs to the HTML project page in a browser context.
+        // Extract embedded project data from Next.js __NEXT_DATA__ script tag.
+        body = await page.evaluate(() => {
+          try {
+            const el = document.querySelector('#__NEXT_DATA__');
+            if (!el || !el.textContent) return null;
+            const data = JSON.parse(el.textContent);
+            return data?.props?.pageProps?.project
+              ?? data?.props?.initialProps?.project
+              ?? null;
+          } catch { return null; }
+        });
+        if (!body) {
+          throw new Error('Could not extract JSON: response is not JSON and no __NEXT_DATA__ project found');
+        }
+      }
       return {
-        ok: status >= 200 && status < 400,
+        ok: true,
         status,
         contentType,
         finalUrl,
         elapsedMs: Date.now() - startedAt,
-        body: parsed,
+        body,
       };
     }
 
