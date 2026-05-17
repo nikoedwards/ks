@@ -15,9 +15,42 @@ const ALLOWED_HOSTS = new Set([
 
 let browserPromise;
 
+function getProxyOptions() {
+  const rawServer = (process.env.BROWSER_PROXY_URL
+    || process.env.BROWSER_PROXY_SERVER
+    || process.env.PLAYWRIGHT_PROXY_SERVER
+    || process.env.HTTPS_PROXY
+    || process.env.HTTP_PROXY
+    || '').trim();
+  if (!rawServer) return null;
+
+  let server = rawServer;
+  let username = (process.env.BROWSER_PROXY_USERNAME || process.env.PLAYWRIGHT_PROXY_USERNAME || '').trim();
+  let password = (process.env.BROWSER_PROXY_PASSWORD || process.env.PLAYWRIGHT_PROXY_PASSWORD || '').trim();
+  try {
+    const parsed = new URL(rawServer);
+    if (parsed.username && !username) username = decodeURIComponent(parsed.username);
+    if (parsed.password && !password) password = decodeURIComponent(parsed.password);
+    parsed.username = '';
+    parsed.password = '';
+    server = parsed.toString();
+  } catch {
+    // Playwright also accepts host:port style values.
+  }
+
+  const proxy = { server };
+  if (username) proxy.username = username;
+  if (password) proxy.password = password;
+  const bypass = (process.env.BROWSER_PROXY_BYPASS || process.env.PLAYWRIGHT_PROXY_BYPASS || '').trim();
+  if (bypass) proxy.bypass = bypass;
+  return proxy;
+}
+
 function launchBrowser() {
+  const proxy = getProxyOptions();
   const promise = chromium.launch({
     headless: true,
+    ...(proxy ? { proxy } : {}),
     args: [
       '--disable-blink-features=AutomationControlled',
       '--disable-dev-shm-usage',
@@ -609,7 +642,19 @@ async function fetchWithBrowser(input) {
 
 async function handle(req, res) {
   if (req.method === 'GET' && req.url === '/health') {
-    send(res, 200, { ok: true, service: 'kicksonar-browser-worker' });
+    let browserConnected = null;
+    try {
+      const browser = browserPromise ? await browserPromise : null;
+      browserConnected = browser ? browser.isConnected() : null;
+    } catch {
+      browserConnected = false;
+    }
+    send(res, 200, {
+      ok: true,
+      service: 'kicksonar-browser-worker',
+      browserConnected,
+      hasProxy: Boolean(getProxyOptions()),
+    });
     return;
   }
 
