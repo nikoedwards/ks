@@ -15,18 +15,53 @@ const ALLOWED_HOSTS = new Set([
 
 let browserPromise;
 
-function getBrowser() {
-  if (!browserPromise) {
-    browserPromise = chromium.launch({
-      headless: true,
-      args: [
-        '--disable-blink-features=AutomationControlled',
-        '--disable-dev-shm-usage',
-        '--no-sandbox',
-      ],
+function launchBrowser() {
+  const promise = chromium.launch({
+    headless: true,
+    args: [
+      '--disable-blink-features=AutomationControlled',
+      '--disable-dev-shm-usage',
+      '--no-sandbox',
+    ],
+  }).then(browser => {
+    browser.on('disconnected', () => {
+      if (browserPromise === promise) browserPromise = null;
     });
+    return browser;
+  }).catch(err => {
+    if (browserPromise === promise) browserPromise = null;
+    throw err;
+  });
+  browserPromise = promise;
+  return promise;
+}
+
+async function getBrowser() {
+  const browser = await (browserPromise || launchBrowser());
+  if (typeof browser.isConnected === 'function' && !browser.isConnected()) {
+    if (browserPromise) browserPromise = null;
+    return getBrowser();
   }
-  return browserPromise;
+  return browser;
+}
+
+async function newBrowserContext(options) {
+  let lastError = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const browser = await getBrowser();
+      return await browser.newContext(options);
+    } catch (err) {
+      lastError = err;
+      const message = err instanceof Error ? err.message : String(err);
+      if (!/browser has been closed|Target page, context or browser has been closed|Browser closed|disconnected/i.test(message)) {
+        throw err;
+      }
+      browserPromise = null;
+      if (attempt === 0) continue;
+    }
+  }
+  throw lastError;
 }
 
 function send(res, status, payload) {
@@ -320,8 +355,7 @@ async function fetchWithBrowser(input) {
   const targetUrl = normalizeTarget(input.url);
   const expect = input.expect === 'html' ? 'html' : 'json';
   const timeoutMs = Math.max(10_000, Math.min(Number(input.timeoutMs || DEFAULT_TIMEOUT), 180_000));
-  const browser = await getBrowser();
-  const context = await browser.newContext({
+  const context = await newBrowserContext({
     locale: 'en-US',
     timezoneId: 'America/Los_Angeles',
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
