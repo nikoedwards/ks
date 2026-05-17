@@ -128,6 +128,22 @@ function pageUrlForJson(targetUrl) {
   return url.toString();
 }
 
+function isKickstarterProjectUrl(targetUrl) {
+  try {
+    const url = new URL(targetUrl);
+    return /(^|\.)kickstarter\.com$/i.test(url.hostname)
+      && url.pathname.startsWith('/projects/');
+  } catch {
+    return false;
+  }
+}
+
+function navigationUrlForTarget(targetUrl, expect) {
+  return expect === 'json' && isKickstarterProjectUrl(targetUrl)
+    ? pageUrlForJson(targetUrl)
+    : targetUrl;
+}
+
 function contentTypeFromHeaders(headers) {
   return headers['content-type'] || headers['Content-Type'] || '';
 }
@@ -304,8 +320,25 @@ async function scrollForLazyContent(page, input) {
   await page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
 }
 
+async function installResourceGuards(page) {
+  await page.route('**/*', route => {
+    const request = route.request();
+    const resourceType = request.resourceType();
+    const url = request.url();
+    if (['image', 'media', 'font'].includes(resourceType)) {
+      route.abort().catch(() => {});
+      return;
+    }
+    if (/google-analytics|googletagmanager|doubleclick|facebook|segment|sentry|hotjar|intercom/i.test(url)) {
+      route.abort().catch(() => {});
+      return;
+    }
+    route.continue().catch(() => {});
+  });
+}
+
 async function tryBrowserContextJson(context, page, targetUrl, timeoutMs, input) {
-  const referer = input.referer || pageUrlForJson(targetUrl);
+  const referer = input.referer || navigationUrlForTarget(targetUrl, 'json');
   try {
     await page.goto(referer, {
       waitUntil: 'domcontentloaded',
@@ -366,6 +399,11 @@ async function fetchWithBrowser(input) {
   });
 
   const page = await context.newPage();
+  await installResourceGuards(page);
+  let pageCrashed = false;
+  page.on('crash', () => {
+    pageCrashed = true;
+  });
   let requestJsonResult = null;
   const jsonResponsePromises = [];
   page.on('response', response => {
@@ -407,15 +445,16 @@ async function fetchWithBrowser(input) {
       }
     }
 
-    const navigationUrl = expect === 'json' && requestJsonResult ? pageUrlForJson(targetUrl) : targetUrl;
+    const navigationUrl = navigationUrlForTarget(targetUrl, expect);
     const response = await page.goto(navigationUrl, {
-      waitUntil: 'load',
+      waitUntil: 'domcontentloaded',
       timeout: timeoutMs,
     });
     if (!response) {
       throw new Error('No browser response');
     }
 
+    if (pageCrashed) throw new Error(`Page crashed while navigating to ${navigationUrl}`);
     await page.waitForTimeout(Number(input.settleMs || 1200));
     if (expect === 'json') {
       await scrollForLazyContent(page, input);
@@ -425,9 +464,17 @@ async function fetchWithBrowser(input) {
     const status = response.status();
     const contentType = response.headers()['content-type'] || '';
     const finalUrl = page.url();
-    let text = expect === 'html'
-      ? await page.content()
-      : await page.evaluate(() => document.body?.innerText || document.documentElement?.textContent || '');
+    let text = '';
+    if (expect === 'html') {
+      text = await response.text().catch(async () => {
+        if (pageCrashed) return '';
+        return page.content();
+      });
+      if (!text && !pageCrashed) text = await page.content();
+    } else {
+      if (pageCrashed) throw new Error(`Page crashed before extracting text from ${navigationUrl}`);
+      text = await page.evaluate(() => document.body?.innerText || document.documentElement?.textContent || '');
+    }
     if (Buffer.byteLength(text) > MAX_BODY_BYTES) {
       text = text.slice(0, MAX_BODY_BYTES);
     }
