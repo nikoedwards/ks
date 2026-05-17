@@ -47,15 +47,21 @@ interface KSProject {
   id: number;
   name: string;
   blurb?: string;
-  state: string;
+  state?: string;
   slug?: string;
-  pledged: number | string;
+  pledged?: number | string;
+  pledged_amount?: number | string;
+  pledge_amount?: number | string;
   usd_pledged?: string | number;
+  usd_pledged_amount?: string | number;
   converted_pledged_amount?: number;
   converted_goal_amount?: number;
   fx_rate?: number | string;
-  goal: number | string;
-  backers_count: number;
+  goal?: number | string;
+  goal_amount?: number | string;
+  backers_count?: number;
+  backers?: number;
+  backer_count?: number;
   comments_count?: number;
   updates_count?: number;
   deadline?: number;
@@ -130,16 +136,35 @@ function parseNum(v: number | string | undefined): number {
   return typeof v === 'number' ? v : parseFloat(v) || 0;
 }
 
+function parseUnknownNum(value: unknown): number {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+  if (typeof value === 'string') return parseFloat(value.replace(/[^\d.-]/g, '')) || 0;
+  if (isRecord(value)) return parseUnknownNum(value.amount ?? value.value);
+  return 0;
+}
+
+function firstPositiveNumber(source: Record<string, unknown>, keys: string[]): number {
+  for (const key of keys) {
+    const value = parseUnknownNum(source[key]);
+    if (value > 0) return value;
+  }
+  return 0;
+}
+
 function resolveUsdAmounts(p: KSProject): { pledgedUsd: number; goalUsd: number } {
-  const pledgedLocal = parseNum(p.pledged);
-  const goalLocal = parseNum(p.goal);
-  const convertedPledged = parseNum(p.converted_pledged_amount);
-  const convertedGoal = parseNum(p.converted_goal_amount);
+  const pledgedLocal = firstPositiveNumber(p, ['pledged', 'pledged_amount', 'pledge_amount', 'amount_pledged']);
+  const goalLocal = firstPositiveNumber(p, ['goal', 'goal_amount', 'funding_goal']);
+  const convertedPledged = firstPositiveNumber(p, ['converted_pledged_amount', 'converted_pledged', 'usd_pledged_amount']);
+  const convertedGoal = firstPositiveNumber(p, ['converted_goal_amount', 'converted_goal']);
   const explicitUsd = parseNum(p.usd_pledged);
   const pledgedUsd = convertedPledged > 0 ? convertedPledged : explicitUsd > 0 ? explicitUsd : pledgedLocal;
   const inferredRate = pledgedLocal > 0 && pledgedUsd > 0 ? pledgedUsd / pledgedLocal : parseNum(p.fx_rate);
   const goalUsd = convertedGoal > 0 ? convertedGoal : inferredRate > 0 ? goalLocal * inferredRate : goalLocal;
   return { pledgedUsd, goalUsd };
+}
+
+function resolveBackersCount(p: KSProject): number {
+  return firstPositiveNumber(p, ['backers_count', 'backers', 'backer_count']);
 }
 
 function daysToGo(deadline: number | undefined): number {
@@ -660,37 +685,42 @@ export interface ScrapeResult {
   message?: string;
 }
 
+async function scrapeBasicFallback(projectId: string, jsonUrl: string): Promise<ScrapeResult | null> {
+  if (await scrapeKickstarterHtmlFallback(projectId, jsonUrl)) {
+    return {
+      ok: true,
+      full: false,
+      source: 'ks_html_fallback',
+      rewardCount: 0,
+      collaboratorCount: 0,
+      message: 'Synced basic Kickstarter page metadata only; full project JSON was unavailable.',
+    };
+  }
+
+  const ksUrl = jsonUrl.replace(/\.json(?:[?#].*)?$/, '');
+  const creatorSlug = extractCreatorSlug(ksUrl);
+  const projectSlug = extractProjectSlug(ksUrl);
+  if (!creatorSlug || !projectSlug) return null;
+
+  const ktSummary = await scrapeKicktraqProjectSummary(creatorSlug, projectSlug);
+  if (!ktSummary || (ktSummary.pledged_usd <= 0 && ktSummary.backers_count <= 0)) return null;
+
+  storeKicktraqSummary(projectId, ktSummary);
+  return {
+    ok: true,
+    full: false,
+    source: 'kicktraq_summary',
+    rewardCount: 0,
+    collaboratorCount: 0,
+    message: 'Synced live funding basics from Kicktraq; rewards and collaborators require Kickstarter detail JSON.',
+  };
+}
+
 export async function scrapeAndStore(projectId: string, jsonUrl: string, opts: ScrapeOptions = {}): Promise<ScrapeResult> {
   const p = await scrapeKSJson(jsonUrl, projectId);
   if (!p) {
-    if (await scrapeKickstarterHtmlFallback(projectId, jsonUrl)) {
-      return {
-        ok: true,
-        full: false,
-        source: 'ks_html_fallback',
-        rewardCount: 0,
-        collaboratorCount: 0,
-        message: 'Synced basic Kickstarter page metadata only; full project JSON was unavailable.',
-      };
-    }
-    // Last resort: Kicktraq for live funding data (bypasses Cloudflare entirely)
-    const ksUrl = jsonUrl.replace(/\.json(?:[?#].*)?$/, '');
-    const creatorSlug = extractCreatorSlug(ksUrl);
-    const projectSlug = extractProjectSlug(ksUrl);
-    if (creatorSlug && projectSlug) {
-      const ktSummary = await scrapeKicktraqProjectSummary(creatorSlug, projectSlug);
-      if (ktSummary && (ktSummary.pledged_usd > 0 || ktSummary.backers_count > 0)) {
-        storeKicktraqSummary(projectId, ktSummary);
-        return {
-          ok: true,
-          full: false,
-          source: 'kicktraq_summary',
-          rewardCount: 0,
-          collaboratorCount: 0,
-          message: 'Synced live funding basics from Kicktraq; rewards and collaborators require Kickstarter detail JSON.',
-        };
-      }
-    }
+    const fallback = await scrapeBasicFallback(projectId, jsonUrl);
+    if (fallback) return fallback;
     return {
       ok: false,
       full: false,
@@ -702,20 +732,37 @@ export async function scrapeAndStore(projectId: string, jsonUrl: string, opts: S
   }
 
   const now = Math.floor(Date.now() / 1000);
-  const projectState = p.state ?? 'unknown';
-  const isLive = projectState === 'live';
   const { pledgedUsd, goalUsd } = resolveUsdAmounts(p);
-  const existing = await getProjectById(projectId) as { usd_pledged?: number; backers_count?: number } | null;
+  const existing = await getProjectById(projectId) as {
+    state?: string | null;
+    deadline?: number | null;
+    goal?: number | null;
+    usd_pledged?: number;
+    backers_count?: number;
+  } | null;
   const latestSnapshot = getSnapshots(projectId).at(-1);
+  const projectState = p.state ?? existing?.state ?? 'unknown';
+  const isLive = projectState === 'live';
+  const rewards = normalizeRewards(p);
+  const collaborators = normalizeCollaborators(projectId, p, now);
   const existingPledged = Number(existing?.usd_pledged ?? 0);
   const existingBackers = Number(existing?.backers_count ?? 0);
   const latestPledged = Number(latestSnapshot?.pledged_usd ?? 0);
   const latestBackers = Number(latestSnapshot?.backers_count ?? 0);
   const baselinePledged = Math.max(existingPledged, latestPledged);
   const baselineBackers = Math.max(existingBackers, latestBackers);
-  const fetchedBackers = Number(p.backers_count ?? 0);
+  const fetchedBackers = resolveBackersCount(p);
 
-  if (pledgedUsd <= 0 && fetchedBackers <= 0 && (baselinePledged > 0 || baselineBackers > 0)) {
+  if (pledgedUsd <= 0 && fetchedBackers <= 0 && !rewards.length && !collaborators.length && (baselinePledged > 0 || baselineBackers > 0)) {
+    recordCrawlerError({
+      source: 'ks_project',
+      job_type: 'project_json',
+      project_id: projectId,
+      url: jsonUrl,
+      message: 'Kickstarter project JSON did not include usable funding, backer totals, rewards, or collaborators.',
+    });
+    const fallback = await scrapeBasicFallback(projectId, jsonUrl);
+    if (fallback) return fallback;
     return {
       ok: false,
       full: false,
@@ -728,6 +775,7 @@ export async function scrapeAndStore(projectId: string, jsonUrl: string, opts: S
 
   const safePledgedUsd = pledgedUsd > 0 ? pledgedUsd : baselinePledged;
   const safeBackers = fetchedBackers > 0 ? fetchedBackers : baselineBackers;
+  const safeDeadline = p.deadline ?? existing?.deadline ?? undefined;
 
   if (isLive || !opts.manual) {
     insertSnapshot({
@@ -735,7 +783,7 @@ export async function scrapeAndStore(projectId: string, jsonUrl: string, opts: S
       captured_at: now,
       pledged_usd: safePledgedUsd,
       backers_count: safeBackers,
-      days_to_go: daysToGo(p.deadline),
+      days_to_go: daysToGo(safeDeadline),
       comments_count: p.comments_count ?? 0,
       updates_count: p.updates_count ?? 0,
       state: projectState,
@@ -747,7 +795,7 @@ export async function scrapeAndStore(projectId: string, jsonUrl: string, opts: S
     name: p.name,
     blurb: p.blurb ?? null,
     state: projectState,
-    goal_usd: goalUsd > 0 ? goalUsd : null,
+    goal_usd: goalUsd > 0 ? goalUsd : existing?.goal ?? null,
     pledged_usd: safePledgedUsd > 0 ? safePledgedUsd : null,
     backers_count: safeBackers > 0 ? safeBackers : null,
     creator_name: p.creator?.name ?? null,
@@ -757,12 +805,10 @@ export async function scrapeAndStore(projectId: string, jsonUrl: string, opts: S
     image_thumb_url: p.photo?.little ?? p.photo?.thumb ?? p.photo?.small ?? p.photo?.ed ?? p.photo?.med ?? p.photo?.full ?? null,
   });
 
-  const rewards = normalizeRewards(p);
   if (opts.track_rewards && rewards.length) {
     insertRewardSnapshots(projectId, now, rewards);
   }
 
-  const collaborators = normalizeCollaborators(projectId, p, now);
   upsertProjectCollaborators(projectId, collaborators);
 
   if (opts.track_rewards && !rewards.length) {
