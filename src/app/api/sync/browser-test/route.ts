@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -29,10 +29,13 @@ function healthUrl(fetchUrl: string) {
   }
 }
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   const fetchUrl = getOptionalEnv('KICKSTARTER_BROWSER_FETCH_URL');
   const token = getOptionalEnv('BROWSER_WORKER_TOKEN');
-  const testUrl = 'https://www.kickstarter.com/discover/advanced?sort=newest&page=1&format=json&state=live';
+  const target = req.nextUrl.searchParams.get('url')?.trim();
+  const testUrl = target && target.startsWith('https://www.kickstarter.com/')
+    ? target
+    : 'https://www.kickstarter.com/discover/advanced?sort=newest&page=1&format=json&state=live';
   const diagnostics: Record<string, unknown> = {
     env: {
       hasFetchUrl: Boolean(fetchUrl),
@@ -86,6 +89,7 @@ export async function GET() {
         expect: 'json',
         timeoutMs: 90_000,
         settleMs: 1500,
+        scrollSteps: target ? 10 : 1,
       }),
       cache: 'no-store',
       signal: AbortSignal.timeout(100_000),
@@ -94,8 +98,14 @@ export async function GET() {
     const body = safeJson(text);
     const responseBody = body?.body && typeof body.body === 'object' ? body.body as Record<string, unknown> : null;
     const projects = Array.isArray(responseBody?.projects) ? responseBody.projects : [];
+    const rewards = Array.isArray(responseBody?.rewards) ? responseBody.rewards : [];
+    const collaborators = [
+      ...(Array.isArray(responseBody?.collaborators) ? responseBody.collaborators : []),
+      ...(Array.isArray(responseBody?.project_collaborators) ? responseBody.project_collaborators : []),
+    ];
 
     diagnostics.fetch = {
+      targetUrl: testUrl,
       workerHttpStatus: res.status,
       workerHttpOk: res.ok,
       workerReturnedOk: typeof body?.ok === 'boolean' ? body.ok : null,
@@ -106,9 +116,22 @@ export async function GET() {
       error: body?.error ?? null,
       bodyKeys: responseBody ? Object.keys(responseBody).slice(0, 20) : [],
       projectCount: projects.length,
+      rewardCount: rewards.length,
+      collaboratorCount: collaborators.length,
+      projectName: typeof responseBody?.name === 'string' ? responseBody.name : null,
       hasMoreProjects: responseBody?.has_more_projects ?? null,
       rawPreview: text.slice(0, 1000),
     };
+
+    if (target) {
+      return NextResponse.json({
+        ok: res.ok && Boolean(responseBody),
+        message: rewards.length || collaborators.length
+          ? 'Browser worker found Kickstarter project detail data.'
+          : 'Browser worker fetched the project, but did not find rewards or collaborators.',
+        diagnostics,
+      });
+    }
 
     return NextResponse.json({
       ok: res.ok && projects.length > 0,

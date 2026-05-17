@@ -95,7 +95,12 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
     urls: [jsonUrl, pageUrl],
     limit: 4,
   });
-  const latestDetail = result.message ?? recentErrors[0]?.message;
+  const diagnosticDetail = recentErrors
+    .map(error => error.message)
+    .filter(Boolean)
+    .slice(0, 3)
+    .join(' | ');
+  const latestDetail = diagnosticDetail || result.message;
 
   return NextResponse.json({
     ok: result.ok,

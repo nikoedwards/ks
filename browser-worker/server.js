@@ -135,6 +135,11 @@ function mergeProjectDetails(project, source) {
   return merged;
 }
 
+function mergeRenderedDetails(project, details) {
+  if (!project || !details) return project;
+  return mergeProjectDetails(project, details);
+}
+
 function projectScore(project) {
   let score = 10;
   if (Array.isArray(project.rewards) && project.rewards.length) score += 40 + project.rewards.length;
@@ -175,6 +180,93 @@ function findBestProject(root) {
     }
   }
   return best;
+}
+
+async function extractRenderedDetails(page) {
+  return page.evaluate(() => {
+    const clean = value => (value || '').replace(/\s+/g, ' ').trim();
+    const uniqueBy = (rows, keyFn) => {
+      const seen = new Set();
+      return rows.filter(row => {
+        const key = keyFn(row);
+        if (!key || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+    };
+    const parseMoney = text => {
+      const match = text.match(/(?:US\$|HK\$|CA\$|A\$|\$|£|€)\s*([\d,]+(?:\.\d+)?)/i);
+      return match ? Number(match[1].replace(/,/g, '')) || 0 : 0;
+    };
+    const parseCount = (text, patterns) => {
+      for (const pattern of patterns) {
+        const match = text.match(pattern);
+        if (match) return Number(match[1].replace(/,/g, '')) || 0;
+      }
+      return 0;
+    };
+    const rewardSelectors = [
+      '[data-reward-id]',
+      '[id^="reward-"]',
+      '[class*="reward" i]',
+      '[class*="pledge" i]',
+      'li:has([href*="#reward"])',
+    ];
+    const rewardNodes = Array.from(document.querySelectorAll(rewardSelectors.join(',')))
+      .filter(node => clean(node.textContent).length > 20);
+    const rewards = uniqueBy(rewardNodes.map((node, index) => {
+      const text = clean(node.textContent);
+      const title = clean(node.querySelector('h2,h3,h4,strong,[class*="title" i]')?.textContent)
+        || text.split(/(?:US\$|HK\$|CA\$|A\$|\$|£|€)/)[0].slice(0, 80).trim();
+      const amount = parseMoney(text);
+      const backers = parseCount(text, [/([\d,]+)\s+backers?/i, /backers?\s+([\d,]+)/i]);
+      const remaining = parseCount(text, [/([\d,]+)\s+(?:left|remaining)/i]);
+      const id = node.getAttribute('data-reward-id')
+        || node.id?.replace(/^reward-/, '')
+        || `${amount}-${title || index}`;
+      return {
+        id,
+        title,
+        description: text.slice(0, 600),
+        minimum: amount,
+        backers_count: backers,
+        limit: remaining || null,
+        limited: /limited|left|remaining/i.test(text),
+      };
+    }).filter(row => row.minimum > 0 || row.backers_count > 0 || row.title), row => String(row.id));
+
+    const collaboratorSections = Array.from(document.querySelectorAll('section,aside,div'))
+      .filter(node => /collaborators?|team|creator/i.test(clean(node.querySelector('h1,h2,h3,h4')?.textContent || node.getAttribute('aria-label') || '')));
+    const collaboratorScope = collaboratorSections.length ? collaboratorSections : [document.body];
+    const collaboratorLinks = collaboratorScope.flatMap(scope => Array.from(scope.querySelectorAll('a[href*="/profile/"]')));
+    const collaborators = uniqueBy(collaboratorLinks.map((link, index) => {
+      const href = link.href || link.getAttribute('href') || '';
+      const name = clean(link.textContent || link.getAttribute('aria-label') || '');
+      if (!name || name.length > 120) return null;
+      const parentText = clean(link.closest('li,article,div')?.textContent || '');
+      const image = link.querySelector('img') || link.closest('li,article,div')?.querySelector('img');
+      const slug = href.match(/\/profile\/([^/?#]+)/)?.[1];
+      return {
+        id: slug || `${name}-${index}`,
+        name,
+        slug,
+        role: /collaborator/i.test(parentText) ? 'Collaborator' : /creator/i.test(parentText) ? 'Creator' : null,
+        avatar: image?.src ? { small: image.src, thumb: image.src } : undefined,
+        urls: { web: { user: href } },
+      };
+    }).filter(Boolean), row => row.slug || row.name.toLowerCase());
+
+    return { rewards, collaborators, renderedRewardCount: rewards.length, renderedCollaboratorCount: collaborators.length };
+  });
+}
+
+async function scrollForLazyContent(page, input) {
+  const steps = Math.max(1, Math.min(Number(input.scrollSteps || 8), 20));
+  for (let i = 0; i < steps; i++) {
+    await page.evaluate(() => window.scrollBy(0, Math.max(600, Math.floor(window.innerHeight * 0.85))));
+    await page.waitForTimeout(300);
+  }
+  await page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
 }
 
 async function tryBrowserContextJson(context, page, targetUrl, timeoutMs, input) {
@@ -291,6 +383,10 @@ async function fetchWithBrowser(input) {
     }
 
     await page.waitForTimeout(Number(input.settleMs || 1200));
+    if (expect === 'json') {
+      await scrollForLazyContent(page, input);
+      await page.waitForTimeout(Number(input.settleMs || 1200));
+    }
 
     const status = response.status();
     const contentType = response.headers()['content-type'] || '';
@@ -304,6 +400,7 @@ async function fetchWithBrowser(input) {
 
     if (expect === 'json') {
       let body;
+      let renderedDetails = null;
       try {
         body = JSON.parse(text);
       } catch {
@@ -393,10 +490,16 @@ async function fetchWithBrowser(input) {
           throw new Error(`Could not extract JSON: ${statusDetail} and no __NEXT_DATA__ project found${requestDetail}`);
         }
       }
+      try {
+        renderedDetails = await extractRenderedDetails(page);
+      } catch {
+        renderedDetails = null;
+      }
       const requestProject = findBestProject(requestJsonResult?.body);
-      const pageProject = findBestProject(body) || body;
-      if (requestProject && (!pageProject || projectScore(requestProject) > projectScore(pageProject))) {
-        body = requestProject;
+      const pageProject = mergeRenderedDetails(findBestProject(body) || body, renderedDetails);
+      const requestProjectWithRenderedDetails = mergeRenderedDetails(requestProject, renderedDetails);
+      if (requestProjectWithRenderedDetails && (!pageProject || projectScore(requestProjectWithRenderedDetails) > projectScore(pageProject))) {
+        body = requestProjectWithRenderedDetails;
       } else {
         body = pageProject;
       }
