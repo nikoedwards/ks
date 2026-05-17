@@ -145,6 +145,14 @@ function projectScore(project) {
   return score;
 }
 
+function hasProjectDetails(project) {
+  return Boolean(
+    (Array.isArray(project.rewards) && project.rewards.length)
+    || (Array.isArray(project.collaborators) && project.collaborators.length)
+    || (Array.isArray(project.project_collaborators) && project.project_collaborators.length),
+  );
+}
+
 function findBestProject(root) {
   let best = null;
   let bestScore = -1;
@@ -232,6 +240,7 @@ async function fetchWithBrowser(input) {
   });
 
   const page = await context.newPage();
+  let requestJsonResult = null;
   const jsonResponsePromises = [];
   page.on('response', response => {
     if (expect !== 'json' || jsonResponsePromises.length >= 50) return;
@@ -252,10 +261,13 @@ async function fetchWithBrowser(input) {
       try {
         const result = await tryBrowserContextJson(context, page, targetUrl, timeoutMs, input);
         if (result.ok) {
-          return {
-            ...result,
-            elapsedMs: Date.now() - startedAt,
-          };
+          requestJsonResult = result;
+          if (isObject(result.body) && isProject(result.body) && hasProjectDetails(result.body)) {
+            return {
+              ...result,
+              elapsedMs: Date.now() - startedAt,
+            };
+          }
         }
         requestFallback = result;
       } catch (err) {
@@ -269,7 +281,8 @@ async function fetchWithBrowser(input) {
       }
     }
 
-    const response = await page.goto(targetUrl, {
+    const navigationUrl = expect === 'json' && requestJsonResult ? pageUrlForJson(targetUrl) : targetUrl;
+    const response = await page.goto(navigationUrl, {
       waitUntil: 'load',
       timeout: timeoutMs,
     });
@@ -379,6 +392,13 @@ async function fetchWithBrowser(input) {
             : '';
           throw new Error(`Could not extract JSON: ${statusDetail} and no __NEXT_DATA__ project found${requestDetail}`);
         }
+      }
+      const requestProject = findBestProject(requestJsonResult?.body);
+      const pageProject = findBestProject(body) || body;
+      if (requestProject && (!pageProject || projectScore(requestProject) > projectScore(pageProject))) {
+        body = requestProject;
+      } else {
+        body = pageProject;
       }
       return {
         ok: status >= 200 && status < 400,

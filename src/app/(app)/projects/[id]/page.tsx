@@ -72,6 +72,18 @@ interface KicktraqStatusPayload {
   writtenSnapshots?: KicktraqDebug['writtenSnapshots'];
 }
 
+interface SyncResultPayload {
+  ok?: boolean;
+  full?: boolean;
+  source?: string;
+  rewardCount?: number;
+  collaboratorCount?: number;
+  message?: string;
+  error?: string;
+  detail?: string | null;
+  recentErrors?: Array<{ message?: string; job_type?: string | null; status_code?: number | null }>;
+}
+
 interface Reward {
   reward_id: string; title: string; description: string;
   amount_usd: number; backers_count: number; limit_count: number | null; is_limited: number;
@@ -355,6 +367,7 @@ export default function ProjectDetailPage() {
   const [ktProgress, setKtProgress] = useState(0);
   const [ktPhase, setKtPhase] = useState('');
   const [syncError, setSyncError] = useState('');
+  const [syncNotice, setSyncNotice] = useState<{ kind: 'success' | 'warning' | 'error'; text: string } | null>(null);
   const [curveModes, setCurveModes] = useState<Record<CurveMetric, CurveMode>>({
     pledged: 'daily',
     backers: 'daily',
@@ -479,18 +492,41 @@ export default function ProjectDetailPage() {
     if (!id) return;
     setScraping(true);
     setSyncError('');
+    setSyncNotice(null);
     try {
       const res = await fetch(`/api/track/${id}`, { method: 'POST' });
-      const data = await res.json().catch(() => ({})) as { ok?: boolean; message?: string; error?: string; detail?: string | null };
+      const data = await res.json().catch(() => ({})) as SyncResultPayload;
+      const rewardCount = data.rewardCount ?? 0;
+      const collaboratorCount = data.collaboratorCount ?? 0;
+      const recentDetail = data.recentErrors?.map(e => e.message).filter(Boolean).slice(0, 2).join(' | ');
+      const detail = data.detail ?? recentDetail ?? data.message ?? data.error ?? null;
       if (!res.ok || !data.ok) {
-        setSyncError(data.detail ?? data.message ?? data.error ?? 'Sync failed');
+        const text = detail ?? 'Sync failed';
+        setSyncError(text);
+        setSyncNotice({ kind: 'error', text });
+      } else if (!data.full || rewardCount === 0 || collaboratorCount === 0) {
+        const text = [
+          data.message ?? 'Sync completed, but detail data is incomplete.',
+          `source=${data.source ?? 'unknown'}`,
+          `rewards=${rewardCount}`,
+          `collaborators=${collaboratorCount}`,
+          detail ? `detail=${detail}` : null,
+        ].filter(Boolean).join(' | ');
+        setSyncNotice({ kind: 'warning', text });
+      } else {
+        setSyncNotice({
+          kind: 'success',
+          text: `Full sync complete. rewards=${rewardCount}, collaborators=${collaboratorCount}.`,
+        });
       }
       await new Promise(r => setTimeout(r, 500));
       await loadProject();
-      loadSnapshots();
+      await loadSnapshots();
       await loadTracking();
     } catch {
-      setSyncError('Network error - please try again.');
+      const text = 'Network error - please try again.';
+      setSyncError(text);
+      setSyncNotice({ kind: 'error', text });
     }
     setScraping(false);
   };
@@ -842,9 +878,15 @@ export default function ProjectDetailPage() {
           </div>
         </div>
 
-        {syncError && (
-          <div className="mb-4 rounded-lg border border-amber-700/50 bg-amber-900/30 px-3 py-2 text-xs text-amber-200">
-            {syncError}
+        {(syncNotice || syncError) && (
+          <div className={`mb-4 rounded-lg border px-3 py-2 text-xs ${
+            syncNotice?.kind === 'success'
+              ? 'border-emerald-700/50 bg-emerald-900/30 text-emerald-100'
+              : syncNotice?.kind === 'error'
+                ? 'border-red-700/50 bg-red-900/30 text-red-100'
+                : 'border-amber-700/50 bg-amber-900/30 text-amber-200'
+          }`}>
+            {syncNotice?.text ?? syncError}
           </div>
         )}
         {(ktError || ktNoData || ktInfo) && (

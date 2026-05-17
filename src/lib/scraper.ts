@@ -21,7 +21,7 @@ export function getOptionalEnv(name: string) {
   return match?.[1]?.trim() ?? '';
 }
 
-// ??? KS JSON API types ????????????????????????????????????????????????????????
+// ─── KS JSON API types ────────────────────────────────────────────────────────
 
 interface KSReward {
   id?: number | string;
@@ -102,7 +102,7 @@ interface KicktraqSummary {
   deadline?: number | null;
 }
 
-// ??? Helpers ?????????????????????????????????????????????????????????????????
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
 export function extractCreatorSlug(sourceUrl: string): string | null {
   const m = sourceUrl.match(/kickstarter\.com\/projects\/([^/?#]+)/);
@@ -309,7 +309,7 @@ export function storeKicktraqSummary(projectId: string, summary: KicktraqSummary
   markFetched(projectId);
 }
 
-// ??? KS JSON scraper ?????????????????????????????????????????????????????????
+// ─── KS JSON scraper ─────────────────────────────────────────────────────────
 
 function isBlockedKickstarterText(text: string) {
   return text.includes('cf_chl')
@@ -365,6 +365,10 @@ function projectScore(project: KSProject) {
   if (project.blurb) score += 2;
   if (project.photo) score += 2;
   return score;
+}
+
+function hasProjectDetails(project: KSProject) {
+  return Boolean(project.rewards?.length || project.collaborators?.length || project.project_collaborators?.length);
 }
 
 function unwrapKickstarterProject(value: unknown): KSProject | null {
@@ -577,7 +581,22 @@ export async function scrapeKSJson(jsonUrl: string, projectId?: string): Promise
       if (browserJson) return browserJson;
       return fetchProjectViaHtmlProxy(pageUrl, projectId);
     }
-    return unwrapKickstarterProject(JSON.parse(text));
+    const directProject = unwrapKickstarterProject(JSON.parse(text));
+    if (!directProject || hasProjectDetails(directProject)) return directProject;
+
+    recordCrawlerError({
+      source: 'ks_project',
+      job_type: 'direct_json',
+      project_id: projectId ?? null,
+      url: jsonUrl,
+      status_code: res.status,
+      message: 'Kickstarter JSON returned only basic project fields; trying browser worker for reward and collaborator details.',
+    });
+    const browserJson = await fetchViaBrowserProxy(jsonUrl, projectId);
+    if (browserJson && projectScore(browserJson) > projectScore(directProject)) return browserJson;
+    const browserPageProject = await fetchProjectViaHtmlProxy(pageUrl, projectId);
+    if (browserPageProject && projectScore(browserPageProject) > projectScore(directProject)) return browserPageProject;
+    return directProject;
   } catch (err) {
     recordCrawlerError({
       source: 'ks_project',
@@ -836,9 +855,11 @@ export async function scrapeAndStore(projectId: string, jsonUrl: string, opts: S
   }
 
   markFetched(projectId);
+  const hasRewards = rewards.length > 0;
+  const hasCollaborators = collaborators.length > 0;
   return {
     ok: true,
-    full: true,
+    full: hasRewards && hasCollaborators,
     source: 'ks_project_json',
     rewardCount: rewards.length,
     collaboratorCount: collaborators.length,
@@ -848,7 +869,7 @@ export async function scrapeAndStore(projectId: string, jsonUrl: string, opts: S
   };
 }
 
-// ??? Kicktraq scraper ?????????????????????????????????????????????????????????
+// ─── Kicktraq scraper ─────────────────────────────────────────────────────────
 
 export interface KicktraqDay {
   date: string;
@@ -1171,7 +1192,7 @@ export async function scrapeKicktraq(creatorSlug: string, projectSlug: string): 
   return (await scrapeKicktraqDetailed(creatorSlug, projectSlug)).days;
 }
 
-// ??? OCR fallback via Claude Vision ??????????????????????????????????????????
+// ─── OCR fallback via Claude Vision ──────────────────────────────────────────
 
 async function scrapeKicktraqViaOCR(pageUrl: string, cookieStr: string, diagnostics?: KicktraqScrapeDiagnostics): Promise<KicktraqDay[]> {
   const imgUrl = pageUrl + 'dailychart.png';
@@ -1434,7 +1455,7 @@ async function scrapeKicktraqViaOpenAI(pageUrl: string, cookieStr: string, diagn
   }
 }
 
-// ??? HTML chart data parser ???????????????????????????????????????????????????
+// ─── HTML chart data parser ───────────────────────────────────────────────────
 
 function parseKicktraqHtml(html: string): KicktraqDay[] {
   const days: KicktraqDay[] = [];

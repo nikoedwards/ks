@@ -62,7 +62,7 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
   return NextResponse.json({ ok: true });
 }
 
-// POST /api/track/[id] ? trigger immediate scrape
+// POST /api/track/[id] → trigger immediate scrape
 export async function POST(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
 
@@ -89,7 +89,8 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
     manual: true,
   });
   const pageUrl = jsonUrl.replace(/\.json(?:[?#].*)?$/, '');
-  const recentErrors = result.ok && result.full ? [] : getRecentCrawlerErrors({
+  const hasExpectedDetails = result.rewardCount > 0 && result.collaboratorCount > 0;
+  const recentErrors = result.ok && result.full && hasExpectedDetails ? [] : getRecentCrawlerErrors({
     projectId: id,
     urls: [jsonUrl, pageUrl],
     limit: 4,
@@ -106,7 +107,9 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
     message: result.ok
       ? result.full
         ? 'Synced from Kickstarter.'
-        : 'Synced basic project fields only.'
+        : result.source === 'ks_project_json'
+          ? 'Synced from Kickstarter, but detail data is incomplete.'
+          : 'Synced basic project fields only.'
       : 'Kickstarter project sync failed.',
     detail: latestDetail ?? null,
     recentErrors,
