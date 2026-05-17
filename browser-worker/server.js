@@ -80,6 +80,69 @@ function normalizeTarget(rawUrl) {
   return url.toString();
 }
 
+function pageUrlForJson(targetUrl) {
+  const url = new URL(targetUrl);
+  url.searchParams.delete('format');
+  url.hash = '';
+  if (url.pathname.endsWith('.json')) {
+    url.pathname = url.pathname.replace(/\.json$/, '');
+  }
+  if (url.pathname === '/discover/advanced') {
+    url.search = '';
+  }
+  return url.toString();
+}
+
+function contentTypeFromHeaders(headers) {
+  return headers['content-type'] || headers['Content-Type'] || '';
+}
+
+async function tryBrowserContextJson(context, page, targetUrl, timeoutMs, input) {
+  const referer = input.referer || pageUrlForJson(targetUrl);
+  try {
+    await page.goto(referer, {
+      waitUntil: 'domcontentloaded',
+      timeout: Math.min(timeoutMs, 45_000),
+    });
+    await page.waitForTimeout(Number(input.settleMs || 1000));
+  } catch {
+    // The warmup page is best-effort. The API request below may still work.
+  }
+
+  const response = await context.request.get(targetUrl, {
+    timeout: timeoutMs,
+    headers: {
+      'Accept': 'application/json, text/plain, */*',
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Referer': referer,
+      'X-Requested-With': 'XMLHttpRequest',
+      'Sec-Fetch-Dest': 'empty',
+      'Sec-Fetch-Mode': 'cors',
+      'Sec-Fetch-Site': 'same-origin',
+    },
+  });
+  let text = await response.text();
+  if (Buffer.byteLength(text) > MAX_BODY_BYTES) {
+    text = text.slice(0, MAX_BODY_BYTES);
+  }
+  if (!response.ok()) {
+    return {
+      ok: false,
+      status: response.status(),
+      contentType: contentTypeFromHeaders(response.headers()),
+      finalUrl: targetUrl,
+      text,
+    };
+  }
+  return {
+    ok: true,
+    status: response.status(),
+    contentType: contentTypeFromHeaders(response.headers()),
+    finalUrl: targetUrl,
+    body: JSON.parse(text),
+  };
+}
+
 async function fetchWithBrowser(input) {
   const targetUrl = normalizeTarget(input.url);
   const expect = input.expect === 'html' ? 'html' : 'json';
@@ -98,6 +161,28 @@ async function fetchWithBrowser(input) {
   const page = await context.newPage();
   const startedAt = Date.now();
   try {
+    let requestFallback = null;
+    if (expect === 'json') {
+      try {
+        const result = await tryBrowserContextJson(context, page, targetUrl, timeoutMs, input);
+        if (result.ok) {
+          return {
+            ...result,
+            elapsedMs: Date.now() - startedAt,
+          };
+        }
+        requestFallback = result;
+      } catch (err) {
+        requestFallback = {
+          ok: false,
+          status: 0,
+          contentType: '',
+          finalUrl: targetUrl,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    }
+
     const response = await page.goto(targetUrl, {
       waitUntil: 'load',
       timeout: timeoutMs,
@@ -136,11 +221,15 @@ async function fetchWithBrowser(input) {
           } catch { return null; }
         });
         if (!body) {
-          throw new Error('Could not extract JSON: response is not JSON and no __NEXT_DATA__ project found');
+          const statusDetail = status >= 400 ? `HTTP ${status}` : 'response is not JSON';
+          const requestDetail = requestFallback
+            ? `; browser request fallback status=${requestFallback.status} error=${requestFallback.error || ''}`
+            : '';
+          throw new Error(`Could not extract JSON: ${statusDetail} and no __NEXT_DATA__ project found${requestDetail}`);
         }
       }
       return {
-        ok: true,
+        ok: status >= 200 && status < 400,
         status,
         contentType,
         finalUrl,

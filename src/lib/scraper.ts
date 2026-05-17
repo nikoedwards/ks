@@ -97,8 +97,20 @@ export function extractProjectSlug(sourceUrl: string): string | null {
 }
 
 export function buildKSJsonUrl(sourceUrl: string): string | null {
-  if (!sourceUrl?.startsWith('https://www.kickstarter.com/projects/')) return null;
-  return sourceUrl.endsWith('.json') ? sourceUrl : sourceUrl.replace(/\/$/, '') + '.json';
+  try {
+    const url = new URL(sourceUrl);
+    if (url.protocol !== 'https:' || !['www.kickstarter.com', 'kickstarter.com'].includes(url.hostname) || !url.pathname.startsWith('/projects/')) {
+      return null;
+    }
+    url.hostname = 'www.kickstarter.com';
+    url.search = '';
+    url.hash = '';
+    url.pathname = url.pathname.replace(/\/$/, '');
+    if (!url.pathname.endsWith('.json')) url.pathname += '.json';
+    return url.toString();
+  } catch {
+    return null;
+  }
 }
 
 function parseNum(v: number | string | undefined): number {
@@ -245,6 +257,48 @@ function isBlockedKickstarterText(text: string) {
     || text.includes('Cloudflare');
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function isKickstarterProject(value: unknown): value is KSProject {
+  if (!isRecord(value)) return false;
+  const hasIdentity = value.id !== undefined || typeof value.name === 'string';
+  const hasProjectFields = 'pledged' in value || 'backers_count' in value || 'state' in value || 'goal' in value;
+  return hasIdentity && hasProjectFields;
+}
+
+function unwrapKickstarterProject(value: unknown): KSProject | null {
+  if (isKickstarterProject(value)) return value;
+  if (!isRecord(value)) return null;
+
+  const project = value.project;
+  if (isKickstarterProject(project)) return project;
+
+  const body = value.body;
+  if (isKickstarterProject(body)) return body;
+  if (isRecord(body) && isKickstarterProject(body.project)) return body.project;
+
+  const text = value.text;
+  if (typeof text === 'string' && text.trim()) {
+    try {
+      return unwrapKickstarterProject(JSON.parse(text));
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
+}
+
+function workerStatus(value: unknown): number | null {
+  return isRecord(value) && typeof value.status === 'number' ? value.status : null;
+}
+
+function workerOk(value: unknown): boolean | null {
+  return isRecord(value) && typeof value.ok === 'boolean' ? value.ok : null;
+}
+
 async function fetchViaBrowserProxy(url: string, projectId?: string): Promise<KSProject | null> {
   const proxyUrl = getOptionalEnv('KICKSTARTER_BROWSER_FETCH_URL');
   if (!proxyUrl) {
@@ -284,17 +338,21 @@ async function fetchViaBrowserProxy(url: string, projectId?: string): Promise<KS
       return null;
     }
 
-    const data = JSON.parse(text) as KSProject | { project?: KSProject; body?: KSProject | { project?: KSProject }; text?: string };
-    if ('project' in data && data.project) return data.project;
-    if ('body' in data && data.body) {
-      const body = data.body;
-      return 'project' in body && body.project ? body.project : body as KSProject;
-    }
-    if ('text' in data && typeof data.text === 'string') {
-      const parsed = JSON.parse(data.text) as KSProject | { project: KSProject };
-      return 'project' in parsed ? parsed.project : parsed;
-    }
-    return data as KSProject;
+    const data = JSON.parse(text) as unknown;
+    const project = unwrapKickstarterProject(data);
+    if (project) return project;
+
+    const status = workerStatus(data);
+    const ok = workerOk(data);
+    recordCrawlerError({
+      source: 'ks_project',
+      job_type: 'browser_json_fallback',
+      project_id: projectId ?? null,
+      url,
+      status_code: status ?? res.status,
+      message: `Browser worker did not return Kickstarter project JSON. workerOk=${ok ?? 'unknown'} workerStatus=${status ?? 'unknown'} preview=${text.slice(0, 500)}`,
+    });
+    return null;
   } catch (err) {
     recordCrawlerError({
       source: 'ks_project',
@@ -336,14 +394,26 @@ async function fetchHtmlViaBrowserProxy(url: string, projectId?: string): Promis
       });
       return null;
     }
-    const data = JSON.parse(text) as { text?: string; error?: string };
-    if (typeof data.text === 'string' && data.text.trim()) return data.text;
+    const data = JSON.parse(text) as { ok?: boolean; status?: number; text?: string; error?: string };
+    if (data.ok === false || (typeof data.status === 'number' && data.status >= 400)) {
+      recordCrawlerError({
+        source: 'ks_project',
+        job_type: 'browser_html_fallback',
+        project_id: projectId ?? null,
+        url,
+        status_code: data.status ?? res.status,
+        message: `Browser worker HTML fallback returned a blocked response. workerOk=${data.ok ?? 'unknown'} workerStatus=${data.status ?? 'unknown'} error=${data.error ?? ''}`,
+      });
+      return null;
+    }
+    if (typeof data.text === 'string' && data.text.trim() && !isBlockedKickstarterText(data.text)) return data.text;
     recordCrawlerError({
       source: 'ks_project',
       job_type: 'browser_html_fallback',
       project_id: projectId ?? null,
       url,
-      message: `Browser worker HTML fallback returned no text: ${text.slice(0, 500)}`,
+      status_code: data.status ?? res.status,
+      message: `Browser worker HTML fallback returned no usable page text: ${text.slice(0, 500)}`,
     });
     return null;
   } catch (err) {
@@ -359,11 +429,15 @@ async function fetchHtmlViaBrowserProxy(url: string, projectId?: string): Promis
 }
 
 export async function scrapeKSJson(jsonUrl: string, projectId?: string): Promise<KSProject | null> {
+  const pageUrl = jsonUrl.replace(/\.json(?:[?#].*)?$/, '');
   try {
     const res = await fetch(jsonUrl, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; KicksOnar/1.0)',
-        'Accept': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+        'Accept': 'application/json, text/plain, */*',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Referer': pageUrl,
+        'X-Requested-With': 'XMLHttpRequest',
       },
       signal: AbortSignal.timeout(15_000),
       cache: 'no-store',
@@ -382,7 +456,6 @@ export async function scrapeKSJson(jsonUrl: string, projectId?: string): Promise
       });
       const browserJson = await fetchViaBrowserProxy(jsonUrl, projectId);
       if (browserJson) return browserJson;
-      const pageUrl = jsonUrl.replace(/\.json(?:[?#].*)?$/, '');
       return fetchProjectViaHtmlProxy(pageUrl, projectId);
     }
     const data = JSON.parse(text) as KSProject | { project: KSProject };
@@ -398,7 +471,6 @@ export async function scrapeKSJson(jsonUrl: string, projectId?: string): Promise
     try {
       const browserJson = await fetchViaBrowserProxy(jsonUrl, projectId);
       if (browserJson) return browserJson;
-      const pageUrl = jsonUrl.replace(/\.json(?:[?#].*)?$/, '');
       return fetchProjectViaHtmlProxy(pageUrl, projectId);
     } catch {
       return null;
@@ -410,7 +482,16 @@ async function fetchProjectViaHtmlProxy(pageUrl: string, projectId?: string): Pr
   const html = await fetchHtmlViaBrowserProxy(pageUrl, projectId);
   if (!html) return null;
   const m = html.match(/<script[^>]*id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/);
-  if (!m) return null;
+  if (!m) {
+    recordCrawlerError({
+      source: 'ks_project',
+      job_type: 'browser_html_fallback',
+      project_id: projectId ?? null,
+      url: pageUrl,
+      message: 'Browser worker HTML fallback returned a page without embedded project JSON.',
+    });
+    return null;
+  }
   try {
     const data = JSON.parse(m[1]) as { props?: { pageProps?: { project?: KSProject }; initialProps?: { project?: KSProject } } };
     return data?.props?.pageProps?.project ?? data?.props?.initialProps?.project ?? null;
