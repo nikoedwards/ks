@@ -62,7 +62,7 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
   return NextResponse.json({ ok: true });
 }
 
-// POST /api/track/[id] → trigger immediate scrape
+// POST /api/track/[id] ? trigger immediate scrape
 export async function POST(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
 
@@ -82,25 +82,31 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
   }
   if (!jsonUrl) return NextResponse.json({ error: 'No valid KS URL for this project' }, { status: 422 });
 
-  const ok = await scrapeAndStore(id, jsonUrl, {
+  const result = await scrapeAndStore(id, jsonUrl, {
     track_rewards: 1,
     track_comments: 1,
     track_text_diff: 1,
     manual: true,
   });
   const pageUrl = jsonUrl.replace(/\.json(?:[?#].*)?$/, '');
-  const recentErrors = ok ? [] : getRecentCrawlerErrors({
+  const recentErrors = result.ok && result.full ? [] : getRecentCrawlerErrors({
     projectId: id,
     urls: [jsonUrl, pageUrl],
     limit: 4,
   });
-  const latestDetail = recentErrors[0]?.message;
+  const latestDetail = result.message ?? recentErrors[0]?.message;
 
   return NextResponse.json({
-    ok,
-    scraped: ok,
-    message: ok
-      ? 'Synced from Kickstarter.'
+    ok: result.ok,
+    scraped: result.ok,
+    full: result.full,
+    source: result.source,
+    rewardCount: result.rewardCount,
+    collaboratorCount: result.collaboratorCount,
+    message: result.ok
+      ? result.full
+        ? 'Synced from Kickstarter.'
+        : 'Synced basic project fields only.'
       : 'Kickstarter project sync failed.',
     detail: latestDetail ?? null,
     recentErrors,

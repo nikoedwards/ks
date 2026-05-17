@@ -97,6 +97,78 @@ function contentTypeFromHeaders(headers) {
   return headers['content-type'] || headers['Content-Type'] || '';
 }
 
+function isObject(value) {
+  return typeof value === 'object' && value !== null;
+}
+
+function isProject(value) {
+  return isObject(value)
+    && (value.id !== undefined || typeof value.name === 'string')
+    && ('pledged' in value || 'backers_count' in value || 'state' in value || 'goal' in value);
+}
+
+function looksLikeReward(value) {
+  return isObject(value)
+    && ('minimum' in value || 'amount' in value || 'pledge_amount' in value || 'backers_count' in value || 'reward_id' in value);
+}
+
+function looksLikeCollaborator(value) {
+  return isObject(value)
+    && ('role' in value || 'avatar' in value || 'photo' in value || 'user' in value || 'profile_url' in value);
+}
+
+function detailArray(source, keys, predicate) {
+  if (!isObject(source)) return null;
+  for (const key of keys) {
+    const value = source[key];
+    if (Array.isArray(value) && value.some(predicate)) return value;
+  }
+  return null;
+}
+
+function mergeProjectDetails(project, source) {
+  const merged = { ...project };
+  const rewards = detailArray(source, ['rewards', 'reward_tiers', 'available_rewards'], looksLikeReward);
+  const collaborators = detailArray(source, ['collaborators', 'project_collaborators', 'team_members', 'project_team'], looksLikeCollaborator);
+  if ((!Array.isArray(merged.rewards) || !merged.rewards.length) && rewards) merged.rewards = rewards;
+  if ((!Array.isArray(merged.collaborators) || !merged.collaborators.length) && collaborators) merged.collaborators = collaborators;
+  return merged;
+}
+
+function projectScore(project) {
+  let score = 10;
+  if (Array.isArray(project.rewards) && project.rewards.length) score += 40 + project.rewards.length;
+  if (Array.isArray(project.collaborators) && project.collaborators.length) score += 30 + project.collaborators.length;
+  if (Array.isArray(project.project_collaborators) && project.project_collaborators.length) score += 30 + project.project_collaborators.length;
+  if (project.blurb) score += 2;
+  if (project.photo) score += 2;
+  return score;
+}
+
+function findBestProject(root) {
+  let best = null;
+  let bestScore = -1;
+  const seen = new Set();
+  const queue = [{ value: root, parent: null }];
+  for (let index = 0; index < queue.length && index < 2500; index++) {
+    const item = queue[index];
+    if (!isObject(item.value) || seen.has(item.value)) continue;
+    seen.add(item.value);
+    if (isProject(item.value)) {
+      const candidate = mergeProjectDetails(item.value, item.parent || item.value);
+      const score = projectScore(candidate);
+      if (score > bestScore) {
+        best = candidate;
+        bestScore = score;
+      }
+    }
+    for (const child of Object.values(item.value)) {
+      if (isObject(child)) queue.push({ value: child, parent: item.value });
+    }
+  }
+  return best;
+}
+
 async function tryBrowserContextJson(context, page, targetUrl, timeoutMs, input) {
   const referer = input.referer || pageUrlForJson(targetUrl);
   try {
@@ -134,12 +206,13 @@ async function tryBrowserContextJson(context, page, targetUrl, timeoutMs, input)
       text,
     };
   }
+  const parsed = JSON.parse(text);
   return {
     ok: true,
     status: response.status(),
     contentType: contentTypeFromHeaders(response.headers()),
     finalUrl: targetUrl,
-    body: JSON.parse(text),
+    body: findBestProject(parsed) || parsed,
   };
 }
 
@@ -159,6 +232,19 @@ async function fetchWithBrowser(input) {
   });
 
   const page = await context.newPage();
+  const jsonResponsePromises = [];
+  page.on('response', response => {
+    if (expect !== 'json' || jsonResponsePromises.length >= 50) return;
+    const url = response.url();
+    if (!/kickstarter\.com/i.test(url)) return;
+    const contentType = contentTypeFromHeaders(response.headers()).toLowerCase();
+    if (!contentType.includes('json') && !url.includes('/graphql') && !url.includes('.json')) return;
+    jsonResponsePromises.push(
+      response.text()
+        .then(text => JSON.parse(text))
+        .catch(() => null),
+    );
+  });
   const startedAt = Date.now();
   try {
     let requestFallback = null;
@@ -209,17 +295,83 @@ async function fetchWithBrowser(input) {
         body = JSON.parse(text);
       } catch {
         // KS redirects .json URLs to the HTML project page in a browser context.
-        // Extract embedded project data from Next.js __NEXT_DATA__ script tag.
+        // Extract embedded project data from Next.js and other JSON script tags.
         body = await page.evaluate(() => {
-          try {
-            const el = document.querySelector('#__NEXT_DATA__');
-            if (!el || !el.textContent) return null;
-            const data = JSON.parse(el.textContent);
-            return data?.props?.pageProps?.project
-              ?? data?.props?.initialProps?.project
-              ?? null;
-          } catch { return null; }
+          const isObject = value => typeof value === 'object' && value !== null;
+          const isProject = value => isObject(value)
+            && (value.id !== undefined || typeof value.name === 'string')
+            && ('pledged' in value || 'backers_count' in value || 'state' in value || 'goal' in value);
+          const looksLikeReward = value => isObject(value)
+            && ('minimum' in value || 'amount' in value || 'pledge_amount' in value || 'backers_count' in value || 'reward_id' in value);
+          const looksLikeCollaborator = value => isObject(value)
+            && ('role' in value || 'avatar' in value || 'photo' in value || 'user' in value || 'profile_url' in value);
+          const detailArray = (source, keys, predicate) => {
+            if (!isObject(source)) return null;
+            for (const key of keys) {
+              const value = source[key];
+              if (Array.isArray(value) && value.some(predicate)) return value;
+            }
+            return null;
+          };
+          const mergeProjectDetails = (project, source) => {
+            const merged = { ...project };
+            const rewards = detailArray(source, ['rewards', 'reward_tiers', 'available_rewards'], looksLikeReward);
+            const collaborators = detailArray(source, ['collaborators', 'project_collaborators', 'team_members', 'project_team'], looksLikeCollaborator);
+            if ((!Array.isArray(merged.rewards) || !merged.rewards.length) && rewards) merged.rewards = rewards;
+            if ((!Array.isArray(merged.collaborators) || !merged.collaborators.length) && collaborators) merged.collaborators = collaborators;
+            return merged;
+          };
+          const scoreProject = project => {
+            let score = 10;
+            if (Array.isArray(project.rewards) && project.rewards.length) score += 40 + project.rewards.length;
+            if (Array.isArray(project.collaborators) && project.collaborators.length) score += 30 + project.collaborators.length;
+            if (Array.isArray(project.project_collaborators) && project.project_collaborators.length) score += 30 + project.project_collaborators.length;
+            if (project.blurb) score += 2;
+            if (project.photo) score += 2;
+            return score;
+          };
+          const findBest = root => {
+            let best = null;
+            let bestScore = -1;
+            const seen = new Set();
+            const queue = [{ value: root, parent: null }];
+            for (let index = 0; index < queue.length && index < 2500; index++) {
+              const item = queue[index];
+              if (!isObject(item.value) || seen.has(item.value)) continue;
+              seen.add(item.value);
+              if (isProject(item.value)) {
+                const candidate = mergeProjectDetails(item.value, item.parent || item.value);
+                const score = scoreProject(candidate);
+                if (score > bestScore) {
+                  best = candidate;
+                  bestScore = score;
+                }
+              }
+              for (const child of Object.values(item.value)) {
+                if (isObject(child)) queue.push({ value: child, parent: item.value });
+              }
+            }
+            return best;
+          };
+          const roots = [];
+          for (const el of document.querySelectorAll('script[type="application/json"], #__NEXT_DATA__')) {
+            if (!el.textContent?.trim()) continue;
+            try {
+              roots.push(JSON.parse(el.textContent));
+            } catch {
+              // Ignore non-project JSON scripts.
+            }
+          }
+          return findBest(roots);
         });
+        const settledPayloads = await Promise.allSettled(jsonResponsePromises);
+        const responsePayloads = settledPayloads
+          .filter(result => result.status === 'fulfilled' && result.value)
+          .map(result => result.value);
+        const responseProject = findBestProject(responsePayloads);
+        if (responseProject && (!body || projectScore(responseProject) > projectScore(body))) {
+          body = responseProject;
+        }
         if (!body) {
           const statusDetail = status >= 400 ? `HTTP ${status}` : 'response is not JSON';
           const requestDetail = requestFallback

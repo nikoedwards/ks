@@ -21,17 +21,26 @@ export function getOptionalEnv(name: string) {
   return match?.[1]?.trim() ?? '';
 }
 
-// ─── KS JSON API types ────────────────────────────────────────────────────────
+// ??? KS JSON API types ????????????????????????????????????????????????????????
 
 interface KSReward {
-  id: number;
+  id?: number | string;
+  reward_id?: number | string;
   title?: string;
   description?: string;
-  minimum: number | string;
-  backers_count: number;
+  minimum?: number | string;
+  amount?: number | string;
+  pledge_amount?: number | string;
+  converted_minimum?: number | string;
+  backers_count?: number;
+  backers?: number;
   limit?: number | null;
+  limit_count?: number | null;
+  quantity?: number | null;
   limited?: boolean;
+  is_limited?: boolean | number;
   remaining?: number | null;
+  [key: string]: unknown;
 }
 
 interface KSProject {
@@ -54,6 +63,7 @@ interface KSProject {
   creator?: { name?: string; slug?: string; urls?: { web?: { user?: string } } };
   collaborators?: KSCollaborator[];
   project_collaborators?: KSCollaborator[];
+  [key: string]: unknown;
   photo?: {
     full?: string;
     little?: string;
@@ -74,6 +84,8 @@ interface KSCollaborator {
   avatar?: { thumb?: string; small?: string; medium?: string };
   photo?: { thumb?: string; small?: string; med?: string; full?: string };
   urls?: { web?: { user?: string; profile?: string } };
+  user?: KSCollaborator;
+  [key: string]: unknown;
 }
 
 interface KicktraqSummary {
@@ -84,7 +96,7 @@ interface KicktraqSummary {
   deadline?: number | null;
 }
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
+// ??? Helpers ?????????????????????????????????????????????????????????????????
 
 export function extractCreatorSlug(sourceUrl: string): string | null {
   const m = sourceUrl.match(/kickstarter\.com\/projects\/([^/?#]+)/);
@@ -142,6 +154,7 @@ function stripTags(value: string) {
 const SERVICE_AGENCY_PATTERNS = [
   { pattern: /longham/i, label: 'Longham - Crowdfunding Expert' },
   { pattern: /global\s*one\s*click|goc/i, label: 'Global OneClick' },
+  { pattern: /\bk[\s-]*lab\b|\bklab\b/i, label: 'K-Lab' },
   { pattern: /vinyl/i, label: 'Vinyl - Full Service Crowdfunding Expert' },
 ];
 
@@ -157,22 +170,45 @@ function normalizeCollaborators(projectId: string, p: KSProject, now: number): P
   ];
   const rows = new Map<string, ProjectCollaborator>();
   for (const c of raw) {
-    const name = c.name?.trim();
+    const user = isRecord(c.user) ? c.user as KSCollaborator : null;
+    const name = (c.name ?? user?.name)?.trim();
     if (!name) continue;
-    const agencyName = detectServiceAgency(name, c.role);
-    const key = String(c.id ?? c.slug ?? name.toLowerCase().replace(/\s+/g, '-'));
+    const role = c.role ?? user?.role ?? null;
+    const agencyName = detectServiceAgency(name, role);
+    const key = String(c.id ?? user?.id ?? c.slug ?? user?.slug ?? name.toLowerCase().replace(/\s+/g, '-'));
     if (key === projectId) continue;
     rows.set(key, {
       collaborator_key: key,
       name: agencyName ?? name,
-      role: agencyName ? 'Service agency' : c.role ?? null,
-      avatar_url: c.avatar?.small ?? c.avatar?.thumb ?? c.photo?.small ?? c.photo?.thumb ?? c.photo?.med ?? c.photo?.full ?? null,
-      profile_url: c.urls?.web?.user ?? c.urls?.web?.profile ?? (c.slug ? `https://www.kickstarter.com/profile/${c.slug}` : null),
+      role: agencyName ? 'Service agency' : role,
+      avatar_url: c.avatar?.small ?? c.avatar?.thumb ?? c.photo?.small ?? c.photo?.thumb ?? c.photo?.med ?? c.photo?.full
+        ?? user?.avatar?.small ?? user?.avatar?.thumb ?? user?.photo?.small ?? user?.photo?.thumb ?? user?.photo?.med ?? user?.photo?.full ?? null,
+      profile_url: c.urls?.web?.user ?? c.urls?.web?.profile ?? user?.urls?.web?.user ?? user?.urls?.web?.profile
+        ?? (c.slug ? `https://www.kickstarter.com/profile/${c.slug}` : user?.slug ? `https://www.kickstarter.com/profile/${user.slug}` : null),
       is_service_agency: agencyName ? 1 : 0,
       captured_at: now,
     });
   }
   return [...rows.values()];
+}
+
+function normalizeRewards(p: KSProject): RewardSnapshot[] {
+  return (p.rewards ?? [])
+    .map((r, index) => {
+      const amount = parseNum(r.minimum ?? r.amount ?? r.pledge_amount ?? r.converted_minimum);
+      const rewardId = r.id ?? r.reward_id ?? `${amount}-${index}`;
+      const limit = r.limit ?? r.limit_count ?? r.quantity ?? null;
+      return {
+        reward_id: String(rewardId),
+        title: r.title ?? '',
+        description: r.description ?? '',
+        amount_usd: amount,
+        backers_count: Number(r.backers_count ?? r.backers ?? 0) || 0,
+        limit_count: typeof limit === 'number' ? limit : null,
+        is_limited: r.limited || r.is_limited || limit ? 1 : 0,
+      };
+    })
+    .filter(r => r.reward_id && (r.title || r.description || r.amount_usd > 0 || r.backers_count > 0));
 }
 
 function parseMoney(raw: string | undefined): { amount: number; currency: string | null } {
@@ -248,7 +284,7 @@ export function storeKicktraqSummary(projectId: string, summary: KicktraqSummary
   markFetched(projectId);
 }
 
-// ─── KS JSON scraper ─────────────────────────────────────────────────────────
+// ??? KS JSON scraper ?????????????????????????????????????????????????????????
 
 function isBlockedKickstarterText(text: string) {
   return text.includes('cf_chl')
@@ -268,16 +304,54 @@ function isKickstarterProject(value: unknown): value is KSProject {
   return hasIdentity && hasProjectFields;
 }
 
+function looksLikeReward(value: unknown) {
+  if (!isRecord(value)) return false;
+  return 'minimum' in value || 'amount' in value || 'pledge_amount' in value || 'backers_count' in value || 'reward_id' in value;
+}
+
+function looksLikeCollaborator(value: unknown) {
+  if (!isRecord(value)) return false;
+  return 'role' in value || 'avatar' in value || 'photo' in value || 'user' in value || 'profile_url' in value;
+}
+
+function detailArray(source: Record<string, unknown>, keys: string[], predicate: (value: unknown) => boolean) {
+  for (const key of keys) {
+    const value = source[key];
+    if (Array.isArray(value) && value.some(predicate)) return value;
+  }
+  return null;
+}
+
+function mergeProjectDetails(project: KSProject, source: Record<string, unknown>): KSProject {
+  const merged = { ...project };
+  const rewards = detailArray(source, ['rewards', 'reward_tiers', 'available_rewards'], looksLikeReward);
+  const collaborators = detailArray(source, ['collaborators', 'project_collaborators', 'team_members', 'project_team'], looksLikeCollaborator);
+  if (!merged.rewards?.length && rewards) merged.rewards = rewards as KSReward[];
+  if (!merged.collaborators?.length && collaborators) merged.collaborators = collaborators as KSCollaborator[];
+  return merged;
+}
+
+function projectScore(project: KSProject) {
+  let score = 10;
+  if (project.rewards?.length) score += 40 + project.rewards.length;
+  if (project.collaborators?.length || project.project_collaborators?.length) {
+    score += 30 + (project.collaborators?.length ?? 0) + (project.project_collaborators?.length ?? 0);
+  }
+  if (project.blurb) score += 2;
+  if (project.photo) score += 2;
+  return score;
+}
+
 function unwrapKickstarterProject(value: unknown): KSProject | null {
-  if (isKickstarterProject(value)) return value;
+  if (isKickstarterProject(value)) return mergeProjectDetails(value, value);
   if (!isRecord(value)) return null;
 
   const project = value.project;
-  if (isKickstarterProject(project)) return project;
+  if (isKickstarterProject(project)) return mergeProjectDetails(project, value);
 
   const body = value.body;
-  if (isKickstarterProject(body)) return body;
-  if (isRecord(body) && isKickstarterProject(body.project)) return body.project;
+  if (isKickstarterProject(body)) return mergeProjectDetails(body, value);
+  if (isRecord(body) && isKickstarterProject(body.project)) return mergeProjectDetails(body.project, body);
 
   const text = value.text;
   if (typeof text === 'string' && text.trim()) {
@@ -288,7 +362,27 @@ function unwrapKickstarterProject(value: unknown): KSProject | null {
     }
   }
 
-  return null;
+  let best: KSProject | null = null;
+  let bestScore = -1;
+  const seen = new Set<unknown>();
+  const queue: Array<{ value: unknown; parent: Record<string, unknown> | null }> = [{ value, parent: null }];
+  for (let index = 0; index < queue.length && index < 2000; index++) {
+    const item = queue[index];
+    if (!isRecord(item.value) || seen.has(item.value)) continue;
+    seen.add(item.value);
+    if (isKickstarterProject(item.value)) {
+      const candidate = mergeProjectDetails(item.value, item.parent ?? item.value);
+      const score = projectScore(candidate);
+      if (score > bestScore) {
+        best = candidate;
+        bestScore = score;
+      }
+    }
+    for (const child of Object.values(item.value)) {
+      if (isRecord(child) || Array.isArray(child)) queue.push({ value: child, parent: item.value });
+    }
+  }
+  return best;
 }
 
 function workerStatus(value: unknown): number | null {
@@ -458,8 +552,7 @@ export async function scrapeKSJson(jsonUrl: string, projectId?: string): Promise
       if (browserJson) return browserJson;
       return fetchProjectViaHtmlProxy(pageUrl, projectId);
     }
-    const data = JSON.parse(text) as KSProject | { project: KSProject };
-    return 'project' in data ? data.project : data;
+    return unwrapKickstarterProject(JSON.parse(text));
   } catch (err) {
     recordCrawlerError({
       source: 'ks_project',
@@ -493,8 +586,7 @@ async function fetchProjectViaHtmlProxy(pageUrl: string, projectId?: string): Pr
     return null;
   }
   try {
-    const data = JSON.parse(m[1]) as { props?: { pageProps?: { project?: KSProject }; initialProps?: { project?: KSProject } } };
-    return data?.props?.pageProps?.project ?? data?.props?.initialProps?.project ?? null;
+    return unwrapKickstarterProject(JSON.parse(m[1]));
   } catch {
     return null;
   }
@@ -559,10 +651,28 @@ export interface ScrapeOptions {
   manual?: boolean;
 }
 
-export async function scrapeAndStore(projectId: string, jsonUrl: string, opts: ScrapeOptions = {}): Promise<boolean> {
+export interface ScrapeResult {
+  ok: boolean;
+  full: boolean;
+  source: 'ks_project_json' | 'ks_html_fallback' | 'kicktraq_summary' | 'failed';
+  rewardCount: number;
+  collaboratorCount: number;
+  message?: string;
+}
+
+export async function scrapeAndStore(projectId: string, jsonUrl: string, opts: ScrapeOptions = {}): Promise<ScrapeResult> {
   const p = await scrapeKSJson(jsonUrl, projectId);
   if (!p) {
-    if (await scrapeKickstarterHtmlFallback(projectId, jsonUrl)) return true;
+    if (await scrapeKickstarterHtmlFallback(projectId, jsonUrl)) {
+      return {
+        ok: true,
+        full: false,
+        source: 'ks_html_fallback',
+        rewardCount: 0,
+        collaboratorCount: 0,
+        message: 'Synced basic Kickstarter page metadata only; full project JSON was unavailable.',
+      };
+    }
     // Last resort: Kicktraq for live funding data (bypasses Cloudflare entirely)
     const ksUrl = jsonUrl.replace(/\.json(?:[?#].*)?$/, '');
     const creatorSlug = extractCreatorSlug(ksUrl);
@@ -571,10 +681,24 @@ export async function scrapeAndStore(projectId: string, jsonUrl: string, opts: S
       const ktSummary = await scrapeKicktraqProjectSummary(creatorSlug, projectSlug);
       if (ktSummary && (ktSummary.pledged_usd > 0 || ktSummary.backers_count > 0)) {
         storeKicktraqSummary(projectId, ktSummary);
-        return true;
+        return {
+          ok: true,
+          full: false,
+          source: 'kicktraq_summary',
+          rewardCount: 0,
+          collaboratorCount: 0,
+          message: 'Synced live funding basics from Kicktraq; rewards and collaborators require Kickstarter detail JSON.',
+        };
       }
     }
-    return false;
+    return {
+      ok: false,
+      full: false,
+      source: 'failed',
+      rewardCount: 0,
+      collaboratorCount: 0,
+      message: 'Kickstarter project sync failed.',
+    };
   }
 
   const now = Math.floor(Date.now() / 1000);
@@ -592,7 +716,14 @@ export async function scrapeAndStore(projectId: string, jsonUrl: string, opts: S
   const fetchedBackers = Number(p.backers_count ?? 0);
 
   if (pledgedUsd <= 0 && fetchedBackers <= 0 && (baselinePledged > 0 || baselineBackers > 0)) {
-    return false;
+    return {
+      ok: false,
+      full: false,
+      source: 'failed',
+      rewardCount: 0,
+      collaboratorCount: 0,
+      message: 'Rejected project JSON because it did not include usable funding or backer totals.',
+    };
   }
 
   const safePledgedUsd = pledgedUsd > 0 ? pledgedUsd : baselinePledged;
@@ -626,20 +757,32 @@ export async function scrapeAndStore(projectId: string, jsonUrl: string, opts: S
     image_thumb_url: p.photo?.little ?? p.photo?.thumb ?? p.photo?.small ?? p.photo?.ed ?? p.photo?.med ?? p.photo?.full ?? null,
   });
 
-  if (opts.track_rewards && p.rewards?.length) {
-    const rewards: RewardSnapshot[] = p.rewards.map(r => ({
-      reward_id: String(r.id),
-      title: r.title ?? '',
-      description: r.description ?? '',
-      amount_usd: parseNum(r.minimum),
-      backers_count: r.backers_count ?? 0,
-      limit_count: r.limit ?? null,
-      is_limited: r.limited ? 1 : 0,
-    }));
+  const rewards = normalizeRewards(p);
+  if (opts.track_rewards && rewards.length) {
     insertRewardSnapshots(projectId, now, rewards);
   }
 
-  upsertProjectCollaborators(projectId, normalizeCollaborators(projectId, p, now));
+  const collaborators = normalizeCollaborators(projectId, p, now);
+  upsertProjectCollaborators(projectId, collaborators);
+
+  if (opts.track_rewards && !rewards.length) {
+    recordCrawlerError({
+      source: 'ks_project',
+      job_type: 'project_details',
+      project_id: projectId,
+      url: jsonUrl,
+      message: 'Kickstarter project JSON did not include reward tiers.',
+    });
+  }
+  if (!collaborators.length) {
+    recordCrawlerError({
+      source: 'ks_project',
+      job_type: 'project_details',
+      project_id: projectId,
+      url: jsonUrl,
+      message: 'Kickstarter project JSON did not include collaborators.',
+    });
+  }
 
   if (opts.track_text_diff) {
     if (p.name) insertTextIfChanged(projectId, now, 'name', p.name);
@@ -647,10 +790,19 @@ export async function scrapeAndStore(projectId: string, jsonUrl: string, opts: S
   }
 
   markFetched(projectId);
-  return true;
+  return {
+    ok: true,
+    full: true,
+    source: 'ks_project_json',
+    rewardCount: rewards.length,
+    collaboratorCount: collaborators.length,
+    message: rewards.length || collaborators.length
+      ? `Synced full Kickstarter project data. rewards=${rewards.length}, collaborators=${collaborators.length}.`
+      : 'Synced Kickstarter project JSON, but it did not expose rewards or collaborators.',
+  };
 }
 
-// ─── Kicktraq scraper ─────────────────────────────────────────────────────────
+// ??? Kicktraq scraper ?????????????????????????????????????????????????????????
 
 export interface KicktraqDay {
   date: string;
@@ -973,7 +1125,7 @@ export async function scrapeKicktraq(creatorSlug: string, projectSlug: string): 
   return (await scrapeKicktraqDetailed(creatorSlug, projectSlug)).days;
 }
 
-// ─── OCR fallback via Claude Vision ──────────────────────────────────────────
+// ??? OCR fallback via Claude Vision ??????????????????????????????????????????
 
 async function scrapeKicktraqViaOCR(pageUrl: string, cookieStr: string, diagnostics?: KicktraqScrapeDiagnostics): Promise<KicktraqDay[]> {
   const imgUrl = pageUrl + 'dailychart.png';
@@ -1236,7 +1388,7 @@ async function scrapeKicktraqViaOpenAI(pageUrl: string, cookieStr: string, diagn
   }
 }
 
-// ─── HTML chart data parser ───────────────────────────────────────────────────
+// ??? HTML chart data parser ???????????????????????????????????????????????????
 
 function parseKicktraqHtml(html: string): KicktraqDay[] {
   const days: KicktraqDay[] = [];
