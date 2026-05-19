@@ -120,11 +120,14 @@ export function buildKSJsonUrl(sourceUrl: string): string | null {
     if (url.protocol !== 'https:' || !['www.kickstarter.com', 'kickstarter.com'].includes(url.hostname) || !url.pathname.startsWith('/projects/')) {
       return null;
     }
+    const match = url.pathname.match(/^\/projects\/([^/?#]+)\/([^/?#]+)/);
+    if (!match) return null;
     url.hostname = 'www.kickstarter.com';
     url.search = '';
     url.hash = '';
-    url.pathname = url.pathname.replace(/\/$/, '');
-    if (!url.pathname.endsWith('.json')) url.pathname += '.json';
+    const creatorSlug = match[1];
+    const projectSlug = match[2].replace(/\.json$/, '');
+    url.pathname = `/projects/${creatorSlug}/${projectSlug}.json`;
     return url.toString();
   } catch {
     return null;

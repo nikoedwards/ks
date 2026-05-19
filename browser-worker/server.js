@@ -161,6 +161,17 @@ function pageUrlForJson(targetUrl) {
   return url.toString();
 }
 
+function projectSectionUrl(targetUrl, section) {
+  const url = new URL(targetUrl);
+  const match = url.pathname.match(/^\/projects\/([^/?#]+)\/([^/?#]+)/);
+  if (!match) return null;
+  url.hostname = 'www.kickstarter.com';
+  url.search = '';
+  url.hash = '';
+  url.pathname = `/projects/${match[1]}/${match[2].replace(/\.json$/, '')}/${section}`;
+  return url.toString();
+}
+
 function isKickstarterProjectUrl(targetUrl) {
   try {
     const url = new URL(targetUrl);
@@ -222,6 +233,29 @@ function mergeProjectDetails(project, source) {
 function mergeRenderedDetails(project, details) {
   if (!project || !details) return project;
   return mergeProjectDetails(project, details);
+}
+
+function mergeDetailObjects(...detailObjects) {
+  const merged = { rewards: [], collaborators: [] };
+  for (const details of detailObjects) {
+    if (!details) continue;
+    if (Array.isArray(details.rewards)) merged.rewards.push(...details.rewards);
+    if (Array.isArray(details.collaborators)) merged.collaborators.push(...details.collaborators);
+  }
+  const unique = (rows, keyFn) => {
+    const seen = new Set();
+    return rows.filter(row => {
+      const key = keyFn(row);
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  };
+  merged.rewards = unique(merged.rewards, row => String(row.id || row.reward_id || `${row.minimum}-${row.title}`));
+  merged.collaborators = unique(merged.collaborators, row => String(row.id || row.slug || row.name || '').toLowerCase());
+  merged.renderedRewardCount = merged.rewards.length;
+  merged.renderedCollaboratorCount = merged.collaborators.length;
+  return merged;
 }
 
 function projectScore(project) {
@@ -342,6 +376,223 @@ async function extractRenderedDetails(page) {
 
     return { rewards, collaborators, renderedRewardCount: rewards.length, renderedCollaboratorCount: collaborators.length };
   });
+}
+
+async function extractRewardPageDetails(page) {
+  await page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
+  await page.waitForTimeout(500);
+
+  const parseCurrentReward = async () => page.evaluate(() => {
+    const clean = value => (value || '').replace(/\s+/g, ' ').trim();
+    const visible = node => {
+      const rect = node.getBoundingClientRect();
+      const style = window.getComputedStyle(node);
+      return rect.width > 40 && rect.height > 20 && style.visibility !== 'hidden' && style.display !== 'none';
+    };
+    const parseMoney = text => {
+      const match = text.match(/(?:US\$|HK\$|CA\$|A\$|\$|£|€)\s*([\d,]+(?:\.\d+)?)/i);
+      return match ? Number(match[1].replace(/,/g, '')) || 0 : 0;
+    };
+    const parseCount = (text, patterns) => {
+      for (const pattern of patterns) {
+        const match = text.match(pattern);
+        if (match) return Number(match[1].replace(/,/g, '')) || 0;
+      }
+      return 0;
+    };
+    const candidates = Array.from(document.querySelectorAll('article,section,div,[data-reward-id],[class*="reward" i],[class*="pledge" i]'))
+      .map(node => ({ node, text: clean(node.textContent), rect: node.getBoundingClientRect() }))
+      .filter(item => visible(item.node)
+        && /backers?/i.test(item.text)
+        && /pledge|estimated delivery|ships to|item included/i.test(item.text)
+        && item.rect.width > 260
+        && item.rect.height > 160
+        && item.rect.width * item.rect.height < window.innerWidth * window.innerHeight * 0.8);
+    candidates.sort((a, b) => {
+      const score = item => (/pledge/i.test(item.text) ? 20 : 0)
+        + (/estimated delivery/i.test(item.text) ? 10 : 0)
+        + (/ships to/i.test(item.text) ? 5 : 0)
+        - Math.abs(item.rect.left - window.innerWidth * 0.45) / 100;
+      return score(b) - score(a);
+    });
+    const best = candidates[0];
+    if (!best) return null;
+
+    const node = best.node;
+    const text = best.text;
+    const title = clean(node.querySelector('h1,h2,h3,h4,strong,[class*="title" i]')?.textContent)
+      || clean(text.split(/Backers?/i)[0].split(/(?:US\$|HK\$|CA\$|A\$|\$|£|€)\s*[\d,]+/).filter(Boolean).pop() || '').slice(0, 100);
+    const amount = parseMoney(clean(node.querySelector('button,[href*="checkout"],[class*="pledge" i]')?.textContent || '')) || parseMoney(text);
+    const backers = parseCount(text, [/Backers?\s*([\d,]+)/i, /([\d,]+)\s+backers?/i]);
+    const remaining = parseCount(text, [/([\d,]+)\s+(?:left|remaining)/i]);
+    const id = node.getAttribute('data-reward-id') || `${amount}-${title}`;
+    return {
+      id,
+      title,
+      description: text.slice(0, 900),
+      minimum: amount,
+      backers_count: backers,
+      limit: remaining || null,
+      limited: /limited|left|remaining/i.test(text),
+    };
+  });
+
+  const seeds = await page.evaluate(() => {
+    const clean = value => (value || '').replace(/\s+/g, ' ').trim();
+    const visible = node => {
+      const rect = node.getBoundingClientRect();
+      const style = window.getComputedStyle(node);
+      return rect.width > 40 && rect.height > 20 && style.visibility !== 'hidden' && style.display !== 'none';
+    };
+    const parseMoney = text => {
+      const match = text.match(/(?:US\$|HK\$|CA\$|A\$|\$|£|€)\s*([\d,]+(?:\.\d+)?)/i);
+      return match ? Number(match[1].replace(/,/g, '')) || 0 : 0;
+    };
+    const heading = Array.from(document.querySelectorAll('h1,h2,h3,h4'))
+      .find(node => /^available rewards$/i.test(clean(node.textContent)));
+    const headingRect = heading?.getBoundingClientRect();
+    const leftLimit = Math.max(420, Math.min(560, window.innerWidth * 0.36));
+    const candidates = Array.from(document.querySelectorAll('a,button,[role="button"],li,div,[data-reward-id]'))
+      .map(node => {
+        const rect = node.getBoundingClientRect();
+        const text = clean(node.textContent);
+        return { node, rect, text };
+      })
+      .filter(item => visible(item.node)
+        && item.rect.left < leftLimit
+        && (!headingRect || item.rect.top > headingRect.bottom - 8)
+        && item.rect.height >= 28
+        && item.rect.height <= 140
+        && item.rect.width >= 180
+        && item.rect.width <= leftLimit
+        && parseMoney(item.text) > 0
+        && /item included|items included|reward|special|bundle|pledge/i.test(item.text));
+    candidates.sort((a, b) => (a.rect.width * a.rect.height) - (b.rect.width * b.rect.height));
+    const seen = new Set();
+    return candidates.map(item => {
+      const amount = parseMoney(item.text);
+      const title = clean(item.text.split(/(?:US\$|HK\$|CA\$|A\$|\$|£|€)/)[0]).slice(0, 100);
+      const key = `${amount}-${title.toLowerCase()}`;
+      if (!title || seen.has(key)) return null;
+      seen.add(key);
+      return {
+        x: item.rect.left + Math.min(item.rect.width / 2, 180),
+        y: item.rect.top + Math.min(item.rect.height / 2, 48),
+        title,
+        minimum: amount,
+        id: key,
+      };
+    }).filter(Boolean).slice(0, 60);
+  });
+
+  const rewards = [];
+  const first = await parseCurrentReward();
+  if (first) rewards.push(first);
+
+  for (const seed of seeds) {
+    try {
+      await page.mouse.click(seed.x, seed.y);
+      await page.waitForTimeout(450);
+      const current = await parseCurrentReward();
+      rewards.push({
+        ...seed,
+        ...(current || {}),
+        title: current?.title || seed.title,
+        minimum: current?.minimum || seed.minimum,
+      });
+    } catch {
+      rewards.push(seed);
+    }
+  }
+
+  const seen = new Set();
+  const uniqueRewards = rewards.filter(row => {
+    const key = String(row.id || `${row.minimum}-${row.title}`).toLowerCase();
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return row.title || row.minimum > 0 || row.backers_count > 0;
+  });
+  return { rewards: uniqueRewards, collaborators: [], renderedRewardCount: uniqueRewards.length, renderedCollaboratorCount: 0 };
+}
+
+async function extractCreatorPageDetails(page) {
+  const collaborators = await page.evaluate(() => {
+    const clean = value => (value || '').replace(/\s+/g, ' ').trim();
+    const visible = node => {
+      const rect = node.getBoundingClientRect();
+      const style = window.getComputedStyle(node);
+      return rect.width > 80 && rect.height > 35 && style.visibility !== 'hidden' && style.display !== 'none';
+    };
+    const heading = Array.from(document.querySelectorAll('h1,h2,h3,h4'))
+      .find(node => /^collaborators$/i.test(clean(node.textContent)));
+    if (!heading) return [];
+    const headingRect = heading.getBoundingClientRect();
+    const candidates = Array.from(document.querySelectorAll('a,article,li,section,div'))
+      .map(node => ({ node, text: clean(node.textContent), rect: node.getBoundingClientRect() }))
+      .filter(item => visible(item.node)
+        && item.rect.top > headingRect.bottom - 10
+        && item.rect.left >= headingRect.left - 60
+        && item.rect.width >= 220
+        && item.rect.height >= 55
+        && item.rect.height <= 180
+        && !/^collaborators$/i.test(item.text)
+        && /(collaborator|team member|campaign management|premier partner|full campaign|expert)/i.test(item.text));
+    candidates.sort((a, b) => (a.rect.width * a.rect.height) - (b.rect.width * b.rect.height));
+    const seen = new Set();
+    return candidates.map((item, index) => {
+      const lines = Array.from(new Set(item.text.split(/\n| {2,}/).map(clean).filter(Boolean)));
+      const compactLines = lines.length > 1 ? lines : item.text.split(/(?<=Management|Collaborator|Member|Partner)\s+/).map(clean).filter(Boolean);
+      const first = compactLines[0] || '';
+      const second = compactLines[1] || '';
+      const third = compactLines[2] || '';
+      const firstLooksRole = /(collaborator|team member|campaign management|premier partner|full campaign|expert)/i.test(first);
+      const name = firstLooksRole && second ? second : first;
+      const roleParts = firstLooksRole ? [first, third].filter(Boolean) : [second].filter(Boolean);
+      const role = roleParts.join(' - ') || null;
+      if (!name || /^collaborators$/i.test(name)) return null;
+      const link = item.node.matches('a[href]') ? item.node : item.node.querySelector('a[href]');
+      const href = link?.href || link?.getAttribute('href') || '';
+      const image = item.node.querySelector('img');
+      const slug = href.match(/\/profile\/([^/?#]+)/)?.[1];
+      const key = String(slug || name).toLowerCase();
+      if (seen.has(key)) return null;
+      seen.add(key);
+      return {
+        id: slug || `${name}-${index}`,
+        name,
+        slug,
+        role,
+        avatar: image?.src ? { small: image.src, thumb: image.src } : undefined,
+        urls: href ? { web: { user: href } } : undefined,
+      };
+    }).filter(Boolean);
+  });
+  return { rewards: [], collaborators, renderedRewardCount: 0, renderedCollaboratorCount: collaborators.length };
+}
+
+async function extractProjectTabDetails(page, targetUrl, timeoutMs, input) {
+  const details = [];
+  const rewardsUrl = projectSectionUrl(targetUrl, 'rewards');
+  const creatorUrl = projectSectionUrl(targetUrl, 'creator');
+  if (rewardsUrl) {
+    try {
+      await page.goto(rewardsUrl, { waitUntil: 'domcontentloaded', timeout: Math.min(timeoutMs, 60_000) });
+      await page.waitForTimeout(Number(input.settleMs || 1200));
+      details.push(await extractRewardPageDetails(page));
+    } catch {
+      // Best effort. The main service records missing details if none are found.
+    }
+  }
+  if (creatorUrl) {
+    try {
+      await page.goto(creatorUrl, { waitUntil: 'domcontentloaded', timeout: Math.min(timeoutMs, 60_000) });
+      await page.waitForTimeout(Number(input.settleMs || 1200));
+      details.push(await extractCreatorPageDetails(page));
+    } catch {
+      // Best effort. The main service records missing details if none are found.
+    }
+  }
+  return mergeDetailObjects(...details);
 }
 
 async function scrollForLazyContent(page, input) {
@@ -606,6 +857,12 @@ async function fetchWithBrowser(input) {
       }
       try {
         renderedDetails = await extractRenderedDetails(page);
+        if (isKickstarterProjectUrl(targetUrl)) {
+          renderedDetails = mergeDetailObjects(
+            renderedDetails,
+            await extractProjectTabDetails(page, targetUrl, timeoutMs, input),
+          );
+        }
       } catch {
         renderedDetails = null;
       }
