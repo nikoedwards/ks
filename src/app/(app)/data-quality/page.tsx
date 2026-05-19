@@ -206,8 +206,8 @@ export default function DataQualityPage() {
   const [workbenchLoading, setWorkbenchLoading] = useState(false);
   const [workbenchFilter, setWorkbenchFilter] = useState('missing_collaborators');
   const [workbenchQuery, setWorkbenchQuery] = useState('');
-  const [runningAction, setRunningAction] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
+  const runningAction = null;
 
   const cn = lang === 'cn';
 
@@ -250,31 +250,9 @@ export default function DataQualityPage() {
     await loadWorkbench(filter, workbenchQuery);
   };
 
-  const runWorkbenchAction = async (projectId: string, action: 'kickstarter_sync' | 'kicktraq_import') => {
-    const key = `${projectId}:${action}`;
-    setRunningAction(key);
-    setActionMessage(null);
-    try {
-      const res = await fetch('/api/data-quality/workbench', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ projectId, action }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data.ok) {
-        const detail = data.recentErrors?.map((e: { message?: string }) => e.message).filter(Boolean).join(' | ');
-        throw new Error(detail || data.message || data.error || 'Action failed.');
-      }
-      const text = action === 'kickstarter_sync'
-        ? `Kickstarter sync done. rewards=${data.rewardCount ?? 0}, collaborators=${data.collaboratorCount ?? 0}.`
-        : `Kicktraq import done. days=${data.days ?? 0}.`;
-      setActionMessage({ kind: 'success', text });
-      await Promise.all([load(), loadWorkbench(workbenchFilter, workbenchQuery)]);
-    } catch (err) {
-      setActionMessage({ kind: 'error', text: err instanceof Error ? err.message : String(err) });
-    } finally {
-      setRunningAction(null);
-    }
+  const runWorkbenchAction = (projectId: string, action: 'kickstarter_sync' | 'kicktraq_import') => {
+    const debugAction = action === 'kickstarter_sync' ? 'official' : 'kicktraq';
+    window.location.href = `/data-quality/debug?projectId=${encodeURIComponent(projectId)}&action=${debugAction}`;
   };
 
   if (!report) {
@@ -456,8 +434,8 @@ export default function DataQualityPage() {
             </thead>
             <tbody className="divide-y divide-gray-50">
               {(workbench?.rows ?? []).map(project => {
-                const runningKs = runningAction === `${project.id}:kickstarter_sync`;
-                const runningKt = runningAction === `${project.id}:kicktraq_import`;
+                const runningKs = false;
+                const runningKt = false;
                 return (
                   <tr key={project.id} className="align-top">
                     <td className="px-5 py-4">
