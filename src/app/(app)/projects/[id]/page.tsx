@@ -531,16 +531,6 @@ export default function ProjectDetailPage() {
     setScraping(false);
   };
 
-  useEffect(() => {
-    if (autoSyncAttempted || !project || project.state !== 'live' || scraping) return;
-    const latestKsSnapshot = [...snapshots].reverse().find(s => s.source !== 'kicktraq_active');
-    const freshEnough = latestKsSnapshot && (Date.now() / 1000 - latestKsSnapshot.captured_at) < 30 * 60;
-    if (freshEnough) return;
-    setAutoSyncAttempted(true);
-    triggerScrape();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoSyncAttempted, user, project?.id, project?.state, snapshots.length, scraping]);
-
   const [ktError, setKtError] = useState('');
   const [ktNoData, setKtNoData] = useState(false);
   const [ktNoDataMessage, setKtNoDataMessage] = useState('');
@@ -843,25 +833,6 @@ export default function ProjectDetailPage() {
                 {isFavorited ? tr.saved : tr.saveBtn}
               </button>
 
-            <button onClick={triggerScrape} disabled={scraping}
-              title={lang === 'cn' ? '立刻从 Kickstarter 项目 JSON 抓取一次最新快照和奖励，不等待后台队列。' : 'Fetch the latest Kickstarter JSON snapshot and rewards once, without waiting for the queue.'}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-800 text-gray-400 border border-gray-700 hover:bg-gray-700 text-xs font-semibold transition-colors disabled:opacity-50">
-              <RefreshCw className={`w-3.5 h-3.5 ${scraping ? 'animate-spin' : ''}`} />
-              {scraping ? tr.syncingBtn : tr.syncNow}
-            </button>
-
-            <button onClick={importKicktraq} disabled={ktImporting}
-              title={lang === 'cn' ? '从 Kicktraq 日图表导入历史逐日数据，必要时会使用 OCR。' : 'Import historical daily data from Kicktraq charts, using OCR when needed.'}
-              className="relative flex items-center gap-1.5 overflow-hidden px-3 py-1.5 rounded-lg bg-blue-600 text-white text-xs font-semibold hover:bg-blue-700 transition-colors disabled:opacity-90">
-              {ktImporting && (
-                <span className="absolute inset-y-0 left-0 bg-blue-400/45 transition-all duration-500" style={{ width: `${Math.max(8, ktProgress)}%` }} />
-              )}
-              <TrendingUp className={`relative w-3.5 h-3.5 ${ktImporting ? 'animate-pulse' : ''}`} />
-              <span className="relative">
-                {ktImporting ? (lang === 'cn' ? '正在导入...' : ktPhase || tr.importingFromKT) : tr.importFromKT}
-              </span>
-            </button>
-
             {ksUrl && (
               <a href={ksUrl} target="_blank" rel="noopener noreferrer"
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-ks-green text-white text-xs font-semibold hover:bg-ks-green-dark transition-colors">
@@ -877,31 +848,6 @@ export default function ProjectDetailPage() {
             </div>
           </div>
         </div>
-
-        {(syncNotice || syncError) && (
-          <div className={`mb-4 rounded-lg border px-3 py-2 text-xs ${
-            syncNotice?.kind === 'success'
-              ? 'border-emerald-700/50 bg-emerald-900/30 text-emerald-100'
-              : syncNotice?.kind === 'error'
-                ? 'border-red-700/50 bg-red-900/30 text-red-100'
-                : 'border-amber-700/50 bg-amber-900/30 text-amber-200'
-          }`}>
-            {syncNotice?.text ?? syncError}
-          </div>
-        )}
-        {(ktError || ktNoData || ktInfo) && (
-          <div className="mb-4 rounded-lg border border-blue-700/50 bg-blue-900/30 px-3 py-2 text-xs text-blue-100">
-            <div className="flex items-center justify-between gap-3">
-              <span>{ktError || ktNoDataMessage || ktInfo || (lang === 'cn' ? 'Kicktraq 暂无可解析数据。' : 'No readable Kicktraq chart data was found.')}</span>
-              {ktImporting && <span className="font-semibold">{Math.round(ktProgress)}%</span>}
-            </div>
-            {ktImporting && (
-              <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-blue-950/60">
-                <div className="h-full rounded-full bg-blue-300 transition-all duration-500" style={{ width: `${Math.max(8, ktProgress)}%` }} />
-              </div>
-            )}
-          </div>
-        )}
 
         {/* Stats bar */}
         <div className="flex items-center gap-8 pb-0 overflow-x-auto">
@@ -955,16 +901,6 @@ export default function ProjectDetailPage() {
 
       {/* ── Tab content ────────────────────────────────────────────────────── */}
       <div className="bg-gray-50 rounded-b-2xl border-x border-b border-gray-200 p-6 space-y-6">
-        <KicktraqDebugConsole
-          lang={lang}
-          debug={ktDebug}
-          importing={ktImporting}
-          phase={ktPhase}
-          progress={ktProgress}
-          message={ktError || ktNoDataMessage || ktInfo}
-          onRefresh={() => { void loadCachedKicktraqDebug(); }}
-        />
-
         {/* ── OVERVIEW ── */}
         {activeTab === 'overview' && (
           <div className="space-y-6">
@@ -1065,10 +1001,10 @@ export default function ProjectDetailPage() {
                       : tr.importFromKT}
                   </button>
                 </div>
-                {ktError && (
+                {false && ktError && (
                   <p className="text-xs text-red-500 bg-red-50 rounded-lg px-3 py-2 max-w-md mx-auto">{ktError}</p>
                 )}
-                {ktNoData && (
+                {false && ktNoData && (
                   <p className="text-xs text-gray-400 bg-gray-50 rounded-lg px-3 py-2 max-w-md mx-auto">
                     {lang === 'cn'
                       ? (ktNoDataMessage || 'Kicktraq 的逐日图表没有可解析数据；如果页面只有图片图表，需要配置 OCR key 后再导入。')
@@ -1497,7 +1433,7 @@ export default function ProjectDetailPage() {
         )}
       </div>
 
-      {ktDebug && (
+      {false && ktDebug && (
         <div className="fixed bottom-4 right-4 z-50 w-[min(620px,calc(100vw-2rem))] max-h-[78vh] overflow-hidden rounded-xl border border-gray-200 bg-white shadow-2xl">
           <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
             <div>
@@ -1513,9 +1449,9 @@ export default function ProjectDetailPage() {
               <h4 className="mb-2 text-xs font-bold uppercase tracking-wide text-gray-500">
                 {lang === 'cn' ? '1. 原始图片数据' : '1. Raw Image Data'}
               </h4>
-              {ktDebug.images?.length ? (
+              {ktDebug?.images?.length ? (
                 <div className="space-y-3">
-                  {ktDebug.images.map((img, i) => (
+                  {ktDebug?.images?.map((img, i) => (
                     <div key={`${img.kind}-${i}`} className="rounded-lg border border-gray-100 bg-gray-50 p-3">
                       <div className="mb-2 flex flex-wrap gap-2 text-[11px] text-gray-500">
                         <span className="font-semibold text-gray-800">{img.kind}</span>
@@ -1538,7 +1474,7 @@ export default function ProjectDetailPage() {
                 {lang === 'cn' ? '2. 模型原始输出' : '2. Model Raw Output'}
               </h4>
               <pre className="max-h-56 overflow-auto rounded-lg bg-gray-950 p-3 text-[11px] leading-relaxed text-gray-100 whitespace-pre-wrap">
-                {ktDebug.modelOutput || (lang === 'cn' ? '没有捕获到模型输出。' : 'No model output captured.')}
+                {ktDebug?.modelOutput || (lang === 'cn' ? '没有捕获到模型输出。' : 'No model output captured.')}
               </pre>
             </section>
 
@@ -1547,7 +1483,7 @@ export default function ProjectDetailPage() {
                 {lang === 'cn' ? '3. 结构化数据' : '3. Structured Rows'}
               </h4>
               <pre className="max-h-56 overflow-auto rounded-lg bg-emerald-50 p-3 text-[11px] leading-relaxed text-emerald-950">
-                {JSON.stringify(ktDebug.structuredRows ?? [], null, 2)}
+                {JSON.stringify(ktDebug?.structuredRows ?? [], null, 2)}
               </pre>
             </section>
           </div>

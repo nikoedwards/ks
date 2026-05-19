@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Activity, AlertTriangle, CheckCircle2, Clock3, Database, RefreshCw, RadioTower, ShieldCheck, type LucideIcon } from 'lucide-react';
+import { Activity, AlertTriangle, CheckCircle2, Clock3, Database, ExternalLink, PlayCircle, RefreshCw, RadioTower, Search, ShieldCheck, UploadCloud, type LucideIcon } from 'lucide-react';
 import { useLanguage } from '@/hooks/useLanguage';
 
 interface SourceHealth {
@@ -58,6 +58,36 @@ interface RecentKsLiveProject {
   source_url: string | null;
   ks_live_synced_at: number | null;
   first_seen_at: number | null;
+}
+
+interface WorkbenchProject {
+  id: string;
+  name: string;
+  state: string;
+  data_source: string | null;
+  source_url: string | null;
+  creator_slug: string | null;
+  slug: string | null;
+  image_thumb_url: string | null;
+  image_url: string | null;
+  usd_pledged: number | null;
+  backers_count: number | null;
+  launched_at: number | null;
+  deadline: number | null;
+  latest_snapshot_at: number | null;
+  snapshot_count: number;
+  reward_count: number;
+  collaborator_count: number;
+  last_error_at: number | null;
+  last_error: string | null;
+}
+
+interface WorkbenchPayload {
+  rows: WorkbenchProject[];
+  total: number;
+  limit: number;
+  offset: number;
+  filter: string;
 }
 
 interface QualityReport {
@@ -171,9 +201,31 @@ function StatTile({
 export default function DataQualityPage() {
   const [lang] = useLanguage();
   const [report, setReport] = useState<QualityReport | null>(null);
+  const [workbench, setWorkbench] = useState<WorkbenchPayload | null>(null);
   const [loading, setLoading] = useState(true);
+  const [workbenchLoading, setWorkbenchLoading] = useState(false);
+  const [workbenchFilter, setWorkbenchFilter] = useState('missing_collaborators');
+  const [workbenchQuery, setWorkbenchQuery] = useState('');
+  const [runningAction, setRunningAction] = useState<string | null>(null);
+  const [actionMessage, setActionMessage] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
 
   const cn = lang === 'cn';
+
+  const loadWorkbench = async (filter = workbenchFilter, query = workbenchQuery) => {
+    setWorkbenchLoading(true);
+    try {
+      const params = new URLSearchParams({ filter, limit: '25' });
+      if (query.trim()) params.set('q', query.trim());
+      const res = await fetch(`/api/data-quality/workbench?${params.toString()}`, { cache: 'no-store' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to load data workbench.');
+      setWorkbench(data);
+    } catch (err) {
+      setActionMessage({ kind: 'error', text: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setWorkbenchLoading(false);
+    }
+  };
 
   const load = async () => {
     setLoading(true);
@@ -187,9 +239,43 @@ export default function DataQualityPage() {
 
   useEffect(() => {
     load();
+    loadWorkbench();
     const id = setInterval(load, 30_000);
     return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const applyWorkbenchFilter = async (filter: string) => {
+    setWorkbenchFilter(filter);
+    await loadWorkbench(filter, workbenchQuery);
+  };
+
+  const runWorkbenchAction = async (projectId: string, action: 'kickstarter_sync' | 'kicktraq_import') => {
+    const key = `${projectId}:${action}`;
+    setRunningAction(key);
+    setActionMessage(null);
+    try {
+      const res = await fetch('/api/data-quality/workbench', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId, action }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) {
+        const detail = data.recentErrors?.map((e: { message?: string }) => e.message).filter(Boolean).join(' | ');
+        throw new Error(detail || data.message || data.error || 'Action failed.');
+      }
+      const text = action === 'kickstarter_sync'
+        ? `Kickstarter sync done. rewards=${data.rewardCount ?? 0}, collaborators=${data.collaboratorCount ?? 0}.`
+        : `Kicktraq import done. days=${data.days ?? 0}.`;
+      setActionMessage({ kind: 'success', text });
+      await Promise.all([load(), loadWorkbench(workbenchFilter, workbenchQuery)]);
+    } catch (err) {
+      setActionMessage({ kind: 'error', text: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setRunningAction(null);
+    }
+  };
 
   if (!report) {
     return (
@@ -286,6 +372,168 @@ export default function DataQualityPage() {
             ? '后台会分批纳入 live 项目并按优先级刷新 JSON、奖励档位和文案快照。'
             : 'The background tracker enrolls live projects in batches and refreshes JSON, reward tiers, and text snapshots by priority.'}
         </p>
+      </section>
+
+      <section className="bg-white border border-gray-100 rounded-lg overflow-hidden">
+        <div className="px-5 py-4 border-b border-gray-100 flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+          <div>
+            <div className="flex items-center gap-2">
+              <Database className="w-4 h-4 text-ks-green" />
+              <h2 className="font-semibold text-gray-800">{cn ? '项目数据工作台' : 'Project Data Workbench'}</h2>
+            </div>
+            <p className="text-xs text-gray-400 mt-1">
+              {cn ? '所有写库调试都集中在这里执行；前台项目页只展示数据库结果。' : 'All write-side data operations live here; project pages only display database results.'}
+            </p>
+          </div>
+          <form
+            className="flex flex-col gap-2 sm:flex-row"
+            onSubmit={e => {
+              e.preventDefault();
+              loadWorkbench(workbenchFilter, workbenchQuery);
+            }}
+          >
+            <div className="relative">
+              <Search className="absolute left-3 top-2.5 h-4 w-4 text-gray-400" />
+              <input
+                value={workbenchQuery}
+                onChange={e => setWorkbenchQuery(e.target.value)}
+                placeholder={cn ? '搜索项目 / slug' : 'Search project / slug'}
+                className="w-full rounded-lg border border-gray-200 pl-9 pr-3 py-2 text-sm outline-none focus:border-ks-green sm:w-64"
+              />
+            </div>
+            <button
+              type="submit"
+              disabled={workbenchLoading}
+              className="inline-flex items-center justify-center gap-2 rounded-lg bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-gray-800 disabled:opacity-50"
+            >
+              <RefreshCw className={`h-4 w-4 ${workbenchLoading ? 'animate-spin' : ''}`} />
+              {cn ? '筛选' : 'Filter'}
+            </button>
+          </form>
+        </div>
+
+        <div className="px-5 py-3 border-b border-gray-100 flex flex-wrap gap-2">
+          {[
+            ['missing_collaborators', cn ? '缺合作者' : 'Missing collaborators'],
+            ['missing_rewards', cn ? '缺奖励档位' : 'Missing rewards'],
+            ['missing_snapshots', cn ? '缺快照' : 'Missing snapshots'],
+            ['webrobots_only', cn ? '仅 WebRobots' : 'WebRobots only'],
+            ['kicktraq_available', cn ? '可导入 Kicktraq' : 'Kicktraq ready'],
+            ['recent_errors', cn ? '最近失败' : 'Recent errors'],
+            ['all', cn ? '全部' : 'All'],
+          ].map(([key, label]) => (
+            <button
+              key={key}
+              onClick={() => applyWorkbenchFilter(key)}
+              className={`rounded-full px-3 py-1.5 text-xs font-semibold transition-colors ${
+                workbenchFilter === key ? 'bg-ks-green text-white' : 'bg-gray-50 text-gray-600 hover:bg-gray-100'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {actionMessage && (
+          <div className={`mx-5 mt-4 rounded-lg px-4 py-3 text-sm ${
+            actionMessage.kind === 'success' ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'
+          }`}>
+            {actionMessage.text}
+          </div>
+        )}
+
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50 text-xs text-gray-500">
+              <tr>
+                <th className="text-left px-5 py-3 font-medium">{cn ? '项目' : 'Project'}</th>
+                <th className="text-right px-3 py-3 font-medium">{cn ? '快照' : 'Snapshots'}</th>
+                <th className="text-right px-3 py-3 font-medium">{cn ? '奖励' : 'Rewards'}</th>
+                <th className="text-right px-3 py-3 font-medium">{cn ? '合作者' : 'Collaborators'}</th>
+                <th className="text-left px-3 py-3 font-medium">{cn ? '最近错误' : 'Last error'}</th>
+                <th className="text-right px-5 py-3 font-medium">{cn ? '操作' : 'Actions'}</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-50">
+              {(workbench?.rows ?? []).map(project => {
+                const runningKs = runningAction === `${project.id}:kickstarter_sync`;
+                const runningKt = runningAction === `${project.id}:kicktraq_import`;
+                return (
+                  <tr key={project.id} className="align-top">
+                    <td className="px-5 py-4">
+                      <div className="flex gap-3">
+                        <div className="h-12 w-20 flex-shrink-0 overflow-hidden rounded-md bg-gray-100">
+                          {(project.image_thumb_url || project.image_url) && (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img src={project.image_thumb_url || project.image_url || ''} alt="" className="h-full w-full object-cover" />
+                          )}
+                        </div>
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <a href={`/projects/${project.id}`} target="_blank" rel="noreferrer" className="font-semibold text-gray-900 hover:text-ks-green truncate">
+                              {project.name}
+                            </a>
+                            <ExternalLink className="h-3.5 w-3.5 flex-shrink-0 text-gray-300" />
+                          </div>
+                          <p className="mt-1 text-xs text-gray-400 truncate">{project.creator_slug && project.slug ? `${project.creator_slug}/${project.slug}` : project.id}</p>
+                          <div className="mt-1 flex flex-wrap gap-1.5">
+                            <span className={`rounded-full px-2 py-0.5 text-[11px] ${projectStateClass(project.state)}`}>{project.state}</span>
+                            <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[11px] text-gray-500">{project.data_source || 'unknown'}</span>
+                          </div>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="px-3 py-4 text-right">
+                      <p className="font-semibold text-gray-900">{fmtNum(project.snapshot_count)}</p>
+                      <p className="text-xs text-gray-400">{fmtTime(project.latest_snapshot_at, lang)}</p>
+                    </td>
+                    <td className="px-3 py-4 text-right font-semibold text-gray-900">{fmtNum(project.reward_count)}</td>
+                    <td className="px-3 py-4 text-right font-semibold text-gray-900">{fmtNum(project.collaborator_count)}</td>
+                    <td className="px-3 py-4 max-w-xs">
+                      {project.last_error ? (
+                        <p className="line-clamp-2 text-xs text-red-600" title={project.last_error}>{project.last_error}</p>
+                      ) : (
+                        <span className="text-xs text-gray-300">-</span>
+                      )}
+                    </td>
+                    <td className="px-5 py-4">
+                      <div className="flex justify-end gap-2">
+                        <button
+                          onClick={() => runWorkbenchAction(project.id, 'kickstarter_sync')}
+                          disabled={!!runningAction}
+                          className="inline-flex items-center gap-1.5 rounded-lg bg-ks-green px-3 py-2 text-xs font-bold text-white hover:bg-ks-green-dark disabled:opacity-50"
+                        >
+                          <PlayCircle className={`h-3.5 w-3.5 ${runningKs ? 'animate-pulse' : ''}`} />
+                          {cn ? '官方同步' : 'KS Sync'}
+                        </button>
+                        <button
+                          onClick={() => runWorkbenchAction(project.id, 'kicktraq_import')}
+                          disabled={!!runningAction}
+                          className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-2 text-xs font-bold text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                        >
+                          <UploadCloud className={`h-3.5 w-3.5 ${runningKt ? 'animate-pulse' : ''}`} />
+                          {cn ? '导入曲线' : 'Kicktraq'}
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+              {!workbench?.rows?.length && (
+                <tr>
+                  <td colSpan={6} className="px-5 py-10 text-center text-sm text-gray-400">
+                    {workbenchLoading ? (cn ? '加载中...' : 'Loading...') : (cn ? '没有匹配项目。' : 'No matching projects.')}
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+        <div className="px-5 py-3 border-t border-gray-100 text-xs text-gray-400">
+          {cn
+            ? `当前筛选共 ${fmtNum(workbench?.total ?? 0)} 个项目，最多显示 25 个。`
+            : `${fmtNum(workbench?.total ?? 0)} matching projects, showing up to 25.`}
+        </div>
       </section>
 
       <section className="bg-white border border-gray-100 rounded-lg overflow-hidden">

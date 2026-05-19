@@ -1782,6 +1782,133 @@ export function getDataQualityReport() {
   };
 }
 
+export type DataWorkbenchFilter =
+  | 'all'
+  | 'missing_rewards'
+  | 'missing_collaborators'
+  | 'missing_snapshots'
+  | 'webrobots_only'
+  | 'kicktraq_available'
+  | 'recent_errors';
+
+export interface DataWorkbenchProject {
+  id: string;
+  name: string;
+  state: string;
+  data_source: string | null;
+  source_url: string | null;
+  creator_slug: string | null;
+  slug: string | null;
+  image_thumb_url: string | null;
+  image_url: string | null;
+  usd_pledged: number | null;
+  backers_count: number | null;
+  launched_at: number | null;
+  deadline: number | null;
+  latest_snapshot_at: number | null;
+  snapshot_count: number;
+  reward_count: number;
+  collaborator_count: number;
+  last_error_at: number | null;
+  last_error: string | null;
+}
+
+export function getDataWorkbenchProjects(options: {
+  filter?: DataWorkbenchFilter;
+  query?: string;
+  limit?: number;
+  offset?: number;
+} = {}) {
+  const db = getDB();
+  const filter = options.filter ?? 'all';
+  const limit = Math.max(1, Math.min(options.limit ?? 25, 100));
+  const offset = Math.max(0, options.offset ?? 0);
+  const params: Record<string, string | number> = { limit, offset };
+  const where: string[] = [];
+
+  if (options.query?.trim()) {
+    params.query = `%${options.query.trim()}%`;
+    where.push('(p.name LIKE @query OR p.id LIKE @query OR p.creator_slug LIKE @query OR p.slug LIKE @query)');
+  }
+
+  if (filter === 'missing_rewards') where.push('COALESCE(r.reward_count, 0) = 0');
+  if (filter === 'missing_collaborators') where.push('COALESCE(c.collaborator_count, 0) = 0');
+  if (filter === 'missing_snapshots') where.push('COALESCE(s.snapshot_count, 0) = 0');
+  if (filter === 'webrobots_only') where.push("COALESCE(p.data_source, '') = 'webrobots'");
+  if (filter === 'kicktraq_available') where.push('(p.creator_slug IS NOT NULL AND p.creator_slug != "" AND p.slug IS NOT NULL AND p.slug != "")');
+  if (filter === 'recent_errors') where.push('e.last_error_at IS NOT NULL');
+
+  const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  const base = `
+    FROM projects p
+    LEFT JOIN (
+      SELECT project_id, COUNT(*) as snapshot_count, MAX(captured_at) as latest_snapshot_at
+      FROM project_snapshots
+      GROUP BY project_id
+    ) s ON s.project_id = p.id
+    LEFT JOIN (
+      SELECT project_id, COUNT(DISTINCT reward_id) as reward_count
+      FROM reward_snapshots
+      WHERE captured_at = (
+        SELECT MAX(rs2.captured_at)
+        FROM reward_snapshots rs2
+        WHERE rs2.project_id = reward_snapshots.project_id
+      )
+      GROUP BY project_id
+    ) r ON r.project_id = p.id
+    LEFT JOIN (
+      SELECT project_id, COUNT(*) as collaborator_count
+      FROM project_collaborators
+      GROUP BY project_id
+    ) c ON c.project_id = p.id
+    LEFT JOIN (
+      SELECT ce.project_id, MAX(ce.occurred_at) as last_error_at,
+             (
+               SELECT ce2.message
+               FROM crawler_errors ce2
+               WHERE ce2.project_id = ce.project_id
+               ORDER BY ce2.occurred_at DESC, ce2.id DESC
+               LIMIT 1
+             ) as last_error
+      FROM crawler_errors ce
+      WHERE ce.project_id IS NOT NULL
+      GROUP BY ce.project_id
+    ) e ON e.project_id = p.id
+    ${whereSql}
+  `;
+
+  const rows = db.prepare(`
+    SELECT
+      p.id,
+      p.name,
+      p.state,
+      p.data_source,
+      p.source_url,
+      p.creator_slug,
+      p.slug,
+      p.image_thumb_url,
+      p.image_url,
+      p.usd_pledged,
+      p.backers_count,
+      p.launched_at,
+      p.deadline,
+      COALESCE(s.latest_snapshot_at, NULL) as latest_snapshot_at,
+      COALESCE(s.snapshot_count, 0) as snapshot_count,
+      COALESCE(r.reward_count, 0) as reward_count,
+      COALESCE(c.collaborator_count, 0) as collaborator_count,
+      e.last_error_at,
+      e.last_error
+    ${base}
+    ORDER BY
+      CASE WHEN p.state = 'live' THEN 0 ELSE 1 END,
+      COALESCE(e.last_error_at, s.latest_snapshot_at, p.ks_live_synced_at, p.first_seen_at, p.launched_at, 0) DESC
+    LIMIT @limit OFFSET @offset
+  `).all(params) as DataWorkbenchProject[];
+
+  const total = db.prepare(`SELECT COUNT(*) as c ${base}`).get(params) as { c: number };
+  return { rows, total: Number(total.c ?? 0), limit, offset, filter };
+}
+
 export async function getMeta(): Promise<{
   earliestDate: string | null;
   latestDate: string | null;
