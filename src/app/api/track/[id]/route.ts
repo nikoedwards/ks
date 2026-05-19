@@ -87,6 +87,7 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
     track_comments: 1,
     track_text_diff: 1,
     manual: true,
+    allowKicktraqSummaryFallback: false,
   });
   const pageUrl = jsonUrl.replace(/\.json(?:[?#].*)?$/, '');
   const hasExpectedDetails = result.rewardCount > 0 && result.collaboratorCount > 0;

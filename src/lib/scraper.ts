@@ -693,6 +693,7 @@ export interface ScrapeOptions {
   track_comments?: number;
   track_text_diff?: number;
   manual?: boolean;
+  allowKicktraqSummaryFallback?: boolean;
 }
 
 export interface ScrapeResult {
@@ -704,7 +705,7 @@ export interface ScrapeResult {
   message?: string;
 }
 
-async function scrapeBasicFallback(projectId: string, jsonUrl: string): Promise<ScrapeResult | null> {
+async function scrapeBasicFallback(projectId: string, jsonUrl: string, opts: ScrapeOptions = {}): Promise<ScrapeResult | null> {
   if (await scrapeKickstarterHtmlFallback(projectId, jsonUrl)) {
     return {
       ok: true,
@@ -715,6 +716,8 @@ async function scrapeBasicFallback(projectId: string, jsonUrl: string): Promise<
       message: 'Synced basic Kickstarter page metadata only; full project JSON was unavailable.',
     };
   }
+
+  if (opts.allowKicktraqSummaryFallback === false) return null;
 
   const ksUrl = jsonUrl.replace(/\.json(?:[?#].*)?$/, '');
   const creatorSlug = extractCreatorSlug(ksUrl);
@@ -738,7 +741,7 @@ async function scrapeBasicFallback(projectId: string, jsonUrl: string): Promise<
 export async function scrapeAndStore(projectId: string, jsonUrl: string, opts: ScrapeOptions = {}): Promise<ScrapeResult> {
   const p = await scrapeKSJson(jsonUrl, projectId);
   if (!p) {
-    const fallback = await scrapeBasicFallback(projectId, jsonUrl);
+    const fallback = await scrapeBasicFallback(projectId, jsonUrl, opts);
     if (fallback) return fallback;
     return {
       ok: false,
@@ -780,7 +783,7 @@ export async function scrapeAndStore(projectId: string, jsonUrl: string, opts: S
       url: jsonUrl,
       message: 'Kickstarter project JSON did not include usable funding, backer totals, rewards, or collaborators.',
     });
-    const fallback = await scrapeBasicFallback(projectId, jsonUrl);
+    const fallback = await scrapeBasicFallback(projectId, jsonUrl, opts);
     if (fallback) return fallback;
     return {
       ok: false,
