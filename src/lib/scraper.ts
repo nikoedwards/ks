@@ -447,8 +447,15 @@ async function fetchViaBrowserProxy(url: string, projectId?: string): Promise<KS
         'Accept': 'application/json, text/plain, */*',
         ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
       },
-      body: JSON.stringify({ url, expect: 'json' }),
-      signal: AbortSignal.timeout(Number(getOptionalEnv('KICKSTARTER_BROWSER_TIMEOUT_MS') || 60_000)),
+      body: JSON.stringify({
+        url,
+        expect: 'json',
+        mode: url.includes('kickstarter.com/projects/') ? 'project_detail_debug' : undefined,
+        pageTimeoutMs: Number(getOptionalEnv('KICKSTARTER_BROWSER_PAGE_TIMEOUT_MS') || 45_000),
+        settleMs: 1500,
+        scrollSteps: 10,
+      }),
+      signal: AbortSignal.timeout(Number(getOptionalEnv('KICKSTARTER_BROWSER_TIMEOUT_MS') || 180_000)),
       cache: 'no-store',
     });
     const text = await res.text();

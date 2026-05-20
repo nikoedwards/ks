@@ -183,7 +183,7 @@ function analyzeHtml(text: string) {
   };
 }
 
-async function browserFetch(url: string, expect: 'json' | 'html') {
+async function browserFetch(url: string, expect: 'json' | 'html', mode?: 'project_detail_debug') {
   const fetchUrl = getOptionalEnv('KICKSTARTER_BROWSER_FETCH_URL');
   const token = getOptionalEnv('BROWSER_WORKER_TOKEN');
   if (!fetchUrl) {
@@ -204,12 +204,14 @@ async function browserFetch(url: string, expect: 'json' | 'html') {
     body: JSON.stringify({
       url,
       expect,
-      timeoutMs: 120_000,
+      mode,
+      timeoutMs: 180_000,
+      pageTimeoutMs: 45_000,
       settleMs: 1500,
       scrollSteps: 12,
     }),
     cache: 'no-store',
-    signal: AbortSignal.timeout(130_000),
+    signal: AbortSignal.timeout(190_000),
   });
   const text = await res.text();
   const payload = safeJson(text);
@@ -226,6 +228,7 @@ async function browserFetch(url: string, expect: 'json' | 'html') {
       finalUrl: body.finalUrl ?? null,
       elapsedMs: body.elapsedMs ?? null,
       error: body.error ?? null,
+      workerDiagnostics: body.diagnostics ?? null,
       analysis: expect === 'html'
         ? analyzeHtml(typeof body.text === 'string' ? body.text : text)
         : analyzeJsonPayload(body.body ?? body, text),
@@ -309,7 +312,7 @@ async function runOfficialStep(projectId: string, project: ProjectForDebug, step
   }
 
   if (step === 'browser_json') {
-    const result = await browserFetch(jsonUrl, 'json');
+    const result = await browserFetch(jsonUrl, 'json', 'project_detail_debug');
     return json(result, result.ok ? 200 : 502);
   }
 

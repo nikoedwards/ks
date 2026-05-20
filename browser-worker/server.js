@@ -276,6 +276,25 @@ function hasProjectDetails(project) {
   );
 }
 
+function safeError(err) {
+  return {
+    name: err instanceof Error ? err.name : 'Error',
+    message: err instanceof Error ? err.message : String(err),
+    stack: err instanceof Error ? err.stack?.slice(0, 2000) : undefined,
+  };
+}
+
+function countDetails(project) {
+  if (!project || !isObject(project)) return { rewards: 0, collaborators: 0 };
+  return {
+    rewards: Array.isArray(project.rewards) ? project.rewards.length : 0,
+    collaborators: Math.max(
+      Array.isArray(project.collaborators) ? project.collaborators.length : 0,
+      Array.isArray(project.project_collaborators) ? project.project_collaborators.length : 0,
+    ),
+  };
+}
+
 function findBestProject(root) {
   let best = null;
   let bestScore = -1;
@@ -376,6 +395,110 @@ async function extractRenderedDetails(page) {
 
     return { rewards, collaborators, renderedRewardCount: rewards.length, renderedCollaboratorCount: collaborators.length };
   });
+}
+
+async function extractProjectFromPage(page) {
+  return page.evaluate(() => {
+    const isObject = value => typeof value === 'object' && value !== null;
+    const isProject = value => isObject(value)
+      && (value.id !== undefined || typeof value.name === 'string')
+      && ('pledged' in value || 'backers_count' in value || 'state' in value || 'goal' in value);
+    const looksLikeReward = value => isObject(value)
+      && ('minimum' in value || 'amount' in value || 'pledge_amount' in value || 'backers_count' in value || 'reward_id' in value);
+    const looksLikeCollaborator = value => isObject(value)
+      && ('role' in value || 'avatar' in value || 'photo' in value || 'user' in value || 'profile_url' in value);
+    const detailArray = (source, keys, predicate) => {
+      if (!isObject(source)) return null;
+      for (const key of keys) {
+        const value = source[key];
+        if (Array.isArray(value) && value.some(predicate)) return value;
+      }
+      return null;
+    };
+    const mergeProjectDetails = (project, source) => {
+      const merged = { ...project };
+      const rewards = detailArray(source, ['rewards', 'reward_tiers', 'available_rewards'], looksLikeReward);
+      const collaborators = detailArray(source, ['collaborators', 'project_collaborators', 'team_members', 'project_team'], looksLikeCollaborator);
+      if ((!Array.isArray(merged.rewards) || !merged.rewards.length) && rewards) merged.rewards = rewards;
+      if ((!Array.isArray(merged.collaborators) || !merged.collaborators.length) && collaborators) merged.collaborators = collaborators;
+      return merged;
+    };
+    const scoreProject = project => {
+      let score = 10;
+      if (Array.isArray(project.rewards) && project.rewards.length) score += 40 + project.rewards.length;
+      if (Array.isArray(project.collaborators) && project.collaborators.length) score += 30 + project.collaborators.length;
+      if (Array.isArray(project.project_collaborators) && project.project_collaborators.length) score += 30 + project.project_collaborators.length;
+      if (project.blurb) score += 2;
+      if (project.photo) score += 2;
+      return score;
+    };
+    const findBest = root => {
+      let best = null;
+      let bestScore = -1;
+      const seen = new Set();
+      const queue = [{ value: root, parent: null }];
+      for (let index = 0; index < queue.length && index < 2500; index++) {
+        const item = queue[index];
+        if (!isObject(item.value) || seen.has(item.value)) continue;
+        seen.add(item.value);
+        if (isProject(item.value)) {
+          const candidate = mergeProjectDetails(item.value, item.parent || item.value);
+          const score = scoreProject(candidate);
+          if (score > bestScore) {
+            best = candidate;
+            bestScore = score;
+          }
+        }
+        for (const child of Object.values(item.value)) {
+          if (isObject(child)) queue.push({ value: child, parent: item.value });
+        }
+      }
+      return best;
+    };
+    const roots = [];
+    for (const el of document.querySelectorAll('script[type="application/json"], #__NEXT_DATA__')) {
+      if (!el.textContent?.trim()) continue;
+      try {
+        roots.push(JSON.parse(el.textContent));
+      } catch {
+        // Ignore non-project JSON scripts.
+      }
+    }
+    return findBest(roots);
+  });
+}
+
+async function collectPageDiagnostics(page, response, startedAt, label) {
+  const pageInfo = await page.evaluate(() => {
+    const clean = value => (value || '').replace(/\s+/g, ' ').trim();
+    const bodyText = clean(document.body?.innerText || document.documentElement?.textContent || '');
+    const headings = Array.from(document.querySelectorAll('h1,h2,h3,h4'))
+      .map(node => clean(node.textContent))
+      .filter(Boolean)
+      .slice(0, 30);
+    return {
+      title: document.title || null,
+      finalUrl: location.href,
+      bodyTextLength: bodyText.length,
+      bodyPreview: bodyText.slice(0, 1200),
+      hasCloudflareText: /cf_chl|just a moment|enable javascript and cookies|cloudflare/i.test(bodyText),
+      hasNextData: Boolean(document.querySelector('#__NEXT_DATA__')),
+      jsonScriptCount: document.querySelectorAll('script[type="application/json"], #__NEXT_DATA__').length,
+      hasAvailableRewardsText: /available rewards/i.test(bodyText),
+      hasBackersText: /backers?/i.test(bodyText),
+      hasCollaboratorsText: /collaborators?/i.test(bodyText),
+      headings,
+    };
+  }).catch(err => ({ error: safeError(err) }));
+
+  return {
+    label,
+    ok: response ? response.status() < 400 : false,
+    status: response?.status() ?? null,
+    contentType: response ? contentTypeFromHeaders(response.headers()) : '',
+    elapsedMs: Date.now() - startedAt,
+    ...pageInfo,
+  };
 }
 
 async function extractRewardPageDetails(page) {
@@ -595,6 +718,183 @@ async function extractProjectTabDetails(page, targetUrl, timeoutMs, input) {
   return mergeDetailObjects(...details);
 }
 
+async function fetchProjectDetailDebug(input) {
+  const targetUrl = normalizeTarget(input.url);
+  if (!isKickstarterProjectUrl(targetUrl)) {
+    return { ok: false, status: 400, error: 'project_detail_debug only supports Kickstarter project URLs.' };
+  }
+
+  const timeoutMs = Math.max(10_000, Math.min(Number(input.timeoutMs || DEFAULT_TIMEOUT), 180_000));
+  const pageTimeoutMs = Math.max(12_000, Math.min(Number(input.pageTimeoutMs || 45_000), 60_000));
+  const settleMs = Number(input.settleMs || 1200);
+  const startedAt = Date.now();
+  const campaignUrl = pageUrlForJson(targetUrl);
+  const rewardsUrl = projectSectionUrl(targetUrl, 'rewards');
+  const creatorUrl = projectSectionUrl(targetUrl, 'creator');
+  const diagnostics = {
+    mode: 'project_detail_debug',
+    targetUrl,
+    campaignUrl,
+    rewardsUrl,
+    creatorUrl,
+    timeoutMs,
+    pageTimeoutMs,
+    steps: [],
+    errors: [],
+  };
+
+  let context = null;
+  try {
+    context = await newBrowserContext({
+      locale: 'en-US',
+      timezoneId: 'America/Los_Angeles',
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+      viewport: { width: 1440, height: 1200 },
+      extraHTTPHeaders: {
+        'Accept-Language': 'en-US,en;q=0.9',
+      },
+    });
+
+    const page = await context.newPage();
+    await installResourceGuards(page);
+    page.setDefaultTimeout(pageTimeoutMs);
+    page.setDefaultNavigationTimeout(pageTimeoutMs);
+
+    let pageCrashed = false;
+    page.on('crash', () => {
+      pageCrashed = true;
+      diagnostics.errors.push({ label: 'page_crash', error: 'Playwright page crashed.' });
+    });
+
+    const jsonPayloads = [];
+    page.on('response', response => {
+      if (jsonPayloads.length >= 80) return;
+      const url = response.url();
+      if (!/kickstarter\.com/i.test(url)) return;
+      const contentType = contentTypeFromHeaders(response.headers()).toLowerCase();
+      if (!contentType.includes('json') && !url.includes('/graphql') && !url.includes('.json')) return;
+      jsonPayloads.push(
+        response.text()
+          .then(text => JSON.parse(text))
+          .catch(() => null),
+      );
+    });
+
+    let requestProject = null;
+    try {
+      const requestResult = await tryBrowserContextJson(context, page, targetUrl, Math.min(timeoutMs, 45_000), {
+        ...input,
+        referer: campaignUrl,
+      });
+      requestProject = findBestProject(requestResult.body);
+      diagnostics.steps.push({
+        label: 'context_request_json',
+        ok: Boolean(requestResult.ok && requestProject),
+        status: requestResult.status,
+        contentType: requestResult.contentType,
+        finalUrl: requestResult.finalUrl,
+        detailCounts: countDetails(requestProject),
+        error: requestResult.error,
+      });
+    } catch (err) {
+      diagnostics.steps.push({ label: 'context_request_json', ok: false, error: safeError(err) });
+    }
+
+    const visit = async (label, url, afterLoad) => {
+      if (!url) {
+        diagnostics.steps.push({ label, ok: false, error: 'URL could not be derived.' });
+        return null;
+      }
+      const stepStartedAt = Date.now();
+      try {
+        const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: pageTimeoutMs });
+        if (pageCrashed) throw new Error(`Page crashed while navigating to ${url}`);
+        await page.waitForTimeout(settleMs);
+        const pageDiagnostics = await collectPageDiagnostics(page, response, stepStartedAt, label);
+        const detail = afterLoad ? await afterLoad() : null;
+        diagnostics.steps.push({
+          ...pageDiagnostics,
+          ok: pageDiagnostics.ok && !pageDiagnostics.hasCloudflareText,
+          detailCounts: detail ? {
+            rewards: Array.isArray(detail.rewards) ? detail.rewards.length : 0,
+            collaborators: Array.isArray(detail.collaborators) ? detail.collaborators.length : 0,
+          } : undefined,
+        });
+        return detail;
+      } catch (err) {
+        const pageDiagnostics = await collectPageDiagnostics(page, null, stepStartedAt, label).catch(() => null);
+        const error = safeError(err);
+        diagnostics.steps.push({
+          label,
+          ok: false,
+          elapsedMs: Date.now() - stepStartedAt,
+          ...(pageDiagnostics ?? {}),
+          error,
+        });
+        diagnostics.errors.push({ label, error });
+        return null;
+      }
+    };
+
+    const campaignProject = await visit('campaign_page', campaignUrl, async () => {
+      await scrollForLazyContent(page, { ...input, scrollSteps: Math.min(Number(input.scrollSteps || 6), 8) });
+      const scriptProject = await extractProjectFromPage(page).catch(() => null);
+      const renderedDetails = await extractRenderedDetails(page).catch(() => null);
+      return mergeRenderedDetails(scriptProject, renderedDetails) || scriptProject;
+    });
+
+    const rewardDetails = await visit('rewards_page', rewardsUrl, async () => {
+      await scrollForLazyContent(page, { ...input, scrollSteps: Math.min(Number(input.scrollSteps || 8), 10) });
+      return extractRewardPageDetails(page);
+    });
+
+    const creatorDetails = await visit('creator_page', creatorUrl, async () => {
+      await scrollForLazyContent(page, { ...input, scrollSteps: Math.min(Number(input.scrollSteps || 5), 8) });
+      return extractCreatorPageDetails(page);
+    });
+
+    const settledPayloads = await Promise.allSettled(jsonPayloads);
+    const responsePayloads = settledPayloads
+      .filter(result => result.status === 'fulfilled' && result.value)
+      .map(result => result.value);
+    const responseProject = findBestProject(responsePayloads);
+    const renderedDetails = mergeDetailObjects(rewardDetails, creatorDetails);
+    const candidates = [requestProject, responseProject, campaignProject].filter(Boolean);
+    let body = candidates.sort((a, b) => projectScore(b) - projectScore(a))[0] || null;
+    body = mergeRenderedDetails(body, renderedDetails) || body;
+
+    const detailCounts = countDetails(body);
+    return {
+      ok: Boolean(body),
+      status: diagnostics.steps.find(step => step.label === 'campaign_page')?.status ?? 0,
+      contentType: diagnostics.steps.find(step => step.label === 'campaign_page')?.contentType ?? '',
+      finalUrl: diagnostics.steps.find(step => step.label === 'campaign_page')?.finalUrl ?? campaignUrl,
+      elapsedMs: Date.now() - startedAt,
+      body,
+      diagnostics: {
+        ...diagnostics,
+        jsonPayloadCount: responsePayloads.length,
+        detailCounts,
+        hasRewards: detailCounts.rewards > 0,
+        hasCollaborators: detailCounts.collaborators > 0,
+      },
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      status: 0,
+      elapsedMs: Date.now() - startedAt,
+      error: err instanceof Error ? err.message : String(err),
+      diagnostics: {
+        ...diagnostics,
+        errors: [...diagnostics.errors, { label: 'fatal', error: safeError(err) }],
+      },
+    };
+  } finally {
+    await context?.close().catch(() => {});
+  }
+}
+
 async function scrollForLazyContent(page, input) {
   const steps = Math.max(1, Math.min(Number(input.scrollSteps || 8), 20));
   for (let i = 0; i < steps; i++) {
@@ -670,6 +970,9 @@ async function tryBrowserContextJson(context, page, targetUrl, timeoutMs, input)
 
 async function fetchWithBrowser(input) {
   const targetUrl = normalizeTarget(input.url);
+  if (input.mode === 'project_detail_debug') {
+    return fetchProjectDetailDebug(input);
+  }
   const expect = input.expect === 'html' ? 'html' : 'json';
   const timeoutMs = Math.max(10_000, Math.min(Number(input.timeoutMs || DEFAULT_TIMEOUT), 180_000));
   const context = await newBrowserContext({
