@@ -194,47 +194,80 @@ async function browserFetch(url: string, expect: 'json' | 'html', mode?: 'projec
     };
   }
 
-  const res = await fetch(fetchUrl, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Accept': 'application/json, text/plain, */*',
-      ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
-    },
-    body: JSON.stringify({
-      url,
-      expect,
-      mode,
-      timeoutMs: 180_000,
-      pageTimeoutMs: 45_000,
-      settleMs: 1500,
-      scrollSteps: 12,
-    }),
-    cache: 'no-store',
-    signal: AbortSignal.timeout(190_000),
-  });
-  const text = await res.text();
-  const payload = safeJson(text);
-  const body = isRecord(payload) ? payload : {};
-  return {
-    ok: res.ok && body.ok !== false,
-    message: res.ok ? 'Browser worker responded.' : `Browser worker HTTP ${res.status}.`,
-    diagnostics: {
-      workerHttpStatus: res.status,
-      workerHttpOk: res.ok,
-      workerReturnedOk: typeof body.ok === 'boolean' ? body.ok : null,
-      status: body.status ?? null,
-      contentType: body.contentType ?? null,
-      finalUrl: body.finalUrl ?? null,
-      elapsedMs: body.elapsedMs ?? null,
-      error: body.error ?? null,
-      workerDiagnostics: body.diagnostics ?? null,
-      analysis: expect === 'html'
-        ? analyzeHtml(typeof body.text === 'string' ? body.text : text)
-        : analyzeJsonPayload(body.body ?? body, text),
-      rawPreview: text.slice(0, 1200),
-    },
-  };
+  try {
+    const res = await fetch(fetchUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json, text/plain, */*',
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({
+        url,
+        expect,
+        mode,
+        timeoutMs: 180_000,
+        pageTimeoutMs: 45_000,
+        settleMs: 1500,
+        scrollSteps: 12,
+      }),
+      cache: 'no-store',
+      signal: AbortSignal.timeout(190_000),
+    });
+    const text = await res.text();
+    const payload = safeJson(text);
+    const body = isRecord(payload) ? payload : {};
+    return {
+      ok: res.ok && body.ok !== false,
+      message: res.ok ? 'Browser worker responded.' : `Browser worker HTTP ${res.status}.`,
+      diagnostics: {
+        workerHttpStatus: res.status,
+        workerHttpOk: res.ok,
+        workerReturnedOk: typeof body.ok === 'boolean' ? body.ok : null,
+        status: body.status ?? null,
+        contentType: body.contentType ?? null,
+        finalUrl: body.finalUrl ?? null,
+        elapsedMs: body.elapsedMs ?? null,
+        error: body.error ?? null,
+        workerDiagnostics: body.diagnostics ?? null,
+        analysis: expect === 'html'
+          ? analyzeHtml(typeof body.text === 'string' ? body.text : text)
+          : analyzeJsonPayload(body.body ?? body, text),
+        rawPreview: text.slice(0, 1200),
+      },
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      message: `Main service could not call Browser Worker: ${err instanceof Error ? err.message : String(err)}`,
+      diagnostics: {
+        workerFetchUrl: fetchUrl,
+        error: {
+          name: err instanceof Error ? err.name : 'Error',
+          message: err instanceof Error ? err.message : String(err),
+          stack: err instanceof Error ? err.stack : undefined,
+        },
+      },
+    };
+  }
+}
+
+function getWorkerStep(result: unknown, label: string) {
+  if (!isRecord(result)) return null;
+  const diagnostics = result.diagnostics;
+  if (!isRecord(diagnostics)) return null;
+  const workerDiagnostics = diagnostics.workerDiagnostics;
+  if (!isRecord(workerDiagnostics)) return null;
+  const steps = workerDiagnostics.steps;
+  if (!Array.isArray(steps)) return null;
+  const step = steps.find(item => isRecord(item) && item.label === label);
+  return isRecord(step) ? step : null;
+}
+
+function detailCount(step: Record<string, unknown> | null, key: 'rewards' | 'collaborators') {
+  const counts = isRecord(step?.detailCounts) ? step.detailCounts : null;
+  const value = counts?.[key];
+  return typeof value === 'number' ? value : 0;
 }
 
 async function runOfficialStep(projectId: string, project: ProjectForDebug, step: string) {
@@ -318,30 +351,77 @@ async function runOfficialStep(projectId: string, project: ProjectForDebug, step
 
   if (step === 'browser_rewards') {
     if (!rewardsUrl) return json({ ok: false, message: 'No rewards tab URL could be derived.' }, 422);
-    const result = await browserFetch(rewardsUrl, 'html');
-    return json(result, result.ok ? 200 : 502);
+    const result = await browserFetch(jsonUrl, 'json', 'project_detail_debug');
+    const rewardStep = getWorkerStep(result, 'rewards_page');
+    const rewardCount = detailCount(rewardStep, 'rewards');
+    const ok = Boolean(isRecord(result) && result.ok !== false && rewardStep?.ok && rewardCount > 0);
+    return json({
+      ok,
+      message: ok
+        ? `Rewards page parsed ${rewardCount} reward tiers.`
+        : 'Rewards page did not produce parsed reward tiers. Check workerDiagnostics.steps.rewards_page.',
+      diagnostics: {
+        rewardsUrl,
+        rewardCount,
+        rewardsPage: rewardStep,
+        workerResult: result,
+      },
+    }, ok ? 200 : 502);
   }
 
   if (step === 'browser_creator') {
     if (!creatorUrl) return json({ ok: false, message: 'No creator tab URL could be derived.' }, 422);
-    const result = await browserFetch(creatorUrl, 'html');
-    return json(result, result.ok ? 200 : 502);
+    const result = await browserFetch(jsonUrl, 'json', 'project_detail_debug');
+    const creatorStep = getWorkerStep(result, 'creator_page');
+    const collaboratorCount = detailCount(creatorStep, 'collaborators');
+    const ok = Boolean(isRecord(result) && result.ok !== false && creatorStep?.ok && collaboratorCount > 0);
+    return json({
+      ok,
+      message: ok
+        ? `Creator page parsed ${collaboratorCount} collaborators.`
+        : 'Creator page did not produce parsed collaborators. Check workerDiagnostics.steps.creator_page.',
+      diagnostics: {
+        creatorUrl,
+        collaboratorCount,
+        creatorPage: creatorStep,
+        workerResult: result,
+      },
+    }, ok ? 200 : 502);
   }
 
   if (step === 'write') {
-    const result = await scrapeAndStore(projectId, jsonUrl, {
-      track_rewards: 1,
-      track_comments: 1,
-      track_text_diff: 1,
-      manual: true,
-      allowKicktraqSummaryFallback: false,
-    });
-    const recentErrors = result.full ? [] : getRecentCrawlerErrors({ projectId, urls: [jsonUrl, pageUrl], limit: 8 });
-    return json({
-      ok: result.ok,
-      message: result.message ?? 'Kickstarter sync finished.',
-      diagnostics: { result, recentErrors },
-    }, result.ok ? 200 : 502);
+    try {
+      const result = await scrapeAndStore(projectId, jsonUrl, {
+        track_rewards: 1,
+        track_comments: 1,
+        track_text_diff: 1,
+        manual: true,
+        allowKicktraqSummaryFallback: false,
+      });
+      const recentErrors = result.full ? [] : getRecentCrawlerErrors({ projectId, urls: [jsonUrl, pageUrl], limit: 8 });
+      const ok = result.ok && result.rewardCount > 0 && result.collaboratorCount > 0;
+      return json({
+        ok,
+        message: ok
+          ? result.message ?? 'Kickstarter sync finished.'
+          : `Kickstarter sync finished but detail data is incomplete. rewards=${result.rewardCount}, collaborators=${result.collaboratorCount}.`,
+        diagnostics: { result, recentErrors },
+      }, ok ? 200 : 502);
+    } catch (err) {
+      const recentErrors = getRecentCrawlerErrors({ projectId, urls: [jsonUrl, pageUrl], limit: 8 });
+      return json({
+        ok: false,
+        message: err instanceof Error ? err.message : String(err),
+        diagnostics: {
+          error: {
+            name: err instanceof Error ? err.name : 'Error',
+            message: err instanceof Error ? err.message : String(err),
+            stack: err instanceof Error ? err.stack : undefined,
+          },
+          recentErrors,
+        },
+      }, 500);
+    }
   }
 
   return json({ ok: false, message: `Unknown official step: ${step}` }, 400);
