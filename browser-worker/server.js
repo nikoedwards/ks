@@ -1,10 +1,16 @@
 import http from 'node:http';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { chromium } from 'playwright';
 
 const PORT = Number(process.env.PORT || 8080);
 const TOKEN = (process.env.BROWSER_WORKER_TOKEN || '').trim();
 const DEFAULT_TIMEOUT = Number(process.env.BROWSER_FETCH_TIMEOUT_MS || 60000);
 const MAX_BODY_BYTES = Number(process.env.BROWSER_FETCH_MAX_BYTES || 5_000_000);
+const STORAGE_STATE_PATH = process.env.BROWSER_STORAGE_STATE_PATH
+  || path.join(os.tmpdir(), 'kicksonar-browser-worker-storage-state.json');
+const DEBUG_SCREENSHOTS = !/^(0|false|no)$/i.test(process.env.BROWSER_DEBUG_SCREENSHOTS || '1');
 
 const ALLOWED_HOSTS = new Set([
   'www.kickstarter.com',
@@ -83,10 +89,18 @@ async function newBrowserContext(options) {
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const browser = await getBrowser();
-      return await browser.newContext(options);
+      const contextOptions = { ...options };
+      if (fs.existsSync(STORAGE_STATE_PATH)) {
+        contextOptions.storageState = STORAGE_STATE_PATH;
+      }
+      return await browser.newContext(contextOptions);
     } catch (err) {
       lastError = err;
       const message = err instanceof Error ? err.message : String(err);
+      if (/storage state|ENOENT|Unexpected token|JSON/i.test(message) && fs.existsSync(STORAGE_STATE_PATH)) {
+        await fs.promises.unlink(STORAGE_STATE_PATH).catch(() => {});
+        if (attempt === 0) continue;
+      }
       if (!/browser has been closed|Target page, context or browser has been closed|Browser closed|disconnected/i.test(message)) {
         throw err;
       }
@@ -95,6 +109,33 @@ async function newBrowserContext(options) {
     }
   }
   throw lastError;
+}
+
+async function saveBrowserStorageState(context, diagnostics = null) {
+  try {
+    await fs.promises.mkdir(path.dirname(STORAGE_STATE_PATH), { recursive: true });
+    await context.storageState({ path: STORAGE_STATE_PATH });
+    if (diagnostics) diagnostics.storageStateSaved = true;
+  } catch (err) {
+    if (diagnostics) diagnostics.storageStateError = safeError(err);
+  }
+}
+
+async function storageStateInfo() {
+  try {
+    const stat = await fs.promises.stat(STORAGE_STATE_PATH);
+    return {
+      path: STORAGE_STATE_PATH,
+      exists: true,
+      size: stat.size,
+      updatedAt: stat.mtime.toISOString(),
+    };
+  } catch {
+    return {
+      path: STORAGE_STATE_PATH,
+      exists: false,
+    };
+  }
 }
 
 function send(res, status, payload) {
@@ -190,6 +231,27 @@ function navigationUrlForTarget(targetUrl, expect) {
 
 function contentTypeFromHeaders(headers) {
   return headers['content-type'] || headers['Content-Type'] || '';
+}
+
+function diagnosticHeaders(headers = {}) {
+  const keep = [
+    'server',
+    'date',
+    'content-type',
+    'cf-ray',
+    'cf-cache-status',
+    'x-frame-options',
+    'x-request-id',
+    'location',
+    'set-cookie',
+  ];
+  const normalized = {};
+  for (const key of keep) {
+    const value = headers[key] || headers[key.toLowerCase()] || headers[key.toUpperCase()];
+    if (!value) continue;
+    normalized[key] = key === 'set-cookie' ? String(value).slice(0, 240) : value;
+  }
+  return normalized;
 }
 
 function isObject(value) {
@@ -539,13 +601,34 @@ async function collectPageDiagnostics(page, response, startedAt, label) {
       },
     };
   }).catch(err => ({ error: safeError(err) }));
+  const shouldCaptureScreenshot = DEBUG_SCREENSHOTS
+    && (!response || response.status() >= 400 || pageInfo.hasCloudflareText || pageInfo.bodyTextLength < 200);
+  const screenshot = shouldCaptureScreenshot
+    ? await page.screenshot({ type: 'jpeg', quality: 45, fullPage: false })
+      .then(buffer => `data:image/jpeg;base64,${buffer.toString('base64')}`)
+      .catch(err => ({ error: safeError(err) }))
+    : null;
+  const cookies = await page.context().cookies('https://www.kickstarter.com')
+    .then(rows => rows.map(row => ({
+      name: row.name,
+      domain: row.domain,
+      expires: row.expires,
+      httpOnly: row.httpOnly,
+      secure: row.secure,
+      sameSite: row.sameSite,
+    })).slice(0, 20))
+    .catch(() => []);
 
   return {
     label,
     ok: response ? response.status() < 400 : false,
     status: response?.status() ?? null,
     contentType: response ? contentTypeFromHeaders(response.headers()) : '',
+    responseHeaders: response ? diagnosticHeaders(response.headers()) : {},
     elapsedMs: Date.now() - startedAt,
+    cookieCount: cookies.length,
+    cookies,
+    screenshot,
     ...pageInfo,
   };
 }
@@ -767,6 +850,44 @@ async function extractProjectTabDetails(page, targetUrl, timeoutMs, input) {
   return mergeDetailObjects(...details);
 }
 
+async function warmupKickstarterSession(page, campaignUrl, diagnostics, pageTimeoutMs, settleMs) {
+  const urls = [
+    'https://www.kickstarter.com/',
+    campaignUrl,
+  ];
+
+  for (const [index, url] of urls.entries()) {
+    const label = index === 0 ? 'warmup_home_page' : 'warmup_campaign_page';
+    const startedAt = Date.now();
+    try {
+      const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: pageTimeoutMs });
+      await page.waitForTimeout(settleMs);
+      const pageDiagnostics = await collectPageDiagnostics(page, response, startedAt, label);
+      diagnostics.steps.push({
+        ...pageDiagnostics,
+        ok: pageDiagnostics.ok && !pageDiagnostics.hasCloudflareText,
+      });
+      if (!pageDiagnostics.ok || pageDiagnostics.hasCloudflareText) {
+        return false;
+      }
+    } catch (err) {
+      const pageDiagnostics = await collectPageDiagnostics(page, null, startedAt, label).catch(() => null);
+      const error = safeError(err);
+      diagnostics.steps.push({
+        label,
+        ok: false,
+        elapsedMs: Date.now() - startedAt,
+        ...(pageDiagnostics ?? {}),
+        error,
+      });
+      diagnostics.errors.push({ label, error });
+      return false;
+    }
+  }
+
+  return true;
+}
+
 async function fetchProjectDetailDebug(input) {
   const targetUrl = normalizeTarget(input.url);
   if (!isKickstarterProjectUrl(targetUrl)) {
@@ -788,12 +909,14 @@ async function fetchProjectDetailDebug(input) {
     creatorUrl,
     timeoutMs,
     pageTimeoutMs,
+    storageState: null,
     steps: [],
     errors: [],
   };
 
   let context = null;
   try {
+    diagnostics.storageState = await storageStateInfo();
     context = await newBrowserContext({
       locale: 'en-US',
       timezoneId: 'America/Los_Angeles',
@@ -814,6 +937,8 @@ async function fetchProjectDetailDebug(input) {
       pageCrashed = true;
       diagnostics.errors.push({ label: 'page_crash', error: 'Playwright page crashed.' });
     });
+
+    await warmupKickstarterSession(page, campaignUrl, diagnostics, pageTimeoutMs, settleMs);
 
     const jsonPayloads = [];
     page.on('response', response => {
@@ -859,8 +984,8 @@ async function fetchProjectDetailDebug(input) {
         const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: pageTimeoutMs });
         if (pageCrashed) throw new Error(`Page crashed while navigating to ${url}`);
         await page.waitForTimeout(settleMs);
-        const pageDiagnostics = await collectPageDiagnostics(page, response, stepStartedAt, label);
         const detail = afterLoad ? await afterLoad() : null;
+        const pageDiagnostics = await collectPageDiagnostics(page, response, stepStartedAt, label);
         diagnostics.steps.push({
           ...pageDiagnostics,
           ok: pageDiagnostics.ok && !pageDiagnostics.hasCloudflareText,
@@ -940,6 +1065,7 @@ async function fetchProjectDetailDebug(input) {
       },
     };
   } finally {
+    if (context) await saveBrowserStorageState(context, diagnostics).catch(() => {});
     await context?.close().catch(() => {});
   }
 }
@@ -1258,6 +1384,7 @@ async function fetchWithBrowser(input) {
       text,
     };
   } finally {
+    await saveBrowserStorageState(context).catch(() => {});
     await context.close();
   }
 }
@@ -1276,6 +1403,9 @@ async function handle(req, res) {
       service: 'kicksonar-browser-worker',
       browserConnected,
       hasProxy: Boolean(getProxyOptions()),
+      proxyServer: getProxyOptions()?.server || null,
+      storageState: await storageStateInfo(),
+      debugScreenshots: DEBUG_SCREENSHOTS,
     });
     return;
   }

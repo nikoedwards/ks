@@ -134,11 +134,12 @@ function formatSummaryValue(value: unknown) {
 }
 
 function SummaryPanel({ summary }: { summary: Record<string, unknown> }) {
-  const hiddenKeys = new Set(['bodyPreview', 'headings', 'rewardTextPreviews', 'availableRewardNavPreviews', 'collaboratorTextPreviews', 'campaignPage', 'rewardsPage', 'creatorPage']);
+  const hiddenKeys = new Set(['bodyPreview', 'headings', 'rewardTextPreviews', 'availableRewardNavPreviews', 'collaboratorTextPreviews', 'responseHeaders', 'screenshot', 'warmupHomePage', 'warmupCampaignPage', 'campaignPage', 'rewardsPage', 'creatorPage']);
   const entries = Object.entries(summary)
     .filter(([key, value]) => !hiddenKeys.has(key) && !Array.isArray(value) && !isRecord(value))
     .slice(0, 24);
   const previewKeys = ['headings', 'rewardTextPreviews', 'availableRewardNavPreviews', 'collaboratorTextPreviews'] as const;
+  const pageKeys = ['warmupHomePage', 'warmupCampaignPage', 'campaignPage', 'rewardsPage', 'creatorPage'] as const;
 
   return (
     <div className="rounded-lg border border-gray-800 bg-gray-900 p-4 text-xs text-gray-100">
@@ -156,6 +157,19 @@ function SummaryPanel({ summary }: { summary: Record<string, unknown> }) {
           ))}
         </div>
       )}
+      <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+        {pageKeys.map(key => {
+          const page = summary[key];
+          if (!isRecord(page) || page.foundStep === false) return null;
+          return (
+            <div key={key} className="rounded-md border border-gray-800 bg-gray-950 px-3 py-2">
+              <p className="text-[11px] uppercase tracking-wide text-gray-500">{key}</p>
+              <p className="mt-1 text-gray-100">status: {formatSummaryValue(page.status)} / ok: {formatSummaryValue(page.ok)}</p>
+              <p className="mt-1 text-gray-300">cloudflare: {formatSummaryValue(page.hasCloudflareText)} / cookies: {formatSummaryValue(page.cookieCount)}</p>
+            </div>
+          );
+        })}
+      </div>
       {previewKeys.map(key => {
         const value = summary[key];
         if (!Array.isArray(value) || value.length === 0) return null;
@@ -168,6 +182,20 @@ function SummaryPanel({ summary }: { summary: Record<string, unknown> }) {
           </div>
         );
       })}
+      {isRecord(summary.responseHeaders) && Object.keys(summary.responseHeaders).length > 0 && (
+        <div className="mt-3 rounded-md border border-gray-800 bg-gray-950 p-3">
+          <p className="mb-2 text-[11px] uppercase tracking-wide text-gray-500">responseHeaders</p>
+          <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words text-gray-200">
+            {JSON.stringify(summary.responseHeaders, null, 2)}
+          </pre>
+        </div>
+      )}
+      {typeof summary.screenshot === 'string' && summary.screenshot && (
+        <div className="mt-3 rounded-md border border-gray-800 bg-gray-950 p-3">
+          <p className="mb-2 text-[11px] uppercase tracking-wide text-gray-500">screenshot</p>
+          <img src={summary.screenshot} alt="Debug screenshot" className="max-h-96 rounded border border-gray-800 object-contain" />
+        </div>
+      )}
       {typeof summary.bodyPreview === 'string' && summary.bodyPreview && (
         <div className="mt-3 rounded-md border border-gray-800 bg-gray-950 p-3">
           <p className="mb-2 text-[11px] uppercase tracking-wide text-gray-500">bodyPreview</p>

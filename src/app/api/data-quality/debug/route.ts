@@ -300,6 +300,8 @@ function workerPageSummary(step: Record<string, unknown> | null, kind: 'rewards'
     elapsedMs: numberValue(step.elapsedMs),
     title: stringValue(step.title),
     bodyTextLength: numberValue(step.bodyTextLength),
+    cookieCount: numberValue(step.cookieCount) ?? 0,
+    responseHeaders: isRecord(step.responseHeaders) ? step.responseHeaders : {},
     hasCloudflareText: booleanValue(step.hasCloudflareText),
     hasNextData: booleanValue(step.hasNextData),
     hasAvailableRewardsText: booleanValue(step.hasAvailableRewardsText),
@@ -317,6 +319,7 @@ function workerPageSummary(step: Record<string, unknown> | null, kind: 'rewards'
     availableRewardNavPreviews: Array.isArray(candidates.availableRewardNavPreviews) ? candidates.availableRewardNavPreviews.slice(0, 4) : [],
     collaboratorTextPreviews: Array.isArray(candidates.collaboratorTextPreviews) ? candidates.collaboratorTextPreviews.slice(0, 4) : [],
     bodyPreview: bodyPreview ? bodyPreview.slice(0, 900) : null,
+    screenshot: typeof step.screenshot === 'string' ? step.screenshot : null,
     error: step.error ?? null,
   };
 }
@@ -338,6 +341,9 @@ function browserResultSummary(result: unknown) {
     collaboratorCount: numberValue(detailCounts.collaborators) ?? 0,
     hasRewards: booleanValue(workerDiagnostics.hasRewards),
     hasCollaborators: booleanValue(workerDiagnostics.hasCollaborators),
+    storageState: isRecord(workerDiagnostics.storageState) ? workerDiagnostics.storageState : null,
+    warmupHomePage: workerPageSummary(getWorkerStep(result, 'warmup_home_page'), 'creator'),
+    warmupCampaignPage: workerPageSummary(getWorkerStep(result, 'warmup_campaign_page'), 'creator'),
     campaignPage: workerPageSummary(getWorkerStep(result, 'campaign_page'), 'rewards'),
     rewardsPage: workerPageSummary(getWorkerStep(result, 'rewards_page'), 'rewards'),
     creatorPage: workerPageSummary(getWorkerStep(result, 'creator_page'), 'creator'),
