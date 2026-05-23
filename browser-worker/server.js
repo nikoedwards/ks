@@ -1176,16 +1176,19 @@ async function installResourceGuards(page) {
 async function tryBrowserContextJson(context, page, targetUrl, timeoutMs, input) {
   const referer = input.referer || navigationUrlForTarget(targetUrl, 'json');
   try {
-    await page.goto(referer, {
+    const warmupResponse = await page.goto(referer, {
       waitUntil: 'domcontentloaded',
       timeout: Math.min(timeoutMs, 45_000),
     });
+    await waitForChallengeResolution(page, warmupResponse, 'context_request_warmup');
+    await page.waitForLoadState('networkidle', { timeout: Math.min(timeoutMs, 15_000) }).catch(() => {});
     await page.waitForTimeout(Number(input.settleMs || 1000));
+    await saveBrowserStorageState(context).catch(() => {});
   } catch {
     // The warmup page is best-effort. The API request below may still work.
   }
 
-  const response = await context.request.get(targetUrl, {
+  const requestJson = () => context.request.get(targetUrl, {
     timeout: timeoutMs,
     headers: {
       'Accept': 'application/json, text/plain, */*',
@@ -1197,6 +1200,12 @@ async function tryBrowserContextJson(context, page, targetUrl, timeoutMs, input)
       'Sec-Fetch-Site': 'same-origin',
     },
   });
+  let response = await requestJson();
+  if (response.status() === 403) {
+    await page.waitForTimeout(CHALLENGE_WAIT_MS);
+    await saveBrowserStorageState(context).catch(() => {});
+    response = await requestJson();
+  }
   let text = await response.text();
   if (Buffer.byteLength(text) > MAX_BODY_BYTES) {
     text = text.slice(0, MAX_BODY_BYTES);
@@ -1300,6 +1309,9 @@ async function fetchWithBrowser(input) {
     }
 
     if (pageCrashed) throw new Error(`Page crashed while navigating to ${navigationUrl}`);
+    await waitForChallengeResolution(page, response, 'generic_fetch_navigation');
+    await page.waitForLoadState('networkidle', { timeout: Math.min(timeoutMs, 20_000) }).catch(() => {});
+    await saveBrowserStorageState(context).catch(() => {});
     await page.waitForTimeout(Number(input.settleMs || 1200));
     if (expect === 'json') {
       await scrollForLazyContent(page, input);
