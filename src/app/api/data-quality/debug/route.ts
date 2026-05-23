@@ -270,6 +270,103 @@ function detailCount(step: Record<string, unknown> | null, key: 'rewards' | 'col
   return typeof value === 'number' ? value : 0;
 }
 
+function numberValue(value: unknown) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function booleanValue(value: unknown) {
+  return typeof value === 'boolean' ? value : null;
+}
+
+function stringValue(value: unknown) {
+  return typeof value === 'string' ? value : null;
+}
+
+function workerPageSummary(step: Record<string, unknown> | null, kind: 'rewards' | 'creator') {
+  if (!step) {
+    return { kind, foundStep: false };
+  }
+
+  const candidates = isRecord(step.diagnosticCandidates) ? step.diagnosticCandidates : {};
+  const detailCounts = isRecord(step.detailCounts) ? step.detailCounts : {};
+  const bodyPreview = stringValue(step.bodyPreview);
+  return {
+    kind,
+    foundStep: true,
+    ok: booleanValue(step.ok),
+    status: numberValue(step.status),
+    finalUrl: stringValue(step.finalUrl),
+    contentType: stringValue(step.contentType),
+    elapsedMs: numberValue(step.elapsedMs),
+    title: stringValue(step.title),
+    bodyTextLength: numberValue(step.bodyTextLength),
+    hasCloudflareText: booleanValue(step.hasCloudflareText),
+    hasNextData: booleanValue(step.hasNextData),
+    hasAvailableRewardsText: booleanValue(step.hasAvailableRewardsText),
+    hasBackersText: booleanValue(step.hasBackersText),
+    hasCollaboratorsText: booleanValue(step.hasCollaboratorsText),
+    rewardCount: numberValue(detailCounts.rewards) ?? 0,
+    collaboratorCount: numberValue(detailCounts.collaborators) ?? 0,
+    rewardDomNodeCount: numberValue(candidates.rewardDomNodeCount) ?? 0,
+    rewardTextCandidateCount: numberValue(candidates.rewardTextCandidateCount) ?? 0,
+    availableRewardNavCandidateCount: numberValue(candidates.availableRewardNavCandidateCount) ?? 0,
+    collaboratorDomNodeCount: numberValue(candidates.collaboratorDomNodeCount) ?? 0,
+    collaboratorTextCandidateCount: numberValue(candidates.collaboratorTextCandidateCount) ?? 0,
+    headings: Array.isArray(step.headings) ? step.headings.slice(0, 12) : [],
+    rewardTextPreviews: Array.isArray(candidates.rewardTextPreviews) ? candidates.rewardTextPreviews.slice(0, 4) : [],
+    availableRewardNavPreviews: Array.isArray(candidates.availableRewardNavPreviews) ? candidates.availableRewardNavPreviews.slice(0, 4) : [],
+    collaboratorTextPreviews: Array.isArray(candidates.collaboratorTextPreviews) ? candidates.collaboratorTextPreviews.slice(0, 4) : [],
+    bodyPreview: bodyPreview ? bodyPreview.slice(0, 900) : null,
+    error: step.error ?? null,
+  };
+}
+
+function browserResultSummary(result: unknown) {
+  if (!isRecord(result)) return null;
+  const diagnostics = isRecord(result.diagnostics) ? result.diagnostics : {};
+  const workerDiagnostics = isRecord(diagnostics.workerDiagnostics) ? diagnostics.workerDiagnostics : {};
+  const detailCounts = isRecord(workerDiagnostics.detailCounts) ? workerDiagnostics.detailCounts : {};
+  return {
+    ok: booleanValue(result.ok),
+    message: stringValue(result.message),
+    workerHttpStatus: numberValue(diagnostics.workerHttpStatus),
+    workerReturnedOk: booleanValue(diagnostics.workerReturnedOk),
+    finalUrl: stringValue(diagnostics.finalUrl),
+    elapsedMs: numberValue(diagnostics.elapsedMs),
+    jsonPayloadCount: numberValue(workerDiagnostics.jsonPayloadCount) ?? 0,
+    rewardCount: numberValue(detailCounts.rewards) ?? 0,
+    collaboratorCount: numberValue(detailCounts.collaborators) ?? 0,
+    hasRewards: booleanValue(workerDiagnostics.hasRewards),
+    hasCollaborators: booleanValue(workerDiagnostics.hasCollaborators),
+    campaignPage: workerPageSummary(getWorkerStep(result, 'campaign_page'), 'rewards'),
+    rewardsPage: workerPageSummary(getWorkerStep(result, 'rewards_page'), 'rewards'),
+    creatorPage: workerPageSummary(getWorkerStep(result, 'creator_page'), 'creator'),
+  };
+}
+
+function pageFailureMessage(summary: ReturnType<typeof workerPageSummary>, kind: 'rewards' | 'creator') {
+  const page = summary as Record<string, unknown>;
+  if (!page.foundStep) return `${kind === 'rewards' ? 'Rewards' : 'Creator'} page step was not returned by Browser Worker.`;
+  const status = numberValue(page.status);
+  const bodyTextLength = numberValue(page.bodyTextLength);
+  if (status && status >= 400) return `${kind === 'rewards' ? 'Rewards' : 'Creator'} page returned HTTP ${status}.`;
+  if (page.hasCloudflareText === true) return `${kind === 'rewards' ? 'Rewards' : 'Creator'} page appears to be blocked by Cloudflare.`;
+  if (!bodyTextLength) return `${kind === 'rewards' ? 'Rewards' : 'Creator'} page returned no visible text.`;
+  if (kind === 'rewards') {
+    if (!page.hasAvailableRewardsText && !page.hasBackersText && numberValue(page.rewardTextCandidateCount) === 0) {
+      return 'Rewards page rendered, but visible reward/backer text was not found.';
+    }
+    if (numberValue(page.availableRewardNavCandidateCount) === 0) {
+      return 'Rewards page rendered, but the left Available Rewards list was not detected.';
+    }
+    return 'Rewards page rendered target text, but the reward parser returned 0 tiers.';
+  }
+  if (!page.hasCollaboratorsText && numberValue(page.collaboratorTextCandidateCount) === 0) {
+    return 'Creator page rendered, but visible Collaborators text was not found.';
+  }
+  return 'Creator page rendered target text, but the collaborator parser returned 0 collaborators.';
+}
+
 async function runOfficialStep(projectId: string, project: ProjectForDebug, step: string) {
   const jsonUrl = buildProjectJsonUrl(project);
   const pageUrl = buildProjectPageUrl(project);
@@ -346,7 +443,10 @@ async function runOfficialStep(projectId: string, project: ProjectForDebug, step
 
   if (step === 'browser_json') {
     const result = await browserFetch(jsonUrl, 'json', 'project_detail_debug');
-    return json(result, result.ok ? 200 : 502);
+    return json({
+      ...result,
+      summary: browserResultSummary(result),
+    }, result.ok ? 200 : 502);
   }
 
   if (step === 'browser_rewards') {
@@ -354,16 +454,19 @@ async function runOfficialStep(projectId: string, project: ProjectForDebug, step
     const result = await browserFetch(jsonUrl, 'json', 'project_detail_debug');
     const rewardStep = getWorkerStep(result, 'rewards_page');
     const rewardCount = detailCount(rewardStep, 'rewards');
+    const summary = workerPageSummary(rewardStep, 'rewards');
     const ok = Boolean(isRecord(result) && result.ok !== false && rewardStep?.ok && rewardCount > 0);
     return json({
       ok,
       message: ok
         ? `Rewards page parsed ${rewardCount} reward tiers.`
-        : 'Rewards page did not produce parsed reward tiers. Check workerDiagnostics.steps.rewards_page.',
+        : pageFailureMessage(summary, 'rewards'),
+      summary,
       diagnostics: {
         rewardsUrl,
         rewardCount,
         rewardsPage: rewardStep,
+        browserSummary: browserResultSummary(result),
         workerResult: result,
       },
     }, ok ? 200 : 502);
@@ -374,16 +477,19 @@ async function runOfficialStep(projectId: string, project: ProjectForDebug, step
     const result = await browserFetch(jsonUrl, 'json', 'project_detail_debug');
     const creatorStep = getWorkerStep(result, 'creator_page');
     const collaboratorCount = detailCount(creatorStep, 'collaborators');
+    const summary = workerPageSummary(creatorStep, 'creator');
     const ok = Boolean(isRecord(result) && result.ok !== false && creatorStep?.ok && collaboratorCount > 0);
     return json({
       ok,
       message: ok
         ? `Creator page parsed ${collaboratorCount} collaborators.`
-        : 'Creator page did not produce parsed collaborators. Check workerDiagnostics.steps.creator_page.',
+        : pageFailureMessage(summary, 'creator'),
+      summary,
       diagnostics: {
         creatorUrl,
         collaboratorCount,
         creatorPage: creatorStep,
+        browserSummary: browserResultSummary(result),
         workerResult: result,
       },
     }, ok ? 200 : 502);

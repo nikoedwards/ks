@@ -471,11 +471,50 @@ async function extractProjectFromPage(page) {
 async function collectPageDiagnostics(page, response, startedAt, label) {
   const pageInfo = await page.evaluate(() => {
     const clean = value => (value || '').replace(/\s+/g, ' ').trim();
+    const visible = node => {
+      const rect = node.getBoundingClientRect();
+      const style = window.getComputedStyle(node);
+      return rect.width > 20 && rect.height > 16 && style.visibility !== 'hidden' && style.display !== 'none';
+    };
+    const parseMoney = text => {
+      const match = clean(text).match(/(?:US\$|HK\$|CA\$|A\$|\$|£|€)\s*([\d,]+(?:\.\d+)?)/i);
+      return match ? Number(match[1].replace(/,/g, '')) || 0 : 0;
+    };
+    const summarizeNode = item => ({
+      tag: item.node.tagName.toLowerCase(),
+      text: item.text.slice(0, 360),
+      rect: {
+        left: Math.round(item.rect.left),
+        top: Math.round(item.rect.top),
+        width: Math.round(item.rect.width),
+        height: Math.round(item.rect.height),
+      },
+    });
+    const allCandidateNodes = Array.from(document.querySelectorAll('article,section,li,div,a,button,[data-reward-id],[class*="reward" i],[class*="pledge" i],[class*="collaborator" i],[href*="/profile/"]'))
+      .map(node => ({ node, text: clean(node.textContent), rect: node.getBoundingClientRect() }))
+      .filter(item => item.text && visible(item.node));
     const bodyText = clean(document.body?.innerText || document.documentElement?.textContent || '');
     const headings = Array.from(document.querySelectorAll('h1,h2,h3,h4'))
       .map(node => clean(node.textContent))
       .filter(Boolean)
       .slice(0, 30);
+    const heading = Array.from(document.querySelectorAll('h1,h2,h3,h4'))
+      .find(node => /^available rewards$/i.test(clean(node.textContent)));
+    const headingRect = heading?.getBoundingClientRect();
+    const leftLimit = Math.max(420, Math.min(560, window.innerWidth * 0.36));
+    const rewardTextCandidates = allCandidateNodes
+      .filter(item => /backers?|pledge|estimated delivery|ships to|item included|available rewards/i.test(item.text));
+    const rewardNavCandidates = allCandidateNodes
+      .filter(item => item.rect.left < leftLimit
+        && (!headingRect || item.rect.top > headingRect.bottom - 8)
+        && item.rect.height >= 28
+        && item.rect.height <= 160
+        && item.rect.width >= 160
+        && item.rect.width <= leftLimit + 80
+        && parseMoney(item.text) > 0
+        && /item included|items included|reward|special|bundle|pledge/i.test(item.text));
+    const collaboratorTextCandidates = allCandidateNodes
+      .filter(item => /collaborators?|team member|campaign management|premier partner|full campaign|kickbooster|expert/i.test(item.text));
     return {
       title: document.title || null,
       finalUrl: location.href,
@@ -488,6 +527,16 @@ async function collectPageDiagnostics(page, response, startedAt, label) {
       hasBackersText: /backers?/i.test(bodyText),
       hasCollaboratorsText: /collaborators?/i.test(bodyText),
       headings,
+      diagnosticCandidates: {
+        rewardDomNodeCount: document.querySelectorAll('[data-reward-id],[id*="reward" i],[class*="reward" i],[class*="pledge" i]').length,
+        rewardTextCandidateCount: rewardTextCandidates.length,
+        availableRewardNavCandidateCount: rewardNavCandidates.length,
+        rewardTextPreviews: rewardTextCandidates.slice(0, 6).map(summarizeNode),
+        availableRewardNavPreviews: rewardNavCandidates.slice(0, 8).map(summarizeNode),
+        collaboratorDomNodeCount: document.querySelectorAll('[class*="collaborator" i],[class*="creator" i],[href*="/profile/"]').length,
+        collaboratorTextCandidateCount: collaboratorTextCandidates.length,
+        collaboratorTextPreviews: collaboratorTextCandidates.slice(0, 8).map(summarizeNode),
+      },
     };
   }).catch(err => ({ error: safeError(err) }));
 

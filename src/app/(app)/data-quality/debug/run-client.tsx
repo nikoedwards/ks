@@ -114,6 +114,72 @@ function stringifyPayload(payload: unknown) {
   }
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function getSummary(payload: unknown) {
+  if (!isRecord(payload)) return null;
+  if (isRecord(payload.summary)) return payload.summary;
+  if (isRecord(payload.diagnostics) && isRecord(payload.diagnostics.summary)) return payload.diagnostics.summary;
+  return null;
+}
+
+function formatSummaryValue(value: unknown) {
+  if (value === null || value === undefined) return '-';
+  if (typeof value === 'boolean') return value ? 'true' : 'false';
+  if (typeof value === 'number') return value.toLocaleString();
+  if (typeof value === 'string') return value || '-';
+  return JSON.stringify(value);
+}
+
+function SummaryPanel({ summary }: { summary: Record<string, unknown> }) {
+  const hiddenKeys = new Set(['bodyPreview', 'headings', 'rewardTextPreviews', 'availableRewardNavPreviews', 'collaboratorTextPreviews', 'campaignPage', 'rewardsPage', 'creatorPage']);
+  const entries = Object.entries(summary)
+    .filter(([key, value]) => !hiddenKeys.has(key) && !Array.isArray(value) && !isRecord(value))
+    .slice(0, 24);
+  const previewKeys = ['headings', 'rewardTextPreviews', 'availableRewardNavPreviews', 'collaboratorTextPreviews'] as const;
+
+  return (
+    <div className="rounded-lg border border-gray-800 bg-gray-900 p-4 text-xs text-gray-100">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <p className="font-semibold text-white">Debug summary</p>
+        <p className="text-gray-400">Open raw JSON below for full worker diagnostics.</p>
+      </div>
+      {!!entries.length && (
+        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+          {entries.map(([key, value]) => (
+            <div key={key} className="rounded-md border border-gray-800 bg-gray-950 px-3 py-2">
+              <p className="text-[11px] uppercase tracking-wide text-gray-500">{key}</p>
+              <p className="mt-1 break-words text-gray-100">{formatSummaryValue(value)}</p>
+            </div>
+          ))}
+        </div>
+      )}
+      {previewKeys.map(key => {
+        const value = summary[key];
+        if (!Array.isArray(value) || value.length === 0) return null;
+        return (
+          <div key={key} className="mt-3 rounded-md border border-gray-800 bg-gray-950 p-3">
+            <p className="mb-2 text-[11px] uppercase tracking-wide text-gray-500">{key}</p>
+            <pre className="max-h-44 overflow-auto whitespace-pre-wrap break-words text-gray-200">
+              {JSON.stringify(value, null, 2)}
+            </pre>
+          </div>
+        );
+      })}
+      {typeof summary.bodyPreview === 'string' && summary.bodyPreview && (
+        <div className="mt-3 rounded-md border border-gray-800 bg-gray-950 p-3">
+          <p className="mb-2 text-[11px] uppercase tracking-wide text-gray-500">bodyPreview</p>
+          <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words text-gray-200">
+            {summary.bodyPreview}
+          </pre>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function DebugRunClient({
   projectId,
   action,
@@ -267,6 +333,7 @@ export default function DebugRunClient({
       <div className="space-y-3">
         {steps.map((step, index) => {
           const isExpanded = expanded === step.key;
+          const summary = getSummary(step.payload);
           return (
             <section key={step.key} className="overflow-hidden rounded-lg border border-gray-100 bg-white">
               <button
@@ -309,9 +376,12 @@ export default function DebugRunClient({
                       正在执行这个环节...
                     </div>
                   ) : (
-                    <pre className="max-h-[520px] overflow-auto whitespace-pre-wrap break-words text-xs leading-5 text-gray-100">
-                      {stringifyPayload(step.payload)}
-                    </pre>
+                    <>
+                      {summary && <SummaryPanel summary={summary} />}
+                      <pre className={`${summary ? 'mt-4 ' : ''}max-h-[520px] overflow-auto whitespace-pre-wrap break-words text-xs leading-5 text-gray-100`}>
+                        {stringifyPayload(step.payload)}
+                      </pre>
+                    </>
                   )}
                 </div>
               )}
