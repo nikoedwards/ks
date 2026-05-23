@@ -679,11 +679,19 @@ export default function ProjectDetailPage() {
 
   // ── Loading / not found ────────────────────────────────────────────────────
 
+  const goBackToProjectList = () => {
+    if (typeof window !== 'undefined' && window.history.length > 1) {
+      router.back();
+      return;
+    }
+    router.push('/projects');
+  };
+
   if (loading) return <div className="flex items-center justify-center h-full text-gray-400">{tr.loading}</div>;
   if (notFound) return (
     <div className="max-w-2xl mx-auto mt-20 text-center space-y-4">
       <p className="text-gray-400 text-lg">{tr.notFound}</p>
-      <button onClick={() => router.back()} className="text-ks-green text-sm hover:underline">{tr.backToList}</button>
+      <button onClick={goBackToProjectList} className="text-ks-green text-sm hover:underline">{tr.backToList}</button>
     </div>
   );
   if (!project) return null;
@@ -758,7 +766,7 @@ export default function ProjectDetailPage() {
   return (
     <div className="max-w-6xl mx-auto space-y-0">
       {/* Back */}
-      <button onClick={() => router.back()}
+      <button onClick={goBackToProjectList}
         className="flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-800 transition-colors mb-4">
         <ArrowLeft className="w-4 h-4" />{tr.back}
       </button>

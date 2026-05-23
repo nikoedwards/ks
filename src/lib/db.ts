@@ -1853,6 +1853,9 @@ export interface DataWorkbenchProject {
 export function getDataWorkbenchProjects(options: {
   filter?: DataWorkbenchFilter;
   query?: string;
+  state?: string;
+  minPledged?: number;
+  maxPledged?: number;
   limit?: number;
   offset?: number;
 } = {}) {
@@ -1860,7 +1863,10 @@ export function getDataWorkbenchProjects(options: {
   const limit = Math.max(1, Math.min(options.limit ?? 25, 100));
   const offset = Math.max(0, options.offset ?? 0);
   const normalizedQuery = options.query?.trim() ?? '';
-  const cacheKey = JSON.stringify({ filter, query: normalizedQuery, limit, offset });
+  const normalizedState = options.state?.trim() ?? '';
+  const minPledged = Number.isFinite(options.minPledged) ? Number(options.minPledged) : null;
+  const maxPledged = Number.isFinite(options.maxPledged) ? Number(options.maxPledged) : null;
+  const cacheKey = JSON.stringify({ filter, query: normalizedQuery, state: normalizedState, minPledged, maxPledged, limit, offset });
   const cacheNow = Date.now();
   const cached = dataWorkbenchCache.get(cacheKey);
   if (cached && cached.expiresAt > cacheNow) return cached.value;
@@ -1872,6 +1878,18 @@ export function getDataWorkbenchProjects(options: {
   if (normalizedQuery) {
     params.query = `%${normalizedQuery}%`;
     where.push('(p.name LIKE @query OR p.id LIKE @query OR p.creator_slug LIKE @query OR p.slug LIKE @query)');
+  }
+  if (normalizedState && normalizedState !== 'all') {
+    params.state = normalizedState;
+    where.push('p.state = @state');
+  }
+  if (minPledged !== null) {
+    params.minPledged = minPledged;
+    where.push('COALESCE(p.usd_pledged, 0) >= @minPledged');
+  }
+  if (maxPledged !== null) {
+    params.maxPledged = maxPledged;
+    where.push('COALESCE(p.usd_pledged, 0) <= @maxPledged');
   }
 
   if (filter === 'missing_rewards') where.push('NOT EXISTS (SELECT 1 FROM reward_snapshots rr WHERE rr.project_id = p.id)');
@@ -1978,6 +1996,30 @@ export function getDataWorkbenchProjects(options: {
     if (firstKey) dataWorkbenchCache.delete(firstKey);
   }
   return value;
+}
+
+export function deleteProjectsDeep(projectIds: string[]): number {
+  const ids = Array.from(new Set(projectIds.map(id => id.trim()).filter(Boolean))).slice(0, 200);
+  if (!ids.length) return 0;
+  const db = getDB();
+  const placeholders = ids.map(() => '?').join(',');
+  const tx = db.transaction(() => {
+    db.prepare(`DELETE FROM project_snapshots WHERE project_id IN (${placeholders})`).run(...ids);
+    db.prepare(`DELETE FROM reward_snapshots WHERE project_id IN (${placeholders})`).run(...ids);
+    db.prepare(`DELETE FROM project_text_history WHERE project_id IN (${placeholders})`).run(...ids);
+    db.prepare(`DELETE FROM project_comments WHERE project_id IN (${placeholders})`).run(...ids);
+    db.prepare(`DELETE FROM project_collaborators WHERE project_id IN (${placeholders})`).run(...ids);
+    db.prepare(`DELETE FROM favorites WHERE project_id IN (${placeholders})`).run(...ids);
+    db.prepare(`DELETE FROM tracking_settings WHERE project_id IN (${placeholders})`).run(...ids);
+    db.prepare(`DELETE FROM user_project_subscriptions WHERE project_id IN (${placeholders})`).run(...ids);
+    db.prepare(`DELETE FROM crawler_errors WHERE project_id IN (${placeholders})`).run(...ids);
+    db.prepare(`DELETE FROM kicktraq_import_debug WHERE project_id IN (${placeholders})`).run(...ids);
+    const result = db.prepare(`DELETE FROM projects WHERE id IN (${placeholders})`).run(...ids);
+    dataQualityReportCache = null;
+    dataWorkbenchCache.clear();
+    return Number(result.changes ?? 0);
+  });
+  return tx();
 }
 
 export async function getMeta(): Promise<{

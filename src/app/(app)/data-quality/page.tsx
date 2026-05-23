@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Activity, AlertTriangle, CheckCircle2, Clock3, Database, ExternalLink, PlayCircle, RefreshCw, RadioTower, Search, ShieldCheck, UploadCloud, type LucideIcon } from 'lucide-react';
+import { Activity, AlertTriangle, CheckCircle2, Clock3, Database, ExternalLink, PlayCircle, RefreshCw, RadioTower, Search, ShieldCheck, Trash2, UploadCloud, type LucideIcon } from 'lucide-react';
 import { useLanguage } from '@/hooks/useLanguage';
 
 interface SourceHealth {
@@ -206,6 +206,10 @@ export default function DataQualityPage() {
   const [workbenchLoading, setWorkbenchLoading] = useState(false);
   const [workbenchFilter, setWorkbenchFilter] = useState('all');
   const [workbenchQuery, setWorkbenchQuery] = useState('');
+  const [workbenchState, setWorkbenchState] = useState('all');
+  const [workbenchMinPledged, setWorkbenchMinPledged] = useState('');
+  const [workbenchMaxPledged, setWorkbenchMaxPledged] = useState('');
+  const [selectedProjectIds, setSelectedProjectIds] = useState<string[]>([]);
   const [actionMessage, setActionMessage] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
   const [runningAction, setRunningAction] = useState<string | null>(null);
 
@@ -216,10 +220,14 @@ export default function DataQualityPage() {
     try {
       const params = new URLSearchParams({ filter, limit: '25' });
       if (query.trim()) params.set('q', query.trim());
+      if (workbenchState !== 'all') params.set('state', workbenchState);
+      if (workbenchMinPledged.trim()) params.set('minPledged', workbenchMinPledged.trim());
+      if (workbenchMaxPledged.trim()) params.set('maxPledged', workbenchMaxPledged.trim());
       const res = await fetch(`/api/data-quality/workbench?${params.toString()}`, { cache: 'no-store' });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to load data workbench.');
       setWorkbench(data);
+      setSelectedProjectIds([]);
     } catch (err) {
       setActionMessage({ kind: 'error', text: err instanceof Error ? err.message : String(err) });
     } finally {
@@ -250,6 +258,24 @@ export default function DataQualityPage() {
     await loadWorkbench(filter, workbenchQuery);
   };
 
+  const toggleProjectSelection = (projectId: string) => {
+    setSelectedProjectIds(prev => (
+      prev.includes(projectId)
+        ? prev.filter(id => id !== projectId)
+        : [...prev, projectId]
+    ));
+  };
+
+  const visibleProjectIds = workbench?.rows?.map(project => project.id) ?? [];
+  const allVisibleSelected = visibleProjectIds.length > 0 && visibleProjectIds.every(id => selectedProjectIds.includes(id));
+  const toggleVisibleSelection = () => {
+    setSelectedProjectIds(prev => (
+      allVisibleSelected
+        ? prev.filter(id => !visibleProjectIds.includes(id))
+        : Array.from(new Set([...prev, ...visibleProjectIds]))
+    ));
+  };
+
   const runWorkbenchAction = (projectId: string, action: 'kickstarter_sync' | 'kicktraq_import') => {
     const debugAction = action === 'kickstarter_sync' ? 'official' : 'kicktraq';
     window.location.href = `/data-quality/debug?projectId=${encodeURIComponent(projectId)}&action=${debugAction}`;
@@ -277,6 +303,46 @@ export default function DataQualityPage() {
       }
     } catch {
       setActionMessage({ kind: 'error', text: 'Network error while running action.' });
+    } finally {
+      setRunningAction(null);
+    }
+  };
+
+  const runBatchAction = async (action: 'kickstarter_basic_sync' | 'delete_projects') => {
+    if (!selectedProjectIds.length) return;
+    if (action === 'delete_projects') {
+      const ok = window.confirm(cn
+        ? `确定要删除选中的 ${selectedProjectIds.length} 个项目吗？相关快照、奖励、合作者、追踪和错误记录也会一起删除。`
+        : `Delete ${selectedProjectIds.length} selected projects and their snapshots, rewards, collaborators, tracking, and errors?`);
+      if (!ok) return;
+    }
+    setRunningAction(`bulk:${action}`);
+    setActionMessage(null);
+    try {
+      const res = await fetch('/api/data-quality/workbench', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectIds: selectedProjectIds, action }),
+      });
+      const data = await res.json().catch(() => ({})) as {
+        ok?: boolean;
+        message?: string;
+        error?: string;
+        succeeded?: number;
+        failed?: number;
+        deleted?: number;
+      };
+      if (!res.ok || !data.ok) {
+        setActionMessage({ kind: 'error', text: data.error ?? data.message ?? 'Batch action failed.' });
+      } else {
+        const text = action === 'delete_projects'
+          ? (cn ? `已删除 ${data.deleted ?? 0} 个项目。` : `Deleted ${data.deleted ?? 0} projects.`)
+          : (cn ? `批量基础更新完成：成功 ${data.succeeded ?? 0}，失败 ${data.failed ?? 0}。` : `Batch basic update finished: ${data.succeeded ?? 0} succeeded, ${data.failed ?? 0} failed.`);
+        setActionMessage({ kind: 'success', text });
+        await Promise.all([load(), loadWorkbench(workbenchFilter, workbenchQuery)]);
+      }
+    } catch {
+      setActionMessage({ kind: 'error', text: 'Network error while running batch action.' });
     } finally {
       setRunningAction(null);
     }
@@ -391,7 +457,7 @@ export default function DataQualityPage() {
             </p>
           </div>
           <form
-            className="flex flex-col gap-2 sm:flex-row"
+            className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-[minmax(220px,1fr)_140px_120px_120px_auto]"
             onSubmit={e => {
               e.preventDefault();
               loadWorkbench(workbenchFilter, workbenchQuery);
@@ -406,6 +472,32 @@ export default function DataQualityPage() {
                 className="w-full rounded-lg border border-gray-200 pl-9 pr-3 py-2 text-sm outline-none focus:border-ks-green sm:w-64"
               />
             </div>
+            <select
+              value={workbenchState}
+              onChange={e => setWorkbenchState(e.target.value)}
+              className="rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:border-ks-green"
+            >
+              <option value="all">{cn ? '全部状态' : 'All states'}</option>
+              <option value="live">{cn ? '进行中' : 'Live'}</option>
+              <option value="successful">{cn ? '已成功' : 'Successful'}</option>
+              <option value="failed">{cn ? '失败' : 'Failed'}</option>
+              <option value="canceled">{cn ? '已取消' : 'Canceled'}</option>
+              <option value="suspended">{cn ? '暂停' : 'Suspended'}</option>
+            </select>
+            <input
+              value={workbenchMinPledged}
+              onChange={e => setWorkbenchMinPledged(e.target.value)}
+              inputMode="numeric"
+              placeholder={cn ? '最低金额' : 'Min USD'}
+              className="rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:border-ks-green"
+            />
+            <input
+              value={workbenchMaxPledged}
+              onChange={e => setWorkbenchMaxPledged(e.target.value)}
+              inputMode="numeric"
+              placeholder={cn ? '最高金额' : 'Max USD'}
+              className="rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:border-ks-green"
+            />
             <button
               type="submit"
               disabled={workbenchLoading}
@@ -437,7 +529,37 @@ export default function DataQualityPage() {
               {label}
             </button>
           ))}
+          <button
+            onClick={toggleVisibleSelection}
+            className="rounded-full px-3 py-1.5 text-xs font-semibold text-gray-600 bg-gray-50 hover:bg-gray-100"
+          >
+            {allVisibleSelected ? (cn ? '取消本页' : 'Clear page') : (cn ? '选择本页' : 'Select page')}
+          </button>
         </div>
+
+        {selectedProjectIds.length > 0 && (
+          <div className="mx-5 mt-4 flex flex-col gap-2 rounded-lg border border-green-100 bg-green-50 px-4 py-3 text-sm text-green-800 sm:flex-row sm:items-center sm:justify-between">
+            <span>{cn ? `已选中 ${selectedProjectIds.length} 个项目` : `${selectedProjectIds.length} projects selected`}</span>
+            <div className="flex flex-wrap gap-2">
+              <button
+                onClick={() => runBatchAction('kickstarter_basic_sync')}
+                disabled={!!runningAction}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-white px-3 py-2 text-xs font-bold text-green-700 ring-1 ring-green-200 hover:bg-green-100 disabled:opacity-50"
+              >
+                <RefreshCw className={`h-3.5 w-3.5 ${runningAction === 'bulk:kickstarter_basic_sync' ? 'animate-spin' : ''}`} />
+                {cn ? '批量更新基础' : 'Update basics'}
+              </button>
+              <button
+                onClick={() => runBatchAction('delete_projects')}
+                disabled={!!runningAction}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-white px-3 py-2 text-xs font-bold text-red-600 ring-1 ring-red-100 hover:bg-red-50 disabled:opacity-50"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                {cn ? '批量删除' : 'Delete'}
+              </button>
+            </div>
+          </div>
+        )}
 
         {actionMessage && (
           <div className={`mx-5 mt-4 rounded-lg px-4 py-3 text-sm ${
@@ -468,6 +590,12 @@ export default function DataQualityPage() {
                   <tr key={project.id} className="align-top">
                     <td className="px-5 py-4">
                       <div className="flex gap-3">
+                        <input
+                          type="checkbox"
+                          checked={selectedProjectIds.includes(project.id)}
+                          onChange={() => toggleProjectSelection(project.id)}
+                          className="mt-4 h-4 w-4 flex-shrink-0 rounded border-gray-300 text-ks-green focus:ring-ks-green"
+                        />
                         <div className="h-12 w-20 flex-shrink-0 overflow-hidden rounded-md bg-gray-100">
                           {(project.image_thumb_url || project.image_url) && (
                             // eslint-disable-next-line @next/next/no-img-element
