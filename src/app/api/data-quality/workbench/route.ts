@@ -16,6 +16,7 @@ import {
   scrapeKicktraqDetailed,
   storeKicktraqDays,
 } from '@/lib/scraper';
+import { syncKickstarterLiveProject } from '@/lib/kickstarterLive';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -66,11 +67,39 @@ export async function POST(req: NextRequest) {
   if (!projectId) return NextResponse.json({ ok: false, error: 'projectId is required' }, { status: 400 });
 
   const project = await getProjectById(projectId) as {
+    name?: string | null;
     source_url?: string | null;
     creator_slug?: string | null;
     slug?: string | null;
   } | null;
   if (!project) return NextResponse.json({ ok: false, error: 'Project not found' }, { status: 404 });
+
+  let liveDiscoverMessage: string | null = null;
+  if (body.action === 'kickstarter_basic_sync') {
+    const liveResult = await syncKickstarterLiveProject({
+      id: projectId,
+      name: project.name,
+      sourceUrl: project.source_url,
+      creatorSlug: project.creator_slug,
+      slug: project.slug,
+    }, {
+      maxPages: Number(process.env.LIVE_DISCOVERY_MANUAL_MAX_PAGES ?? 8),
+      state: 'live',
+    });
+    if (liveResult.ok) {
+      return NextResponse.json({
+        ok: true,
+        action: body.action,
+        source: liveResult.source,
+        full: false,
+        rewardCount: 0,
+        collaboratorCount: 0,
+        message: liveResult.message,
+        recentErrors: [],
+      });
+    }
+    liveDiscoverMessage = liveResult.message;
+  }
 
   if (body.action === 'kickstarter_basic_sync' || body.action === 'kickstarter_sync') {
     const jsonUrl = buildProjectJsonUrl(project);
@@ -92,7 +121,9 @@ export async function POST(req: NextRequest) {
       full: result.full,
       rewardCount: result.rewardCount,
       collaboratorCount: result.collaboratorCount,
-      message: result.ok ? (result.message ?? 'Synced Kickstarter basic project fields.') : result.message,
+      message: result.ok
+        ? (result.message ?? 'Synced Kickstarter basic project fields.')
+        : [liveDiscoverMessage, result.message].filter(Boolean).join(' | '),
       recentErrors,
     }, { status: result.ok ? 200 : 502 });
   }
