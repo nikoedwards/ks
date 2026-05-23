@@ -165,7 +165,8 @@ function SummaryPanel({ summary }: { summary: Record<string, unknown> }) {
             <div key={key} className="rounded-md border border-gray-800 bg-gray-950 px-3 py-2">
               <p className="text-[11px] uppercase tracking-wide text-gray-500">{key}</p>
               <p className="mt-1 text-gray-100">status: {formatSummaryValue(page.status)} / ok: {formatSummaryValue(page.ok)}</p>
-              <p className="mt-1 text-gray-300">cloudflare: {formatSummaryValue(page.hasCloudflareText)} / cookies: {formatSummaryValue(page.cookieCount)}</p>
+              <p className="mt-1 text-gray-300">cloudflare: {formatSummaryValue(page.hasCloudflareText)} / cleared: {formatSummaryValue(page.challengeCleared)}</p>
+              <p className="mt-1 text-gray-300">cookies: {formatSummaryValue(page.cookieCount)}</p>
             </div>
           );
         })}

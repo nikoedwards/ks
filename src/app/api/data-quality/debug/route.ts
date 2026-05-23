@@ -300,6 +300,7 @@ function workerPageSummary(step: Record<string, unknown> | null, kind: 'rewards'
     elapsedMs: numberValue(step.elapsedMs),
     title: stringValue(step.title),
     bodyTextLength: numberValue(step.bodyTextLength),
+    challengeCleared: booleanValue(step.challengeCleared),
     cookieCount: numberValue(step.cookieCount) ?? 0,
     responseHeaders: isRecord(step.responseHeaders) ? step.responseHeaders : {},
     hasCloudflareText: booleanValue(step.hasCloudflareText),

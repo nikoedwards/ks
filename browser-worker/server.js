@@ -11,6 +11,8 @@ const MAX_BODY_BYTES = Number(process.env.BROWSER_FETCH_MAX_BYTES || 5_000_000);
 const STORAGE_STATE_PATH = process.env.BROWSER_STORAGE_STATE_PATH
   || path.join(os.tmpdir(), 'kicksonar-browser-worker-storage-state.json');
 const DEBUG_SCREENSHOTS = !/^(0|false|no)$/i.test(process.env.BROWSER_DEBUG_SCREENSHOTS || '1');
+const BLOCK_HEAVY_RESOURCES = /^(1|true|yes)$/i.test(process.env.BROWSER_BLOCK_HEAVY_RESOURCES || '0');
+const CHALLENGE_WAIT_MS = Math.max(3000, Math.min(Number(process.env.BROWSER_CHALLENGE_WAIT_MS || 15_000), 60_000));
 
 const ALLOWED_HOSTS = new Set([
   'www.kickstarter.com',
@@ -861,10 +863,12 @@ async function warmupKickstarterSession(page, campaignUrl, diagnostics, pageTime
     const startedAt = Date.now();
     try {
       const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: pageTimeoutMs });
+      const challengeCleared = await waitForChallengeResolution(page, response, label);
       await page.waitForTimeout(settleMs);
       const pageDiagnostics = await collectPageDiagnostics(page, response, startedAt, label);
       diagnostics.steps.push({
         ...pageDiagnostics,
+        challengeCleared,
         ok: pageDiagnostics.ok && !pageDiagnostics.hasCloudflareText,
       });
       if (!pageDiagnostics.ok || pageDiagnostics.hasCloudflareText) {
@@ -886,6 +890,33 @@ async function warmupKickstarterSession(page, campaignUrl, diagnostics, pageTime
   }
 
   return true;
+}
+
+async function waitForChallengeResolution(page, response, label) {
+  const headers = response?.headers?.() || {};
+  const mitigated = String(headers['cf-mitigated'] || '').toLowerCase();
+  const status = response?.status?.() ?? null;
+  const initialLooksBlocked = status === 403 || mitigated === 'challenge';
+  if (!initialLooksBlocked) return false;
+
+  await page.waitForTimeout(CHALLENGE_WAIT_MS);
+  await page.waitForLoadState('networkidle', { timeout: Math.min(CHALLENGE_WAIT_MS, 20_000) }).catch(() => {});
+  const stillBlocked = await page.evaluate(() => {
+    const text = (document.body?.innerText || document.documentElement?.textContent || '').replace(/\s+/g, ' ').trim();
+    return /cf_chl|just a moment|enable javascript and cookies|cloudflare|forbidden|access denied/i.test(text);
+  }).catch(() => true);
+  return !stillBlocked;
+}
+
+async function newWorkerPage(context, pageTimeoutMs, diagnostics) {
+  const page = await context.newPage();
+  if (BLOCK_HEAVY_RESOURCES) await installResourceGuards(page);
+  page.setDefaultTimeout(pageTimeoutMs);
+  page.setDefaultNavigationTimeout(pageTimeoutMs);
+  page.on('crash', () => {
+    diagnostics.errors.push({ label: 'page_crash', error: 'Playwright page crashed.' });
+  });
+  return page;
 }
 
 async function fetchProjectDetailDebug(input) {
@@ -927,16 +958,7 @@ async function fetchProjectDetailDebug(input) {
       },
     });
 
-    const page = await context.newPage();
-    await installResourceGuards(page);
-    page.setDefaultTimeout(pageTimeoutMs);
-    page.setDefaultNavigationTimeout(pageTimeoutMs);
-
-    let pageCrashed = false;
-    page.on('crash', () => {
-      pageCrashed = true;
-      diagnostics.errors.push({ label: 'page_crash', error: 'Playwright page crashed.' });
-    });
+    const page = await newWorkerPage(context, pageTimeoutMs, diagnostics);
 
     await warmupKickstarterSession(page, campaignUrl, diagnostics, pageTimeoutMs, settleMs);
 
@@ -982,12 +1004,13 @@ async function fetchProjectDetailDebug(input) {
       const stepStartedAt = Date.now();
       try {
         const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: pageTimeoutMs });
-        if (pageCrashed) throw new Error(`Page crashed while navigating to ${url}`);
+        const challengeCleared = await waitForChallengeResolution(page, response, label);
         await page.waitForTimeout(settleMs);
         const detail = afterLoad ? await afterLoad() : null;
         const pageDiagnostics = await collectPageDiagnostics(page, response, stepStartedAt, label);
         diagnostics.steps.push({
           ...pageDiagnostics,
+          challengeCleared,
           ok: pageDiagnostics.ok && !pageDiagnostics.hasCloudflareText,
           detailCounts: detail ? {
             rewards: Array.isArray(detail.rewards) ? detail.rewards.length : 0,
@@ -1022,10 +1045,47 @@ async function fetchProjectDetailDebug(input) {
       return extractRewardPageDetails(page);
     });
 
-    const creatorDetails = await visit('creator_page', creatorUrl, async () => {
-      await scrollForLazyContent(page, { ...input, scrollSteps: Math.min(Number(input.scrollSteps || 5), 8) });
-      return extractCreatorPageDetails(page);
-    });
+    const creatorPage = await newWorkerPage(context, pageTimeoutMs, diagnostics);
+    const creatorDetails = await (async () => {
+      try {
+        const tempVisit = async () => {
+          const stepStartedAt = Date.now();
+          try {
+            const response = await creatorPage.goto(creatorUrl, { waitUntil: 'domcontentloaded', timeout: pageTimeoutMs });
+            const challengeCleared = await waitForChallengeResolution(creatorPage, response, 'creator_page');
+            await creatorPage.waitForTimeout(settleMs);
+            await scrollForLazyContent(creatorPage, { ...input, scrollSteps: Math.min(Number(input.scrollSteps || 5), 8) });
+            const detail = await extractCreatorPageDetails(creatorPage);
+            const pageDiagnostics = await collectPageDiagnostics(creatorPage, response, stepStartedAt, 'creator_page');
+            diagnostics.steps.push({
+              ...pageDiagnostics,
+              challengeCleared,
+              ok: pageDiagnostics.ok && !pageDiagnostics.hasCloudflareText,
+              detailCounts: {
+                rewards: Array.isArray(detail.rewards) ? detail.rewards.length : 0,
+                collaborators: Array.isArray(detail.collaborators) ? detail.collaborators.length : 0,
+              },
+            });
+            return detail;
+          } catch (err) {
+            const pageDiagnostics = await collectPageDiagnostics(creatorPage, null, stepStartedAt, 'creator_page').catch(() => null);
+            const error = safeError(err);
+            diagnostics.steps.push({
+              label: 'creator_page',
+              ok: false,
+              elapsedMs: Date.now() - stepStartedAt,
+              ...(pageDiagnostics ?? {}),
+              error,
+            });
+            diagnostics.errors.push({ label: 'creator_page', error });
+            return null;
+          }
+        };
+        return await tempVisit();
+      } finally {
+        await creatorPage.close().catch(() => {});
+      }
+    })();
 
     const settledPayloads = await Promise.allSettled(jsonPayloads);
     const responsePayloads = settledPayloads
@@ -1084,7 +1144,7 @@ async function installResourceGuards(page) {
     const request = route.request();
     const resourceType = request.resourceType();
     const url = request.url();
-    if (['image', 'media', 'font'].includes(resourceType)) {
+    if (BLOCK_HEAVY_RESOURCES && ['image', 'media', 'font'].includes(resourceType)) {
       route.abort().catch(() => {});
       return;
     }
@@ -1161,7 +1221,7 @@ async function fetchWithBrowser(input) {
   });
 
   const page = await context.newPage();
-  await installResourceGuards(page);
+  if (BLOCK_HEAVY_RESOURCES) await installResourceGuards(page);
   let pageCrashed = false;
   page.on('crash', () => {
     pageCrashed = true;
