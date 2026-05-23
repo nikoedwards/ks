@@ -12,6 +12,9 @@ declare global {
   var __ksDb: Database | undefined;
 }
 
+let dataQualityReportCache: { expiresAt: number; value: any } | null = null;
+const dataWorkbenchCache = new Map<string, { expiresAt: number; value: any }>();
+
 function ensureRuntimeMigrations(db: Database) {
   try { db.exec('ALTER TABLE users ADD COLUMN email_verified INTEGER DEFAULT 1'); } catch { /* already exists */ }
   try { db.exec("ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'"); } catch { /* already exists */ }
@@ -75,6 +78,7 @@ function ensureRuntimeMigrations(db: Database) {
   try { db.exec('ALTER TABLE tracking_settings ADD COLUMN priority_score INTEGER DEFAULT 0'); } catch { /* already exists */ }
   ensureAnnouncementTables(db);
   ensureKicktraqDebugTables(db);
+  ensurePerformanceIndexes(db);
   const adminEmail = process.env.ADMIN_EMAIL?.trim().toLowerCase();
   if (adminEmail) db.prepare("UPDATE users SET role = 'admin' WHERE lower(email) = ?").run(adminEmail);
   const admin = db.prepare("SELECT id FROM users WHERE role = 'admin' LIMIT 1").get();
@@ -1614,6 +1618,11 @@ export function getLandingData() {
 }
 
 export function getDataQualityReport() {
+  const cacheNow = Date.now();
+  if (dataQualityReportCache && dataQualityReportCache.expiresAt > cacheNow) {
+    return dataQualityReportCache.value;
+  }
+
   const db = getDB();
   const now = Math.floor(Date.now() / 1000);
   const sixHoursAgo = now - 6 * 3600;
@@ -1748,7 +1757,7 @@ export function getDataQualityReport() {
     ORDER BY last_completed_at DESC
   `).all();
 
-  return {
+  const report = {
     generatedAt: now,
     totals: {
       totalProjects: Number(totals.total_projects ?? 0),
@@ -1780,6 +1789,25 @@ export function getDataQualityReport() {
     recentErrors,
     recentKsLiveProjects,
   };
+  dataQualityReportCache = { expiresAt: cacheNow + 20_000, value: report };
+  return report;
+}
+
+function ensurePerformanceIndexes(db: Database) {
+  const indexes = [
+    'CREATE INDEX IF NOT EXISTS idx_projects_state_seen ON projects(state, ks_live_synced_at, first_seen_at, launched_at)',
+    'CREATE INDEX IF NOT EXISTS idx_projects_data_source ON projects(data_source)',
+    'CREATE INDEX IF NOT EXISTS idx_projects_creator_slug ON projects(creator_slug, slug)',
+    'CREATE INDEX IF NOT EXISTS idx_projects_name ON projects(name)',
+    'CREATE INDEX IF NOT EXISTS idx_snapshots_project_id ON project_snapshots(project_id, id)',
+    'CREATE INDEX IF NOT EXISTS idx_snapshots_project_captured_id ON project_snapshots(project_id, captured_at, id)',
+    'CREATE INDEX IF NOT EXISTS idx_rewards_project_captured_reward ON reward_snapshots(project_id, captured_at, reward_id)',
+    'CREATE INDEX IF NOT EXISTS idx_crawler_errors_project_time ON crawler_errors(project_id, occurred_at, id)',
+    'CREATE INDEX IF NOT EXISTS idx_collaborators_project_key ON project_collaborators(project_id, collaborator_key)',
+  ];
+  for (const sql of indexes) {
+    try { db.exec(sql); } catch { /* table may not exist yet during first boot */ }
+  }
 }
 
 export type DataWorkbenchFilter =
@@ -1819,94 +1847,128 @@ export function getDataWorkbenchProjects(options: {
   limit?: number;
   offset?: number;
 } = {}) {
-  const db = getDB();
   const filter = options.filter ?? 'all';
   const limit = Math.max(1, Math.min(options.limit ?? 25, 100));
   const offset = Math.max(0, options.offset ?? 0);
+  const normalizedQuery = options.query?.trim() ?? '';
+  const cacheKey = JSON.stringify({ filter, query: normalizedQuery, limit, offset });
+  const cacheNow = Date.now();
+  const cached = dataWorkbenchCache.get(cacheKey);
+  if (cached && cached.expiresAt > cacheNow) return cached.value;
+
+  const db = getDB();
   const params: Record<string, string | number> = { limit, offset };
   const where: string[] = [];
 
-  if (options.query?.trim()) {
-    params.query = `%${options.query.trim()}%`;
+  if (normalizedQuery) {
+    params.query = `%${normalizedQuery}%`;
     where.push('(p.name LIKE @query OR p.id LIKE @query OR p.creator_slug LIKE @query OR p.slug LIKE @query)');
   }
 
-  if (filter === 'missing_rewards') where.push('COALESCE(r.reward_count, 0) = 0');
-  if (filter === 'missing_collaborators') where.push('COALESCE(c.collaborator_count, 0) = 0');
-  if (filter === 'missing_snapshots') where.push('COALESCE(s.snapshot_count, 0) = 0');
+  if (filter === 'missing_rewards') where.push('NOT EXISTS (SELECT 1 FROM reward_snapshots rr WHERE rr.project_id = p.id)');
+  if (filter === 'missing_collaborators') where.push('NOT EXISTS (SELECT 1 FROM project_collaborators pc WHERE pc.project_id = p.id)');
+  if (filter === 'missing_snapshots') where.push('NOT EXISTS (SELECT 1 FROM project_snapshots ps WHERE ps.project_id = p.id)');
   if (filter === 'webrobots_only') where.push("COALESCE(p.data_source, '') = 'webrobots'");
   if (filter === 'kicktraq_available') where.push('(p.creator_slug IS NOT NULL AND p.creator_slug != "" AND p.slug IS NOT NULL AND p.slug != "")');
-  if (filter === 'recent_errors') where.push('e.last_error_at IS NOT NULL');
+  if (filter === 'recent_errors') where.push('EXISTS (SELECT 1 FROM crawler_errors ce WHERE ce.project_id = p.id)');
 
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
-  const base = `
-    FROM projects p
-    LEFT JOIN (
-      SELECT project_id, COUNT(*) as snapshot_count, MAX(captured_at) as latest_snapshot_at
-      FROM project_snapshots
-      GROUP BY project_id
-    ) s ON s.project_id = p.id
-    LEFT JOIN (
-      SELECT project_id, COUNT(DISTINCT reward_id) as reward_count
-      FROM reward_snapshots
-      WHERE captured_at = (
-        SELECT MAX(rs2.captured_at)
-        FROM reward_snapshots rs2
-        WHERE rs2.project_id = reward_snapshots.project_id
-      )
-      GROUP BY project_id
-    ) r ON r.project_id = p.id
-    LEFT JOIN (
-      SELECT project_id, COUNT(*) as collaborator_count
-      FROM project_collaborators
-      GROUP BY project_id
-    ) c ON c.project_id = p.id
-    LEFT JOIN (
-      SELECT ce.project_id, MAX(ce.occurred_at) as last_error_at,
-             (
-               SELECT ce2.message
-               FROM crawler_errors ce2
-               WHERE ce2.project_id = ce.project_id
-               ORDER BY ce2.occurred_at DESC, ce2.id DESC
-               LIMIT 1
-             ) as last_error
-      FROM crawler_errors ce
-      WHERE ce.project_id IS NOT NULL
-      GROUP BY ce.project_id
-    ) e ON e.project_id = p.id
-    ${whereSql}
-  `;
 
   const rows = db.prepare(`
+    WITH selected AS (
+      SELECT
+        p.id,
+        p.name,
+        p.state,
+        p.data_source,
+        p.source_url,
+        p.creator_slug,
+        p.slug,
+        p.image_thumb_url,
+        p.image_url,
+        p.usd_pledged,
+        p.backers_count,
+        p.launched_at,
+        p.deadline,
+        p.ks_live_synced_at,
+        p.first_seen_at,
+        (
+          SELECT MAX(ps.captured_at)
+          FROM project_snapshots ps
+          WHERE ps.project_id = p.id
+        ) as latest_snapshot_at,
+        (
+          SELECT ce.occurred_at
+          FROM crawler_errors ce
+          WHERE ce.project_id = p.id
+          ORDER BY ce.occurred_at DESC, ce.id DESC
+          LIMIT 1
+        ) as last_error_at
+      FROM projects p
+      ${whereSql}
+    )
     SELECT
-      p.id,
-      p.name,
-      p.state,
-      p.data_source,
-      p.source_url,
-      p.creator_slug,
-      p.slug,
-      p.image_thumb_url,
-      p.image_url,
-      p.usd_pledged,
-      p.backers_count,
-      p.launched_at,
-      p.deadline,
-      COALESCE(s.latest_snapshot_at, NULL) as latest_snapshot_at,
-      COALESCE(s.snapshot_count, 0) as snapshot_count,
-      COALESCE(r.reward_count, 0) as reward_count,
-      COALESCE(c.collaborator_count, 0) as collaborator_count,
-      e.last_error_at,
-      e.last_error
-    ${base}
+      s.id,
+      s.name,
+      s.state,
+      s.data_source,
+      s.source_url,
+      s.creator_slug,
+      s.slug,
+      s.image_thumb_url,
+      s.image_url,
+      s.usd_pledged,
+      s.backers_count,
+      s.launched_at,
+      s.deadline,
+      s.latest_snapshot_at,
+      (
+        SELECT COUNT(*)
+        FROM project_snapshots ps
+        WHERE ps.project_id = s.id
+      ) as snapshot_count,
+      (
+        SELECT COUNT(DISTINCT rs.reward_id)
+        FROM reward_snapshots rs
+        WHERE rs.project_id = s.id
+          AND rs.captured_at = (
+            SELECT MAX(rs2.captured_at)
+            FROM reward_snapshots rs2
+            WHERE rs2.project_id = s.id
+          )
+      ) as reward_count,
+      (
+        SELECT COUNT(*)
+        FROM project_collaborators pc
+        WHERE pc.project_id = s.id
+      ) as collaborator_count,
+      s.last_error_at,
+      (
+        SELECT ce.message
+        FROM crawler_errors ce
+        WHERE ce.project_id = s.id
+        ORDER BY ce.occurred_at DESC, ce.id DESC
+        LIMIT 1
+      ) as last_error
+    FROM selected s
     ORDER BY
-      CASE WHEN p.state = 'live' THEN 0 ELSE 1 END,
-      COALESCE(e.last_error_at, s.latest_snapshot_at, p.ks_live_synced_at, p.first_seen_at, p.launched_at, 0) DESC
+      CASE WHEN s.state = 'live' THEN 0 ELSE 1 END,
+      COALESCE(s.last_error_at, s.latest_snapshot_at, s.ks_live_synced_at, s.first_seen_at, s.launched_at, 0) DESC
     LIMIT @limit OFFSET @offset
   `).all(params) as DataWorkbenchProject[];
 
-  const total = db.prepare(`SELECT COUNT(*) as c ${base}`).get(params) as { c: number };
-  return { rows, total: Number(total.c ?? 0), limit, offset, filter };
+  const total = db.prepare(`
+    SELECT COUNT(*) as c
+    FROM projects p
+    ${whereSql}
+  `).get(params) as { c: number };
+  const value = { rows, total: Number(total.c ?? 0), limit, offset, filter };
+  dataWorkbenchCache.set(cacheKey, { expiresAt: cacheNow + 30_000, value });
+  if (dataWorkbenchCache.size > 50) {
+    const firstKey = dataWorkbenchCache.keys().next().value;
+    if (firstKey) dataWorkbenchCache.delete(firstKey);
+  }
+  return value;
 }
 
 export async function getMeta(): Promise<{

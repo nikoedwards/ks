@@ -179,6 +179,12 @@ function stripTags(value: string) {
   return value.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
+function normalizeArray<T>(value: unknown): T[] {
+  if (Array.isArray(value)) return value as T[];
+  if (isRecord(value)) return Object.values(value).filter(isRecord) as T[];
+  return [];
+}
+
 const SERVICE_AGENCY_PATTERNS = [
   { pattern: /longham/i, label: 'Longham - Crowdfunding Expert' },
   { pattern: /global\s*one\s*click|goc/i, label: 'Global OneClick' },
@@ -193,8 +199,8 @@ function detectServiceAgency(name: string, role?: string | null) {
 
 function normalizeCollaborators(projectId: string, p: KSProject, now: number): ProjectCollaborator[] {
   const raw = [
-    ...((p.collaborators ?? []) as KSCollaborator[]),
-    ...((p.project_collaborators ?? []) as KSCollaborator[]),
+    ...normalizeArray<KSCollaborator>(p.collaborators),
+    ...normalizeArray<KSCollaborator>(p.project_collaborators),
   ];
   const rows = new Map<string, ProjectCollaborator>();
   for (const c of raw) {
@@ -221,7 +227,7 @@ function normalizeCollaborators(projectId: string, p: KSProject, now: number): P
 }
 
 function normalizeRewards(p: KSProject): RewardSnapshot[] {
-  return (p.rewards ?? [])
+  return normalizeArray<KSReward>(p.rewards)
     .map((r, index) => {
       const amount = parseNum(r.minimum ?? r.amount ?? r.pledge_amount ?? r.converted_minimum);
       const rewardId = r.id ?? r.reward_id ?? `${amount}-${index}`;

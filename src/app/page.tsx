@@ -326,6 +326,13 @@ export default function LandingPage() {
     }
   };
 
+  const openProjectFromSuggestion = (id: string) => {
+    if (!id) return;
+    window.open(`/projects/${encodeURIComponent(id)}`, '_blank', 'noopener,noreferrer');
+    setShowSuggestions(false);
+    setNavSearch('');
+  };
+
   useEffect(() => {
     const handler = (e: MouseEvent) => {
       if (suggestRef.current && !suggestRef.current.contains(e.target as Node)) {
@@ -470,7 +477,8 @@ export default function LandingPage() {
                     <button
                       key={s.id}
                       className="w-full px-4 py-2.5 text-left hover:bg-gray-50 transition-colors flex items-center gap-3 border-b border-gray-50 last:border-0"
-                      onClick={() => { router.push(`/projects/${s.id}`); setShowSuggestions(false); setNavSearch(''); }}
+                      onMouseDown={e => e.preventDefault()}
+                      onClick={() => openProjectFromSuggestion(s.id)}
                     >
                       <span className="h-10 w-16 shrink-0 overflow-hidden rounded-md bg-gray-100">
                         {(s.image_thumb_url || s.image_url) ? (
@@ -495,7 +503,12 @@ export default function LandingPage() {
                       {defaultSuggestions.latestMonth.slice(0, 5).map(s => {
                         const img = s.image_thumb_url || s.image_url;
                         return (
-                          <button key={s.id} className="flex w-full items-center gap-3 px-4 py-2 text-left hover:bg-gray-50" onClick={() => { router.push(`/projects/${s.id}`); setShowSuggestions(false); }}>
+                          <button
+                            key={s.id}
+                            className="flex w-full items-center gap-3 px-4 py-2 text-left hover:bg-gray-50"
+                            onMouseDown={e => e.preventDefault()}
+                            onClick={() => openProjectFromSuggestion(s.id)}
+                          >
                             <span className="h-10 w-16 shrink-0 overflow-hidden rounded-md bg-gray-100">
                               {img ? <img src={img} alt="" className="h-full w-full object-cover" loading="lazy" referrerPolicy="no-referrer" /> : null}
                             </span>

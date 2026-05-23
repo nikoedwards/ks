@@ -964,7 +964,7 @@ async function tryBrowserContextJson(context, page, targetUrl, timeoutMs, input)
     status: response.status(),
     contentType: contentTypeFromHeaders(response.headers()),
     finalUrl: targetUrl,
-    body: findBestProject(parsed) || parsed,
+    body: isKickstarterProjectUrl(targetUrl) ? findBestProject(parsed) || parsed : parsed,
   };
 }
 
@@ -1013,6 +1013,12 @@ async function fetchWithBrowser(input) {
         const result = await tryBrowserContextJson(context, page, targetUrl, timeoutMs, input);
         if (result.ok) {
           requestJsonResult = result;
+          if (!isKickstarterProjectUrl(targetUrl)) {
+            return {
+              ...result,
+              elapsedMs: Date.now() - startedAt,
+            };
+          }
           if (isObject(result.body) && isProject(result.body) && hasProjectDetails(result.body)) {
             return {
               ...result,
@@ -1074,7 +1080,7 @@ async function fetchWithBrowser(input) {
       } catch {
         // KS redirects .json URLs to the HTML project page in a browser context.
         // Extract embedded project data from Next.js and other JSON script tags.
-        body = await page.evaluate(() => {
+        body = isKickstarterProjectUrl(targetUrl) ? await page.evaluate(() => {
           const isObject = value => typeof value === 'object' && value !== null;
           const isProject = value => isObject(value)
             && (value.id !== undefined || typeof value.name === 'string')
@@ -1141,14 +1147,19 @@ async function fetchWithBrowser(input) {
             }
           }
           return findBest(roots);
-        });
+        }) : null;
         const settledPayloads = await Promise.allSettled(jsonResponsePromises);
         const responsePayloads = settledPayloads
           .filter(result => result.status === 'fulfilled' && result.value)
           .map(result => result.value);
-        const responseProject = findBestProject(responsePayloads);
-        if (responseProject && (!body || projectScore(responseProject) > projectScore(body))) {
-          body = responseProject;
+        if (isKickstarterProjectUrl(targetUrl)) {
+          const responseProject = findBestProject(responsePayloads);
+          if (responseProject && (!body || projectScore(responseProject) > projectScore(body))) {
+            body = responseProject;
+          }
+        } else {
+          const discoverPayload = responsePayloads.find(payload => isObject(payload) && Array.isArray(payload.projects));
+          if (discoverPayload) body = discoverPayload;
         }
         if (!body) {
           const statusDetail = status >= 400 ? `HTTP ${status}` : 'response is not JSON';
@@ -1159,8 +1170,8 @@ async function fetchWithBrowser(input) {
         }
       }
       try {
-        renderedDetails = await extractRenderedDetails(page);
         if (isKickstarterProjectUrl(targetUrl)) {
+          renderedDetails = await extractRenderedDetails(page);
           renderedDetails = mergeDetailObjects(
             renderedDetails,
             await extractProjectTabDetails(page, targetUrl, timeoutMs, input),
@@ -1169,13 +1180,15 @@ async function fetchWithBrowser(input) {
       } catch {
         renderedDetails = null;
       }
-      const requestProject = findBestProject(requestJsonResult?.body);
-      const pageProject = mergeRenderedDetails(findBestProject(body) || body, renderedDetails);
-      const requestProjectWithRenderedDetails = mergeRenderedDetails(requestProject, renderedDetails);
-      if (requestProjectWithRenderedDetails && (!pageProject || projectScore(requestProjectWithRenderedDetails) > projectScore(pageProject))) {
-        body = requestProjectWithRenderedDetails;
-      } else {
-        body = pageProject;
+      if (isKickstarterProjectUrl(targetUrl)) {
+        const requestProject = findBestProject(requestJsonResult?.body);
+        const pageProject = mergeRenderedDetails(findBestProject(body) || body, renderedDetails);
+        const requestProjectWithRenderedDetails = mergeRenderedDetails(requestProject, renderedDetails);
+        if (requestProjectWithRenderedDetails && (!pageProject || projectScore(requestProjectWithRenderedDetails) > projectScore(pageProject))) {
+          body = requestProjectWithRenderedDetails;
+        } else {
+          body = pageProject;
+        }
       }
       return {
         ok: status >= 200 && status < 400,
