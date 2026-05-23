@@ -72,19 +72,19 @@ export async function POST(req: NextRequest) {
   } | null;
   if (!project) return NextResponse.json({ ok: false, error: 'Project not found' }, { status: 404 });
 
-  if (body.action === 'kickstarter_sync') {
+  if (body.action === 'kickstarter_basic_sync' || body.action === 'kickstarter_sync') {
     const jsonUrl = buildProjectJsonUrl(project);
     if (!jsonUrl) return NextResponse.json({ ok: false, error: 'No valid Kickstarter URL for this project' }, { status: 422 });
 
     const result = await scrapeAndStore(projectId, jsonUrl, {
-      track_rewards: 1,
+      track_rewards: 0,
       track_comments: 1,
       track_text_diff: 1,
       manual: true,
       allowKicktraqSummaryFallback: false,
     });
     const pageUrl = jsonUrl.replace(/\.json(?:[?#].*)?$/, '');
-    const recentErrors = result.full ? [] : getRecentCrawlerErrors({ projectId, urls: [jsonUrl, pageUrl], limit: 4 });
+    const recentErrors = result.ok ? [] : getRecentCrawlerErrors({ projectId, urls: [jsonUrl, pageUrl], limit: 4 });
     return NextResponse.json({
       ok: result.ok,
       action: body.action,
@@ -92,7 +92,7 @@ export async function POST(req: NextRequest) {
       full: result.full,
       rewardCount: result.rewardCount,
       collaboratorCount: result.collaboratorCount,
-      message: result.message,
+      message: result.ok ? (result.message ?? 'Synced Kickstarter basic project fields.') : result.message,
       recentErrors,
     }, { status: result.ok ? 200 : 502 });
   }

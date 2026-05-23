@@ -204,10 +204,10 @@ export default function DataQualityPage() {
   const [workbench, setWorkbench] = useState<WorkbenchPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [workbenchLoading, setWorkbenchLoading] = useState(false);
-  const [workbenchFilter, setWorkbenchFilter] = useState('missing_collaborators');
+  const [workbenchFilter, setWorkbenchFilter] = useState('all');
   const [workbenchQuery, setWorkbenchQuery] = useState('');
   const [actionMessage, setActionMessage] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
-  const runningAction = null;
+  const [runningAction, setRunningAction] = useState<string | null>(null);
 
   const cn = lang === 'cn';
 
@@ -253,6 +253,33 @@ export default function DataQualityPage() {
   const runWorkbenchAction = (projectId: string, action: 'kickstarter_sync' | 'kicktraq_import') => {
     const debugAction = action === 'kickstarter_sync' ? 'official' : 'kicktraq';
     window.location.href = `/data-quality/debug?projectId=${encodeURIComponent(projectId)}&action=${debugAction}`;
+  };
+
+  const runWorkbenchRequest = async (projectId: string, action: 'kickstarter_basic_sync') => {
+    const actionKey = `${action}:${projectId}`;
+    setRunningAction(actionKey);
+    setActionMessage(null);
+    try {
+      const res = await fetch('/api/data-quality/workbench', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId, action }),
+      });
+      const data = await res.json().catch(() => ({})) as { ok?: boolean; message?: string; error?: string; source?: string };
+      if (!res.ok || !data.ok) {
+        setActionMessage({ kind: 'error', text: data.error ?? data.message ?? 'Action failed.' });
+      } else {
+        setActionMessage({
+          kind: 'success',
+          text: `${data.message ?? 'Basic Kickstarter fields updated.'}${data.source ? ` | source=${data.source}` : ''}`,
+        });
+        await Promise.all([load(), loadWorkbench(workbenchFilter, workbenchQuery)]);
+      }
+    } catch {
+      setActionMessage({ kind: 'error', text: 'Network error while running action.' });
+    } finally {
+      setRunningAction(null);
+    }
   };
 
   if (!report) {
@@ -434,6 +461,7 @@ export default function DataQualityPage() {
             </thead>
             <tbody className="divide-y divide-gray-50">
               {(workbench?.rows ?? []).map(project => {
+                const runningBasic = runningAction === `kickstarter_basic_sync:${project.id}`;
                 const runningKs = false;
                 const runningKt = false;
                 return (
@@ -476,6 +504,14 @@ export default function DataQualityPage() {
                     </td>
                     <td className="px-5 py-4">
                       <div className="flex justify-end gap-2">
+                        <button
+                          onClick={() => runWorkbenchRequest(project.id, 'kickstarter_basic_sync')}
+                          disabled={!!runningAction}
+                          className="inline-flex items-center gap-1.5 rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-xs font-bold text-green-700 hover:bg-green-100 disabled:opacity-50"
+                        >
+                          <CheckCircle2 className={`h-3.5 w-3.5 ${runningBasic ? 'animate-pulse' : ''}`} />
+                          {cn ? '更新基础' : 'Basic'}
+                        </button>
                         <button
                           onClick={() => runWorkbenchAction(project.id, 'kickstarter_sync')}
                           disabled={!!runningAction}

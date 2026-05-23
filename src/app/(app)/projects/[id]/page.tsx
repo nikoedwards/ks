@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
   ArrowLeft, ExternalLink, TrendingUp, Calendar, Award, Heart,
-  Activity, Gift, FileText, Layers, RefreshCw, Radio, Users,
+  Activity, FileText, Layers, RefreshCw, Radio,
 } from 'lucide-react';
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -345,9 +345,7 @@ export default function ProjectDetailPage() {
   const TABS = [
     { id: 'overview' as TabId, label: tr.tabOverview, icon: Activity },
     { id: 'curve' as TabId, label: tr.tabCurve, icon: TrendingUp },
-    { id: 'rewards' as TabId, label: tr.tabRewards, icon: Gift },
     { id: 'changes' as TabId, label: tr.tabChanges, icon: FileText },
-    { id: 'collaborators' as TabId, label: lang === 'cn' ? '合作者' : 'Collaborators', icon: Users },
     { id: 'similar' as TabId, label: tr.tabSimilar, icon: Layers },
   ];
 
@@ -475,7 +473,7 @@ export default function ProjectDetailPage() {
       setTracking(prev => prev ? { ...prev, is_tracking: 0 } : null);
     } else {
       await fetch('/api/track', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ projectId: id }) });
-      setTracking(prev => prev ? { ...prev, is_tracking: 1 } : { is_tracking: 1, track_rewards: 1, track_comments: 0, analyze_comments: 0, track_text_diff: 1, priority: 1, last_fetched: null });
+      setTracking(prev => prev ? { ...prev, is_tracking: 1 } : { is_tracking: 1, track_rewards: 0, track_comments: 0, analyze_comments: 0, track_text_diff: 1, priority: 1, last_fetched: null });
     }
     await loadTracking();
     setTrackLoading(false);
@@ -496,27 +494,16 @@ export default function ProjectDetailPage() {
     try {
       const res = await fetch(`/api/track/${id}`, { method: 'POST' });
       const data = await res.json().catch(() => ({})) as SyncResultPayload;
-      const rewardCount = data.rewardCount ?? 0;
-      const collaboratorCount = data.collaboratorCount ?? 0;
       const recentDetail = data.recentErrors?.map(e => e.message).filter(Boolean).slice(0, 2).join(' | ');
       const detail = data.detail ?? recentDetail ?? data.message ?? data.error ?? null;
       if (!res.ok || !data.ok) {
         const text = detail ?? 'Sync failed';
         setSyncError(text);
         setSyncNotice({ kind: 'error', text });
-      } else if (!data.full || rewardCount === 0 || collaboratorCount === 0) {
-        const text = [
-          data.message ?? 'Sync completed, but detail data is incomplete.',
-          `source=${data.source ?? 'unknown'}`,
-          `rewards=${rewardCount}`,
-          `collaborators=${collaboratorCount}`,
-          detail ? `detail=${detail}` : null,
-        ].filter(Boolean).join(' | ');
-        setSyncNotice({ kind: 'warning', text });
       } else {
         setSyncNotice({
           kind: 'success',
-          text: `Full sync complete. rewards=${rewardCount}, collaborators=${collaboratorCount}.`,
+          text: data.message ?? 'Synced latest Kickstarter basic fields.',
         });
       }
       await new Promise(r => setTimeout(r, 500));

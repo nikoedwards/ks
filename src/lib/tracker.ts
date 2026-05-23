@@ -89,7 +89,7 @@ async function scrapeDueProjects() {
     if (!due.length) return;
 
     console.log(`[tracker] scraping ${due.length} due project(s)`);
-    for (const { project_id, track_rewards, track_comments, track_text_diff } of due) {
+    for (const { project_id, track_comments, track_text_diff } of due) {
       const project = await getProjectById(project_id) as { source_url?: string; creator_slug?: string; slug?: string } | null;
       if (!project) continue;
 
@@ -107,7 +107,7 @@ async function scrapeDueProjects() {
         continue;
       }
 
-      const result = await scrapeAndStore(project_id, jsonUrl, { track_rewards, track_comments, track_text_diff });
+      const result = await scrapeAndStore(project_id, jsonUrl, { track_rewards: 0, track_comments, track_text_diff });
       if (!result.ok) {
         console.warn(`[tracker] Scrape failed for ${project_id}, will retry in 30min`);
         const pageUrl = jsonUrl.replace(/\.json(?:[?#].*)?$/, '');
@@ -121,9 +121,6 @@ async function scrapeDueProjects() {
             ? `Kickstarter project sync failed: ${recentDetail}`
             : 'Kickstarter project JSON scrape failed.',
         });
-        upsertTrackingSettings({ project_id, next_fetch: Math.floor(Date.now() / 1000) + 30 * 60 });
-      } else if (!result.full && (track_rewards || track_text_diff)) {
-        console.warn(`[tracker] Basic fallback sync for ${project_id}; retrying detail enrichment in 30min`);
         upsertTrackingSettings({ project_id, next_fetch: Math.floor(Date.now() / 1000) + 30 * 60 });
       }
 

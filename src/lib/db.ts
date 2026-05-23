@@ -1236,6 +1236,9 @@ export function updateProjectLiveMetadata(projectId: string, data: {
   name?: string | null;
   blurb?: string | null;
   state?: string | null;
+  created_at?: number | null;
+  launched_at?: number | null;
+  deadline?: number | null;
   goal_usd?: number | null;
   pledged_usd?: number | null;
   backers_count?: number | null;
@@ -1250,6 +1253,9 @@ export function updateProjectLiveMetadata(projectId: string, data: {
       name = COALESCE(@name, name),
       blurb = COALESCE(@blurb, blurb),
       state = COALESCE(@state, state),
+      created_at = COALESCE(@created_at, created_at),
+      launched_at = COALESCE(@launched_at, launched_at),
+      deadline = COALESCE(@deadline, deadline),
       goal = CASE WHEN @goal_usd IS NOT NULL THEN @goal_usd ELSE goal END,
       usd_pledged = CASE WHEN @pledged_usd IS NOT NULL THEN @pledged_usd ELSE usd_pledged END,
       backers_count = CASE WHEN @backers_count IS NOT NULL THEN @backers_count ELSE backers_count END,
@@ -1265,6 +1271,9 @@ export function updateProjectLiveMetadata(projectId: string, data: {
     name: data.name ?? null,
     blurb: data.blurb ?? null,
     state: data.state ?? null,
+    created_at: data.created_at ?? null,
+    launched_at: data.launched_at ?? null,
+    deadline: data.deadline ?? null,
     goal_usd: data.goal_usd ?? null,
     pledged_usd: data.pledged_usd ?? null,
     backers_count: data.backers_count ?? null,
@@ -2290,7 +2299,7 @@ export function upsertTrackingSettings(settings: Partial<TrackingSettings> & { p
     `).run({
       project_id: settings.project_id,
       is_tracking: settings.is_tracking ?? 1,
-      track_rewards: settings.track_rewards ?? 1,
+      track_rewards: settings.track_rewards ?? 0,
       track_comments: settings.track_comments ?? 0,
       analyze_comments: settings.analyze_comments ?? 0,
       track_text_diff: settings.track_text_diff ?? 1,
@@ -2327,7 +2336,7 @@ export function upsertUserProjectSubscription(
     user_id: userId,
     project_id: projectId,
     is_tracking: settings.is_tracking ?? existing?.is_tracking ?? 1,
-    track_rewards: settings.track_rewards ?? existing?.track_rewards ?? 1,
+    track_rewards: settings.track_rewards ?? existing?.track_rewards ?? 0,
     track_comments: settings.track_comments ?? existing?.track_comments ?? 0,
     analyze_comments: settings.analyze_comments ?? existing?.analyze_comments ?? 0,
     track_text_diff: settings.track_text_diff ?? existing?.track_text_diff ?? 1,
@@ -2394,7 +2403,7 @@ export function syncTrackingSettingsFromSubscriptions(projectId: string) {
   upsertTrackingSettings({
     project_id: projectId,
     is_tracking: 1,
-    track_rewards: aggregate.track_rewards ?? 1,
+    track_rewards: aggregate.track_rewards ?? 0,
     track_comments: aggregate.track_comments ?? 0,
     analyze_comments: aggregate.analyze_comments ?? 0,
     track_text_diff: aggregate.track_text_diff ?? 1,
@@ -2495,12 +2504,12 @@ export function autoTrackLiveProjects(limit = 250): { inserted: number; reactiva
       (project_id, is_tracking, track_rewards, track_comments, analyze_comments, track_text_diff,
        priority, subscriber_count, priority_score, next_fetch)
     VALUES
-      (@project_id, 1, 1, 1, 0, 1, 1, 0, 1, @next_fetch)
+      (@project_id, 1, 0, 1, 0, 1, 1, 0, 1, @next_fetch)
   `);
   const reactivate = db.prepare(`
     UPDATE tracking_settings
     SET is_tracking = 1,
-        track_rewards = 1,
+        track_rewards = 0,
         track_comments = 1,
         track_text_diff = 1,
         priority = MAX(priority, 1),

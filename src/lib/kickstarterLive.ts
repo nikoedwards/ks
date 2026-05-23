@@ -278,7 +278,10 @@ async function fetchDiscoverPage(page: number, opts: Required<Pick<LiveSyncOptio
   const res = await fetch(url, {
     headers: {
       'Accept': 'application/json, text/plain, */*',
-      'User-Agent': 'Mozilla/5.0 (compatible; KicksonarBot/0.1; +https://kicksonar.local)',
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Referer': 'https://www.kickstarter.com/discover/advanced?sort=newest',
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+      'X-Requested-With': 'XMLHttpRequest',
     },
     signal: AbortSignal.timeout(20_000),
     cache: 'no-store',

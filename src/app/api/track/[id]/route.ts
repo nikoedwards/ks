@@ -83,15 +83,14 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
   if (!jsonUrl) return NextResponse.json({ error: 'No valid KS URL for this project' }, { status: 422 });
 
   const result = await scrapeAndStore(id, jsonUrl, {
-    track_rewards: 1,
+    track_rewards: 0,
     track_comments: 1,
     track_text_diff: 1,
     manual: true,
     allowKicktraqSummaryFallback: false,
   });
   const pageUrl = jsonUrl.replace(/\.json(?:[?#].*)?$/, '');
-  const hasExpectedDetails = result.rewardCount > 0 && result.collaboratorCount > 0;
-  const recentErrors = result.ok && result.full && hasExpectedDetails ? [] : getRecentCrawlerErrors({
+  const recentErrors = result.ok ? [] : getRecentCrawlerErrors({
     projectId: id,
     urls: [jsonUrl, pageUrl],
     limit: 4,
@@ -111,11 +110,7 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
     rewardCount: result.rewardCount,
     collaboratorCount: result.collaboratorCount,
     message: result.ok
-      ? result.full
-        ? 'Synced from Kickstarter.'
-        : result.source === 'ks_project_json'
-          ? 'Synced from Kickstarter, but detail data is incomplete.'
-          : 'Synced basic project fields only.'
+      ? result.message ?? 'Synced latest Kickstarter basic fields.'
       : 'Kickstarter project sync failed.',
     detail: latestDetail ?? null,
     recentErrors,

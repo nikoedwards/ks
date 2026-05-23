@@ -64,6 +64,8 @@ interface KSProject {
   backer_count?: number;
   comments_count?: number;
   updates_count?: number;
+  created_at?: number;
+  launched_at?: number;
   deadline?: number;
   rewards?: KSReward[];
   creator?: { name?: string; slug?: string; urls?: { web?: { user?: string } } };
@@ -833,6 +835,9 @@ export async function scrapeAndStore(projectId: string, jsonUrl: string, opts: S
     name: p.name,
     blurb: p.blurb ?? null,
     state: projectState,
+    created_at: typeof p.created_at === 'number' ? p.created_at : null,
+    launched_at: typeof p.launched_at === 'number' ? p.launched_at : null,
+    deadline: typeof p.deadline === 'number' ? p.deadline : null,
     goal_usd: goalUsd > 0 ? goalUsd : existing?.goal ?? null,
     pledged_usd: safePledgedUsd > 0 ? safePledgedUsd : null,
     backers_count: safeBackers > 0 ? safeBackers : null,
@@ -847,7 +852,9 @@ export async function scrapeAndStore(projectId: string, jsonUrl: string, opts: S
     insertRewardSnapshots(projectId, now, rewards);
   }
 
-  upsertProjectCollaborators(projectId, collaborators);
+  if (collaborators.length) {
+    upsertProjectCollaborators(projectId, collaborators);
+  }
 
   if (opts.track_rewards && !rewards.length) {
     recordCrawlerError({
@@ -858,16 +865,6 @@ export async function scrapeAndStore(projectId: string, jsonUrl: string, opts: S
       message: 'Kickstarter project JSON did not include reward tiers.',
     });
   }
-  if (!collaborators.length) {
-    recordCrawlerError({
-      source: 'ks_project',
-      job_type: 'project_details',
-      project_id: projectId,
-      url: jsonUrl,
-      message: 'Kickstarter project JSON did not include collaborators.',
-    });
-  }
-
   if (opts.track_text_diff) {
     if (p.name) insertTextIfChanged(projectId, now, 'name', p.name);
     if (p.blurb) insertTextIfChanged(projectId, now, 'blurb', p.blurb);
@@ -884,7 +881,7 @@ export async function scrapeAndStore(projectId: string, jsonUrl: string, opts: S
     collaboratorCount: collaborators.length,
     message: rewards.length || collaborators.length
       ? `Synced full Kickstarter project data. rewards=${rewards.length}, collaborators=${collaborators.length}.`
-      : 'Synced Kickstarter project JSON, but it did not expose rewards or collaborators.',
+      : 'Synced Kickstarter basic project fields.',
   };
 }
 

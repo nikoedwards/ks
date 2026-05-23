@@ -505,19 +505,19 @@ async function runOfficialStep(projectId: string, project: ProjectForDebug, step
   if (step === 'write') {
     try {
       const result = await scrapeAndStore(projectId, jsonUrl, {
-        track_rewards: 1,
+        track_rewards: 0,
         track_comments: 1,
         track_text_diff: 1,
         manual: true,
         allowKicktraqSummaryFallback: false,
       });
-      const recentErrors = result.full ? [] : getRecentCrawlerErrors({ projectId, urls: [jsonUrl, pageUrl], limit: 8 });
-      const ok = result.ok && result.rewardCount > 0 && result.collaboratorCount > 0;
+      const recentErrors = result.ok ? [] : getRecentCrawlerErrors({ projectId, urls: [jsonUrl, pageUrl], limit: 8 });
+      const ok = result.ok;
       return json({
         ok,
         message: ok
-          ? result.message ?? 'Kickstarter sync finished.'
-          : `Kickstarter sync finished but detail data is incomplete. rewards=${result.rewardCount}, collaborators=${result.collaboratorCount}.`,
+          ? result.message ?? 'Kickstarter basic sync finished.'
+          : result.message ?? 'Kickstarter project sync failed.',
         diagnostics: { result, recentErrors },
       }, ok ? 200 : 502);
     } catch (err) {
