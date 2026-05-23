@@ -13,6 +13,11 @@ const STORAGE_STATE_PATH = process.env.BROWSER_STORAGE_STATE_PATH
 const DEBUG_SCREENSHOTS = !/^(0|false|no)$/i.test(process.env.BROWSER_DEBUG_SCREENSHOTS || '1');
 const BLOCK_HEAVY_RESOURCES = /^(1|true|yes)$/i.test(process.env.BROWSER_BLOCK_HEAVY_RESOURCES || '0');
 const CHALLENGE_WAIT_MS = Math.max(3000, Math.min(Number(process.env.BROWSER_CHALLENGE_WAIT_MS || 15_000), 60_000));
+const OXYLABS_USER_AGENT_TYPE = (process.env.OXYLABS_USER_AGENT_TYPE
+  || process.env.BROWSER_OXYLABS_USER_AGENT_TYPE
+  || '').trim();
+const IGNORE_HTTPS_ERRORS = /^(1|true|yes)$/i.test(process.env.BROWSER_PROXY_IGNORE_HTTPS_ERRORS || '')
+  || /^(1|true|yes)$/i.test(process.env.PLAYWRIGHT_IGNORE_HTTPS_ERRORS || '');
 
 const ALLOWED_HOSTS = new Set([
   'www.kickstarter.com',
@@ -52,6 +57,18 @@ function getProxyOptions() {
   const bypass = (process.env.BROWSER_PROXY_BYPASS || process.env.PLAYWRIGHT_PROXY_BYPASS || '').trim();
   if (bypass) proxy.bypass = bypass;
   return proxy;
+}
+
+function contextOptions(base = {}) {
+  const headers = {
+    ...(base.extraHTTPHeaders || {}),
+    ...(OXYLABS_USER_AGENT_TYPE ? { 'x-oxylabs-user-agent-type': OXYLABS_USER_AGENT_TYPE } : {}),
+  };
+  return {
+    ...base,
+    ignoreHTTPSErrors: Boolean(base.ignoreHTTPSErrors || IGNORE_HTTPS_ERRORS),
+    extraHTTPHeaders: headers,
+  };
 }
 
 function launchBrowser() {
@@ -948,7 +965,7 @@ async function fetchProjectDetailDebug(input) {
   let context = null;
   try {
     diagnostics.storageState = await storageStateInfo();
-    context = await newBrowserContext({
+    context = await newBrowserContext(contextOptions({
       locale: 'en-US',
       timezoneId: 'America/Los_Angeles',
       userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
@@ -956,7 +973,7 @@ async function fetchProjectDetailDebug(input) {
       extraHTTPHeaders: {
         'Accept-Language': 'en-US,en;q=0.9',
       },
-    });
+    }));
 
     const page = await newWorkerPage(context, pageTimeoutMs, diagnostics);
 
@@ -1210,7 +1227,7 @@ async function fetchWithBrowser(input) {
   }
   const expect = input.expect === 'html' ? 'html' : 'json';
   const timeoutMs = Math.max(10_000, Math.min(Number(input.timeoutMs || DEFAULT_TIMEOUT), 180_000));
-  const context = await newBrowserContext({
+  const context = await newBrowserContext(contextOptions({
     locale: 'en-US',
     timezoneId: 'America/Los_Angeles',
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
@@ -1218,7 +1235,7 @@ async function fetchWithBrowser(input) {
     extraHTTPHeaders: {
       'Accept-Language': 'en-US,en;q=0.9',
     },
-  });
+  }));
 
   const page = await context.newPage();
   if (BLOCK_HEAVY_RESOURCES) await installResourceGuards(page);
@@ -1466,6 +1483,9 @@ async function handle(req, res) {
       proxyServer: getProxyOptions()?.server || null,
       storageState: await storageStateInfo(),
       debugScreenshots: DEBUG_SCREENSHOTS,
+      blockHeavyResources: BLOCK_HEAVY_RESOURCES,
+      ignoreHTTPSErrors: IGNORE_HTTPS_ERRORS,
+      oxylabsUserAgentType: OXYLABS_USER_AGENT_TYPE || null,
     });
     return;
   }
