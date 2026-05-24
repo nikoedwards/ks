@@ -17,7 +17,6 @@ import {
   scrapeKicktraqDetailed,
   storeKicktraqDays,
 } from '@/lib/scraper';
-import { syncKickstarterLiveProject } from '@/lib/kickstarterLiveManual';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -64,40 +63,11 @@ export async function GET(req: NextRequest) {
 
 async function runKickstarterBasicSync(projectId: string, action: string) {
   const project = await getProjectById(projectId) as {
-    name?: string | null;
     source_url?: string | null;
     creator_slug?: string | null;
     slug?: string | null;
   } | null;
   if (!project) return { response: NextResponse.json({ ok: false, error: 'Project not found' }, { status: 404 }) };
-
-  let liveDiscoverMessage: string | null = null;
-  const liveResult = await syncKickstarterLiveProject({
-    id: projectId,
-    name: project.name,
-    sourceUrl: project.source_url,
-    creatorSlug: project.creator_slug,
-    slug: project.slug,
-  }, {
-    maxPages: Number(process.env.LIVE_DISCOVERY_MANUAL_MAX_PAGES ?? 8),
-    state: 'live',
-  });
-  if (liveResult.ok) {
-    return {
-      payload: {
-        ok: true,
-        action,
-        source: liveResult.source,
-        full: false,
-        rewardCount: 0,
-        collaboratorCount: 0,
-        message: liveResult.message,
-        recentErrors: [],
-      },
-      status: 200,
-    };
-  }
-  liveDiscoverMessage = liveResult.message;
 
   const jsonUrl = buildProjectJsonUrl(project);
   if (!jsonUrl) return { response: NextResponse.json({ ok: false, error: 'No valid Kickstarter URL for this project' }, { status: 422 }) };
@@ -121,7 +91,7 @@ async function runKickstarterBasicSync(projectId: string, action: string) {
       collaboratorCount: result.collaboratorCount,
       message: result.ok
         ? (result.message ?? 'Synced Kickstarter basic project fields.')
-        : [liveDiscoverMessage, result.message].filter(Boolean).join(' | '),
+        : result.message,
       recentErrors,
     },
     status: result.ok ? 200 : 502,
