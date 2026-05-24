@@ -67,7 +67,6 @@ export interface LiveSyncOptions {
   since?: number;
   maxPages?: number;
   state?: 'live' | 'successful' | 'failed' | 'all';
-  term?: string;
 }
 
 export interface LiveSyncResult {
@@ -140,8 +139,6 @@ function normalizeProject(project: KSDiscoverProject, now: number): Record<strin
     category_name: project.category?.name ?? null,
     category_parent: project.category?.parent_name ?? project.category?.name ?? null,
     backers_count: project.backers_count ?? 0,
-    comments_count: project.comments_count ?? 0,
-    updates_count: project.updates_count ?? 0,
     staff_pick: project.staff_pick ? 1 : 0,
     created_at: project.created_at ?? null,
     launched_at: project.launched_at ?? null,
@@ -170,106 +167,6 @@ export async function ingestKickstarterLiveProjects(projects: KSDiscoverProject[
   return storeNormalizedProjects(normalized, now);
 }
 
-export async function syncKickstarterLiveProject(target: {
-  id: string;
-  name?: string | null;
-  sourceUrl?: string | null;
-  creatorSlug?: string | null;
-  slug?: string | null;
-}, options: { maxPages?: number; state?: LiveSyncOptions['state'] } = {}): Promise<{
-  ok: boolean;
-  source: 'ks_live_discover';
-  imported: number;
-  snapshots: number;
-  pages: number;
-  message: string;
-}> {
-  const maxPages = Math.max(1, Math.min(options.maxPages ?? 8, 25));
-  const state = options.state ?? 'live';
-  const now = Math.floor(Date.now() / 1000);
-  const terms = Array.from(new Set([
-    target.name?.trim(),
-    target.slug?.replace(/[-_]+/g, ' ').trim(),
-    target.creatorSlug?.trim(),
-    undefined,
-  ].filter((term): term is string | undefined => term === undefined || term.length > 0)));
-  let pages = 0;
-
-  for (const term of terms) {
-    const pageLimit = term ? Math.min(3, maxPages) : maxPages;
-    for (let page = 1; page <= pageLimit; page++) {
-      pages++;
-      const pageData = await fetchDiscoverPage(page, { state, term });
-      if (pageData.blocked) {
-        return {
-          ok: false,
-          source: 'ks_live_discover',
-          imported: 0,
-          snapshots: 0,
-          pages,
-          message: 'Kickstarter Discover returned a Cloudflare challenge.',
-        };
-      }
-
-      const projects = pageData.body.projects ?? [];
-      const matched = projects.find(project => discoverProjectMatches(project, target));
-      if (matched) {
-        const normalized = normalizeProject(matched, now);
-        if (!normalized) {
-          return {
-            ok: false,
-            source: 'ks_live_discover',
-            imported: 0,
-            snapshots: 0,
-            pages,
-            message: 'Matched Kickstarter Discover project but could not normalize it.',
-          };
-        }
-        const stored = await storeNormalizedProjects([normalized], now);
-        return {
-          ok: stored.imported > 0 || stored.snapshots > 0,
-          source: 'ks_live_discover',
-          imported: stored.imported,
-          snapshots: stored.snapshots,
-          pages,
-          message: 'Synced Kickstarter basic project fields from Discover.',
-        };
-      }
-
-      if (!(pageData.body.has_more_projects ?? pageData.body.has_more)) break;
-      await new Promise(resolve => setTimeout(resolve, 350));
-    }
-  }
-
-  return {
-    ok: false,
-    source: 'ks_live_discover',
-    imported: 0,
-    snapshots: 0,
-    pages,
-    message: 'Project was not found in Kickstarter Discover live results.',
-  };
-}
-
-function normalizeUrl(url: string | null | undefined) {
-  return url?.split('?')[0].replace(/\/+$/, '') ?? null;
-}
-
-function discoverProjectMatches(project: KSDiscoverProject, target: {
-  id: string;
-  sourceUrl?: string | null;
-  creatorSlug?: string | null;
-  slug?: string | null;
-}) {
-  if (String(project.id) === String(target.id)) return true;
-  const sourceUrl = normalizeUrl(target.sourceUrl);
-  const discoveredUrl = normalizeUrl(projectUrl(project));
-  if (sourceUrl && discoveredUrl && sourceUrl === discoveredUrl) return true;
-  const slugMatches = Boolean(target.slug && project.slug === target.slug);
-  const creatorMatches = Boolean(target.creatorSlug && project.creator?.slug === target.creatorSlug);
-  return slugMatches && (!target.creatorSlug || creatorMatches);
-}
-
 async function storeNormalizedProjects(normalized: Record<string, unknown>[], now: number): Promise<{ imported: number; snapshots: number }> {
   if (!normalized.length) return { imported: 0, snapshots: 0 };
   const imported = await upsertProjects(normalized);
@@ -281,8 +178,8 @@ async function storeNormalizedProjects(normalized: Record<string, unknown>[], no
       pledged_usd: Number(row.usd_pledged ?? 0),
       backers_count: Number(row.backers_count ?? 0),
       days_to_go: Number(row.deadline ?? 0) > 0 ? Math.max(0, Math.round((Number(row.deadline) - now) / 86400)) : 0,
-      comments_count: Number(row.comments_count ?? 0),
-      updates_count: Number(row.updates_count ?? 0),
+      comments_count: 0,
+      updates_count: 0,
       state: String(row.state ?? 'unknown'),
       source: 'ks_live',
     });
@@ -369,23 +266,19 @@ async function fetchDiscoverViaBrowser(url: string) {
   }
 }
 
-async function fetchDiscoverPage(page: number, opts: Required<Pick<LiveSyncOptions, 'state'>> & Pick<LiveSyncOptions, 'term'>) {
+async function fetchDiscoverPage(page: number, opts: Required<Pick<LiveSyncOptions, 'state'>>) {
   const params = new URLSearchParams({
     sort: 'newest',
     page: String(page),
     format: 'json',
   });
   if (opts.state !== 'all') params.set('state', opts.state);
-  if (opts.term?.trim()) params.set('term', opts.term.trim());
 
   const url = `${DISCOVER_URL}?${params.toString()}`;
   const res = await fetch(url, {
     headers: {
       'Accept': 'application/json, text/plain, */*',
-      'Accept-Language': 'en-US,en;q=0.9',
-      'Referer': 'https://www.kickstarter.com/discover/advanced?sort=newest',
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-      'X-Requested-With': 'XMLHttpRequest',
+      'User-Agent': 'Mozilla/5.0 (compatible; KicksonarBot/0.1; +https://kicksonar.local)',
     },
     signal: AbortSignal.timeout(20_000),
     cache: 'no-store',
@@ -414,7 +307,6 @@ export async function runKickstarterLiveSync(options: LiveSyncOptions = {}): Pro
   const since = options.since ?? Math.floor(Date.now() / 1000) - 30 * 86400;
   const maxPages = Math.max(1, Math.min(options.maxPages ?? 25, 100));
   const state = options.state ?? 'live';
-  const term = options.term?.trim() || undefined;
   const now = Math.floor(Date.now() / 1000);
 
   updateSyncState({
@@ -425,7 +317,7 @@ export async function runKickstarterLiveSync(options: LiveSyncOptions = {}): Pro
     completedAt: null,
     recordsImported: 0,
     error: null,
-    lastUrl: `${DISCOVER_URL}?sort=newest&state=${state}${term ? `&term=${encodeURIComponent(term)}` : ''}`,
+    lastUrl: `${DISCOVER_URL}?sort=newest&state=${state}`,
   });
 
   let logId: number | undefined;
@@ -451,7 +343,7 @@ export async function runKickstarterLiveSync(options: LiveSyncOptions = {}): Pro
         recordsImported: insertedOrUpdated,
       });
 
-      const pageData = await fetchDiscoverPage(page, { state, term });
+      const pageData = await fetchDiscoverPage(page, { state });
       if (pageData.blocked) {
         const message = 'Kickstarter returned a Cloudflare challenge. Use a browser-backed crawler or provide harvested project URLs for this environment.';
         completeCrawlRun(crawlRunId, {
@@ -466,7 +358,7 @@ export async function runKickstarterLiveSync(options: LiveSyncOptions = {}): Pro
         recordCrawlerError({
           source: 'ks_live',
           job_type: `discover:${state}`,
-          url: `${DISCOVER_URL}?sort=newest&state=${state}&page=${page}${term ? `&term=${encodeURIComponent(term)}` : ''}`,
+          url: `${DISCOVER_URL}?sort=newest&state=${state}&page=${page}`,
           status_code: pageData.status,
           message,
         });
@@ -563,7 +455,7 @@ export async function runKickstarterLiveSync(options: LiveSyncOptions = {}): Pro
     recordCrawlerError({
       source: 'ks_live',
       job_type: `discover:${state}`,
-      url: `${DISCOVER_URL}?sort=newest&state=${state}${term ? `&term=${encodeURIComponent(term)}` : ''}`,
+      url: `${DISCOVER_URL}?sort=newest&state=${state}`,
       message,
       context: { since, maxPages, pages },
     });

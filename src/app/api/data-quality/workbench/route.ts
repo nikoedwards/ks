@@ -17,7 +17,7 @@ import {
   scrapeKicktraqDetailed,
   storeKicktraqDays,
 } from '@/lib/scraper';
-import { syncKickstarterLiveProject } from '@/lib/kickstarterLive';
+import { syncKickstarterLiveProject } from '@/lib/kickstarterLiveManual';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
