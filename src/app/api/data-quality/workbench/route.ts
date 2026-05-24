@@ -79,13 +79,18 @@ async function runKickstarterBasicSync(projectId: string, action: string) {
     manual: true,
     allowKicktraqSummaryFallback: false,
     basicOnly: true,
-    allowBrowserFallback: false,
+    allowBrowserFallback: true,
     allowHtmlFallback: false,
     directTimeoutMs: Number(process.env.KICKSTARTER_BASIC_DIRECT_TIMEOUT_MS ?? 60_000),
     directAttempts: Number(process.env.KICKSTARTER_BASIC_DIRECT_ATTEMPTS ?? 2),
   });
   const pageUrl = jsonUrl.replace(/\.json(?:[?#].*)?$/, '');
   const recentErrors = result.ok ? [] : getRecentCrawlerErrors({ projectId, urls: [jsonUrl, pageUrl], limit: 4 });
+  const recentDetail = recentErrors
+    .map(error => error.message)
+    .filter(Boolean)
+    .slice(0, 2)
+    .join(' | ');
   return {
     payload: {
       ok: result.ok,
@@ -96,7 +101,7 @@ async function runKickstarterBasicSync(projectId: string, action: string) {
       collaboratorCount: result.collaboratorCount,
       message: result.ok
         ? (result.message ?? 'Synced Kickstarter basic project fields.')
-        : result.message,
+        : recentDetail || result.message,
       recentErrors,
     },
     status: result.ok ? 200 : 502,

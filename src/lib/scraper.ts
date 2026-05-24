@@ -433,7 +433,7 @@ function workerOk(value: unknown): boolean | null {
   return isRecord(value) && typeof value.ok === 'boolean' ? value.ok : null;
 }
 
-async function fetchViaBrowserProxy(url: string, projectId?: string): Promise<KSProject | null> {
+async function fetchViaBrowserProxy(url: string, projectId?: string, options: { basicOnly?: boolean } = {}): Promise<KSProject | null> {
   const proxyUrl = getOptionalEnv('KICKSTARTER_BROWSER_FETCH_URL');
   if (!proxyUrl) {
     recordCrawlerError({
@@ -458,7 +458,8 @@ async function fetchViaBrowserProxy(url: string, projectId?: string): Promise<KS
       body: JSON.stringify({
         url,
         expect: 'json',
-        mode: url.includes('kickstarter.com/projects/') ? 'project_detail_debug' : undefined,
+        mode: !options.basicOnly && url.includes('kickstarter.com/projects/') ? 'project_detail_debug' : undefined,
+        basicOnly: options.basicOnly,
         pageTimeoutMs: Number(getOptionalEnv('KICKSTARTER_BROWSER_PAGE_TIMEOUT_MS') || 45_000),
         settleMs: 1500,
         scrollSteps: 10,
@@ -604,9 +605,10 @@ export async function scrapeKSJson(
           ? `Kickstarter JSON HTTP ${res.status}.`
           : 'Kickstarter JSON returned a Cloudflare or HTML challenge.',
       });
-      if (options.basicOnly || options.allowBrowserFallback === false) return null;
-      const browserJson = await fetchViaBrowserProxy(jsonUrl, projectId);
+      if (options.allowBrowserFallback === false) return null;
+      const browserJson = await fetchViaBrowserProxy(jsonUrl, projectId, { basicOnly: options.basicOnly });
       if (browserJson) return browserJson;
+      if (options.basicOnly) return null;
       return fetchProjectViaHtmlProxy(pageUrl, projectId);
     }
     const directProject = unwrapKickstarterProject(JSON.parse(text));
@@ -640,10 +642,11 @@ export async function scrapeKSJson(
       await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
       continue;
     }
-    if (options.basicOnly || options.allowBrowserFallback === false) return null;
+    if (options.allowBrowserFallback === false) return null;
     try {
-      const browserJson = await fetchViaBrowserProxy(jsonUrl, projectId);
+      const browserJson = await fetchViaBrowserProxy(jsonUrl, projectId, { basicOnly: options.basicOnly });
       if (browserJson) return browserJson;
+      if (options.basicOnly) return null;
       return fetchProjectViaHtmlProxy(pageUrl, projectId);
     } catch {
       return null;

@@ -1280,6 +1280,12 @@ async function fetchWithBrowser(input) {
               elapsedMs: Date.now() - startedAt,
             };
           }
+          if (input.basicOnly) {
+            return {
+              ...result,
+              elapsedMs: Date.now() - startedAt,
+            };
+          }
           if (isObject(result.body) && isProject(result.body) && hasProjectDetails(result.body)) {
             return {
               ...result,
@@ -1434,7 +1440,7 @@ async function fetchWithBrowser(input) {
         }
       }
       try {
-        if (isKickstarterProjectUrl(targetUrl)) {
+        if (isKickstarterProjectUrl(targetUrl) && !input.basicOnly) {
           renderedDetails = await extractRenderedDetails(page);
           renderedDetails = mergeDetailObjects(
             renderedDetails,
