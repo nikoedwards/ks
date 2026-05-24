@@ -78,6 +78,11 @@ async function runKickstarterBasicSync(projectId: string, action: string) {
     track_text_diff: 1,
     manual: true,
     allowKicktraqSummaryFallback: false,
+    basicOnly: true,
+    allowBrowserFallback: false,
+    allowHtmlFallback: false,
+    directTimeoutMs: Number(process.env.KICKSTARTER_BASIC_DIRECT_TIMEOUT_MS ?? 60_000),
+    directAttempts: Number(process.env.KICKSTARTER_BASIC_DIRECT_ATTEMPTS ?? 2),
   });
   const pageUrl = jsonUrl.replace(/\.json(?:[?#].*)?$/, '');
   const recentErrors = result.ok ? [] : getRecentCrawlerErrors({ projectId, urls: [jsonUrl, pageUrl], limit: 4 });

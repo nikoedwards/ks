@@ -569,8 +569,17 @@ async function fetchHtmlViaBrowserProxy(url: string, projectId?: string): Promis
   }
 }
 
-export async function scrapeKSJson(jsonUrl: string, projectId?: string): Promise<KSProject | null> {
+export async function scrapeKSJson(
+  jsonUrl: string,
+  projectId?: string,
+  options: Pick<ScrapeOptions, 'basicOnly' | 'allowBrowserFallback' | 'directTimeoutMs' | 'directAttempts'> = {},
+): Promise<KSProject | null> {
   const pageUrl = jsonUrl.replace(/\.json(?:[?#].*)?$/, '');
+  const timeoutMs = options.directTimeoutMs ?? Number(getOptionalEnv('KICKSTARTER_DIRECT_TIMEOUT_MS') || 45_000);
+  const attempts = Math.max(1, Math.min(options.directAttempts ?? Number(getOptionalEnv('KICKSTARTER_DIRECT_ATTEMPTS') || 2), 4));
+  let lastError: unknown = null;
+
+  for (let attempt = 1; attempt <= attempts; attempt++) {
   try {
     const res = await fetch(jsonUrl, {
       headers: {
@@ -580,7 +589,7 @@ export async function scrapeKSJson(jsonUrl: string, projectId?: string): Promise
         'Referer': pageUrl,
         'X-Requested-With': 'XMLHttpRequest',
       },
-      signal: AbortSignal.timeout(15_000),
+      signal: AbortSignal.timeout(timeoutMs),
       cache: 'no-store',
     });
     const text = await res.text();
@@ -595,11 +604,13 @@ export async function scrapeKSJson(jsonUrl: string, projectId?: string): Promise
           ? `Kickstarter JSON HTTP ${res.status}.`
           : 'Kickstarter JSON returned a Cloudflare or HTML challenge.',
       });
+      if (options.basicOnly || options.allowBrowserFallback === false) return null;
       const browserJson = await fetchViaBrowserProxy(jsonUrl, projectId);
       if (browserJson) return browserJson;
       return fetchProjectViaHtmlProxy(pageUrl, projectId);
     }
     const directProject = unwrapKickstarterProject(JSON.parse(text));
+    if (options.basicOnly) return directProject;
     if (!directProject || hasProjectDetails(directProject)) return directProject;
 
     recordCrawlerError({
@@ -610,19 +621,26 @@ export async function scrapeKSJson(jsonUrl: string, projectId?: string): Promise
       status_code: res.status,
       message: 'Kickstarter JSON returned only basic project fields; trying browser worker for reward and collaborator details.',
     });
+    if (options.allowBrowserFallback === false) return directProject;
     const browserJson = await fetchViaBrowserProxy(jsonUrl, projectId);
     if (browserJson && projectScore(browserJson) > projectScore(directProject)) return browserJson;
     const browserPageProject = await fetchProjectViaHtmlProxy(pageUrl, projectId);
     if (browserPageProject && projectScore(browserPageProject) > projectScore(directProject)) return browserPageProject;
     return directProject;
   } catch (err) {
+    lastError = err;
     recordCrawlerError({
       source: 'ks_project',
       job_type: 'direct_json',
       project_id: projectId ?? null,
       url: jsonUrl,
-      message: err instanceof Error ? err.message : String(err),
+      message: `${err instanceof Error ? err.message : String(err)}${attempt < attempts ? `; retrying ${attempt}/${attempts}` : ''}`,
     });
+    if (attempt < attempts) {
+      await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+      continue;
+    }
+    if (options.basicOnly || options.allowBrowserFallback === false) return null;
     try {
       const browserJson = await fetchViaBrowserProxy(jsonUrl, projectId);
       if (browserJson) return browserJson;
@@ -631,6 +649,9 @@ export async function scrapeKSJson(jsonUrl: string, projectId?: string): Promise
       return null;
     }
   }
+  }
+  if (lastError) return null;
+  return null;
 }
 
 async function fetchProjectViaHtmlProxy(pageUrl: string, projectId?: string): Promise<KSProject | null> {
@@ -712,6 +733,11 @@ export interface ScrapeOptions {
   track_text_diff?: number;
   manual?: boolean;
   allowKicktraqSummaryFallback?: boolean;
+  basicOnly?: boolean;
+  allowBrowserFallback?: boolean;
+  allowHtmlFallback?: boolean;
+  directTimeoutMs?: number;
+  directAttempts?: number;
 }
 
 export interface ScrapeResult {
@@ -724,7 +750,7 @@ export interface ScrapeResult {
 }
 
 async function scrapeBasicFallback(projectId: string, jsonUrl: string, opts: ScrapeOptions = {}): Promise<ScrapeResult | null> {
-  if (await scrapeKickstarterHtmlFallback(projectId, jsonUrl)) {
+  if (opts.allowHtmlFallback !== false && await scrapeKickstarterHtmlFallback(projectId, jsonUrl)) {
     return {
       ok: true,
       full: false,
@@ -757,7 +783,7 @@ async function scrapeBasicFallback(projectId: string, jsonUrl: string, opts: Scr
 }
 
 export async function scrapeAndStore(projectId: string, jsonUrl: string, opts: ScrapeOptions = {}): Promise<ScrapeResult> {
-  const p = await scrapeKSJson(jsonUrl, projectId);
+  const p = await scrapeKSJson(jsonUrl, projectId, opts);
   if (!p) {
     const fallback = await scrapeBasicFallback(projectId, jsonUrl, opts);
     if (fallback) return fallback;

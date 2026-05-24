@@ -78,6 +78,8 @@ export interface LiveSyncResult {
   message?: string;
 }
 
+let activeLiveSync: Promise<LiveSyncResult> | null = null;
+
 function parseNum(v: number | string | undefined): number {
   if (v === undefined || v === null) return 0;
   return typeof v === 'number' ? v : parseFloat(v) || 0;
@@ -200,6 +202,10 @@ function getOptionalEnv(name: string) {
   return match?.[1]?.trim() ?? '';
 }
 
+function sleep(ms: number) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 async function fetchDiscoverViaBrowser(url: string) {
   const proxyUrl = getOptionalEnv('KICKSTARTER_BROWSER_FETCH_URL');
   if (!proxyUrl) {
@@ -275,34 +281,69 @@ async function fetchDiscoverPage(page: number, opts: Required<Pick<LiveSyncOptio
   if (opts.state !== 'all') params.set('state', opts.state);
 
   const url = `${DISCOVER_URL}?${params.toString()}`;
-  const res = await fetch(url, {
-    headers: {
-      'Accept': 'application/json, text/plain, */*',
-      'User-Agent': 'Mozilla/5.0 (compatible; KicksonarBot/0.1; +https://kicksonar.local)',
-    },
-    signal: AbortSignal.timeout(20_000),
-    cache: 'no-store',
-  });
+  const timeoutMs = Number(getOptionalEnv('LIVE_DISCOVERY_FETCH_TIMEOUT_MS') || 60_000);
+  const attempts = Math.max(1, Math.min(Number(getOptionalEnv('LIVE_DISCOVERY_FETCH_ATTEMPTS') || 2), 4));
+  let lastError: unknown = null;
 
-  const text = await res.text();
-  if (isBlockedHtml(text)) {
-    const body = await fetchDiscoverViaBrowser(url);
-    if (body) return { blocked: false as const, status: 200, body };
-    return { blocked: true as const, status: res.status, body: null };
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      const res = await fetch(url, {
+        headers: {
+          'Accept': 'application/json, text/plain, */*',
+          'User-Agent': 'Mozilla/5.0 (compatible; KicksonarBot/0.1; +https://kicksonar.local)',
+        },
+        signal: AbortSignal.timeout(timeoutMs),
+        cache: 'no-store',
+      });
+
+      const text = await res.text();
+      if (isBlockedHtml(text)) {
+        const body = await fetchDiscoverViaBrowser(url);
+        if (body) return { blocked: false as const, status: 200, body };
+        return { blocked: true as const, status: res.status, body: null };
+      }
+      if (!res.ok) {
+        const body = await fetchDiscoverViaBrowser(url);
+        if (body) return { blocked: false as const, status: 200, body };
+        throw new Error(`Kickstarter discover HTTP ${res.status}`);
+      }
+      try {
+        return { blocked: false as const, status: res.status, body: JSON.parse(text) as DiscoverResponse };
+      } catch (err) {
+        const body = await fetchDiscoverViaBrowser(url);
+        if (body) return { blocked: false as const, status: 200, body };
+        throw err;
+      }
+    } catch (err) {
+      lastError = err;
+      recordCrawlerError({
+        source: 'ks_live',
+        job_type: `discover:${opts.state}:direct`,
+        url,
+        message: `${err instanceof Error ? err.message : String(err)}${attempt < attempts ? `; retrying ${attempt}/${attempts}` : ''}`,
+        context: { page, timeoutMs, attempt, attempts },
+      });
+      if (attempt < attempts) {
+        await sleep(1000 * attempt);
+        continue;
+      }
+    }
   }
-  if (!res.ok) {
-    throw new Error(`Kickstarter discover HTTP ${res.status}`);
-  }
-  try {
-    return { blocked: false as const, status: res.status, body: JSON.parse(text) as DiscoverResponse };
-  } catch (err) {
-    const body = await fetchDiscoverViaBrowser(url);
-    if (body) return { blocked: false as const, status: 200, body };
-    throw err;
-  }
+
+  const body = await fetchDiscoverViaBrowser(url);
+  if (body) return { blocked: false as const, status: 200, body };
+  throw lastError instanceof Error ? lastError : new Error(String(lastError ?? 'Kickstarter discover failed'));
 }
 
 export async function runKickstarterLiveSync(options: LiveSyncOptions = {}): Promise<LiveSyncResult> {
+  if (activeLiveSync) return activeLiveSync;
+  activeLiveSync = runKickstarterLiveSyncInternal(options).finally(() => {
+    activeLiveSync = null;
+  });
+  return activeLiveSync;
+}
+
+async function runKickstarterLiveSyncInternal(options: LiveSyncOptions = {}): Promise<LiveSyncResult> {
   const startedAt = new Date().toISOString();
   const since = options.since ?? Math.floor(Date.now() / 1000) - 30 * 86400;
   const maxPages = Math.max(1, Math.min(options.maxPages ?? 25, 100));
