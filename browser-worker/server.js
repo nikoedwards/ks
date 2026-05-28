@@ -244,6 +244,7 @@ function launchBrowser() {
     browser.on('disconnected', () => {
       if (browserPromise === promise) browserPromise = null;
     });
+    requestsSinceLaunch = 0;
     return browser;
   }).catch(err => {
     if (browserPromise === promise) browserPromise = null;
@@ -260,6 +261,28 @@ async function getBrowser() {
     return getBrowser();
   }
   return browser;
+}
+
+// Periodic browser recycling: chromium's per-process resources (file
+// descriptors, shared memory, zombie subprocess slots) accumulate over many
+// context create/close cycles. Without recycling, after a few hundred
+// requests `spawn chrome-headless-shell EAGAIN` starts firing because the
+// kernel runs out of PIDs / memory. Recycling every N requests closes the
+// browser entirely, freeing those resources, and the next request relaunches.
+const BROWSER_RECYCLE_AFTER_REQUESTS = Math.max(10, Math.min(Number(process.env.BROWSER_RECYCLE_AFTER_REQUESTS || 60), 500));
+let requestsSinceLaunch = 0;
+
+async function onRequestComplete() {
+  requestsSinceLaunch++;
+  if (requestsSinceLaunch >= BROWSER_RECYCLE_AFTER_REQUESTS) {
+    const stale = browserPromise;
+    browserPromise = null;
+    requestsSinceLaunch = 0;
+    try {
+      const b = stale ? await stale : null;
+      if (b && typeof b.close === 'function') await b.close();
+    } catch { /* ignore */ }
+  }
 }
 
 async function newBrowserContext(options) {
@@ -1721,7 +1744,8 @@ async function fetchWithBrowser(input, tracker = null) {
     };
   } finally {
     await saveBrowserStorageState(context).catch(() => {});
-    await context.close();
+    await context.close().catch(() => {});
+    await onRequestComplete().catch(() => {});
   }
 }
 
