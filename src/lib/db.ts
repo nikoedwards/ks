@@ -76,6 +76,28 @@ function ensureRuntimeMigrations(db: Database) {
   } catch { /* best-effort backfill */ }
   try { db.exec('ALTER TABLE tracking_settings ADD COLUMN subscriber_count INTEGER DEFAULT 0'); } catch { /* already exists */ }
   try { db.exec('ALTER TABLE tracking_settings ADD COLUMN priority_score INTEGER DEFAULT 0'); } catch { /* already exists */ }
+  try { db.exec('ALTER TABLE crawler_errors ADD COLUMN occurrence_count INTEGER DEFAULT 1'); } catch { /* already exists */ }
+  try { db.exec('ALTER TABLE crawler_errors ADD COLUMN last_occurred_at INTEGER'); } catch { /* already exists */ }
+  try { db.exec('UPDATE crawler_errors SET last_occurred_at = occurred_at WHERE last_occurred_at IS NULL'); } catch { /* nothing to backfill */ }
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS crawler_state (
+      source TEXT NOT NULL,
+      job_type TEXT NOT NULL,
+      last_status TEXT,
+      last_started_at INTEGER,
+      last_completed_at INTEGER,
+      blocked_streak INTEGER DEFAULT 0,
+      next_attempt_at INTEGER,
+      message TEXT,
+      PRIMARY KEY (source, job_type)
+    );
+  `);
+  try {
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_crawler_errors_lookup
+      ON crawler_errors(source, job_type, last_occurred_at)
+    `);
+  } catch { /* table may not exist yet */ }
   ensureAnnouncementTables(db);
   ensureKicktraqDebugTables(db);
   ensurePerformanceIndexes(db);
@@ -1141,6 +1163,13 @@ export function completeCrawlRun(id: number | undefined, data: CrawlRunUpdate) {
   getDB().prepare(`UPDATE crawl_runs SET ${sets} WHERE id = @id`).run({ ...next, id });
 }
 
+const CRAWLER_ERROR_DEDUPE_WINDOW_SEC = 30 * 60;
+
+function isDiskFullError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err ?? '');
+  return /database or disk is full|SQLITE_FULL|disk full|out of memory/i.test(msg);
+}
+
 export function recordCrawlerError(error: {
   source: string;
   job_type?: string;
@@ -1150,18 +1179,374 @@ export function recordCrawlerError(error: {
   message: string;
   context?: Record<string, unknown>;
 }) {
-  getDB().prepare(`
-    INSERT INTO crawler_errors (source, job_type, project_id, url, status_code, message, context_json)
-    VALUES (@source, @job_type, @project_id, @url, @status_code, @message, @context_json)
-  `).run({
-    source: error.source,
-    job_type: error.job_type ?? null,
-    project_id: error.project_id ?? null,
-    url: error.url ?? null,
-    status_code: error.status_code ?? null,
-    message: error.message,
-    context_json: error.context ? JSON.stringify(error.context).slice(0, 4000) : null,
-  });
+  try {
+    const db = getDB();
+    const now = Math.floor(Date.now() / 1000);
+    const since = now - CRAWLER_ERROR_DEDUPE_WINDOW_SEC;
+    const messagePrefix = error.message.slice(0, 200);
+    const existing = db.prepare(`
+      SELECT id, occurrence_count
+      FROM crawler_errors
+      WHERE source = @source
+        AND COALESCE(job_type, '') = COALESCE(@job_type, '')
+        AND COALESCE(project_id, '') = COALESCE(@project_id, '')
+        AND substr(message, 1, 200) = @messagePrefix
+        AND COALESCE(last_occurred_at, occurred_at) >= @since
+      ORDER BY id DESC
+      LIMIT 1
+    `).get({
+      source: error.source,
+      job_type: error.job_type ?? null,
+      project_id: error.project_id ?? null,
+      messagePrefix,
+      since,
+    }) as { id: number; occurrence_count: number | null } | undefined;
+
+    if (existing) {
+      db.prepare(`
+        UPDATE crawler_errors
+        SET occurrence_count = COALESCE(occurrence_count, 1) + 1,
+            last_occurred_at = @now,
+            status_code = COALESCE(@status_code, status_code),
+            url = COALESCE(@url, url),
+            message = @message
+        WHERE id = @id
+      `).run({
+        id: existing.id,
+        now,
+        status_code: error.status_code ?? null,
+        url: error.url ?? null,
+        message: error.message,
+      });
+      return;
+    }
+
+    db.prepare(`
+      INSERT INTO crawler_errors (source, job_type, project_id, url, status_code, message, context_json, occurred_at, last_occurred_at, occurrence_count)
+      VALUES (@source, @job_type, @project_id, @url, @status_code, @message, @context_json, @now, @now, 1)
+    `).run({
+      source: error.source,
+      job_type: error.job_type ?? null,
+      project_id: error.project_id ?? null,
+      url: error.url ?? null,
+      status_code: error.status_code ?? null,
+      message: error.message,
+      context_json: error.context ? JSON.stringify(error.context).slice(0, 4000) : null,
+      now,
+    });
+  } catch (writeErr) {
+    if (isDiskFullError(writeErr)) {
+      console.warn('[db] recordCrawlerError skipped: disk is full', error.message.slice(0, 100));
+      return;
+    }
+    throw writeErr;
+  }
+}
+
+export interface CrawlerStateRow {
+  source: string;
+  job_type: string;
+  last_status: string | null;
+  last_started_at: number | null;
+  last_completed_at: number | null;
+  blocked_streak: number;
+  next_attempt_at: number | null;
+  message: string | null;
+}
+
+export function getCrawlerState(source: string, jobType: string): CrawlerStateRow | null {
+  try {
+    return getDB().prepare(`
+      SELECT source, job_type, last_status, last_started_at, last_completed_at, blocked_streak, next_attempt_at, message
+      FROM crawler_state
+      WHERE source = ? AND job_type = ?
+    `).get(source, jobType) as CrawlerStateRow | undefined ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export function updateCrawlerState(source: string, jobType: string, patch: {
+  last_status?: string | null;
+  last_started_at?: number | null;
+  last_completed_at?: number | null;
+  blocked_streak?: number;
+  next_attempt_at?: number | null;
+  message?: string | null;
+}) {
+  try {
+    const existing = getCrawlerState(source, jobType);
+    const merged: CrawlerStateRow = {
+      source,
+      job_type: jobType,
+      last_status: patch.last_status ?? existing?.last_status ?? null,
+      last_started_at: patch.last_started_at ?? existing?.last_started_at ?? null,
+      last_completed_at: patch.last_completed_at ?? existing?.last_completed_at ?? null,
+      blocked_streak: patch.blocked_streak ?? existing?.blocked_streak ?? 0,
+      next_attempt_at: patch.next_attempt_at ?? existing?.next_attempt_at ?? null,
+      message: patch.message ?? existing?.message ?? null,
+    };
+    getDB().prepare(`
+      INSERT INTO crawler_state (source, job_type, last_status, last_started_at, last_completed_at, blocked_streak, next_attempt_at, message)
+      VALUES (@source, @job_type, @last_status, @last_started_at, @last_completed_at, @blocked_streak, @next_attempt_at, @message)
+      ON CONFLICT(source, job_type) DO UPDATE SET
+        last_status = excluded.last_status,
+        last_started_at = excluded.last_started_at,
+        last_completed_at = excluded.last_completed_at,
+        blocked_streak = excluded.blocked_streak,
+        next_attempt_at = excluded.next_attempt_at,
+        message = excluded.message
+    `).run(merged);
+  } catch (err) {
+    if (!isDiskFullError(err)) throw err;
+  }
+}
+
+export interface DiagnosticsReport {
+  generatedAt: number;
+  database: {
+    path: string;
+    fileBytes: number | null;
+    walBytes: number | null;
+    shmBytes: number | null;
+    pageCount: number | null;
+    pageSize: number | null;
+    freelistCount: number | null;
+  };
+  storage: {
+    dataDir: string;
+    diskTotalBytes: number | null;
+    diskFreeBytes: number | null;
+    diskFreePct: number | null;
+    isCritical: boolean;
+  };
+  tableSizes: { name: string; rowCount: number }[];
+  browserWorker: {
+    configured: boolean;
+    fetchUrl: string | null;
+    timeoutMs: number;
+    tokenConfigured: boolean;
+  };
+  crawlerStates: CrawlerStateRow[];
+  recentBrowserFallbackErrors: RecentCrawlerError[];
+}
+
+const DIAGNOSTICS_TABLES = [
+  'projects',
+  'project_snapshots',
+  'reward_snapshots',
+  'project_text_history',
+  'project_comments',
+  'project_collaborators',
+  'crawler_errors',
+  'crawl_runs',
+  'sync_logs',
+  'source_raw_payloads',
+  'kicktraq_import_debug',
+  'tracking_settings',
+];
+
+function safeStatBytes(filePath: string): number | null {
+  try {
+    return fs.statSync(filePath).size;
+  } catch {
+    return null;
+  }
+}
+
+function safeDiskFreeBytes(dir: string): { total: number | null; free: number | null } {
+  try {
+    const stats = (fs as unknown as { statfsSync?: (p: string) => { bsize: number; blocks: number; bavail: number } }).statfsSync;
+    if (typeof stats === 'function') {
+      const s = stats(dir);
+      return {
+        total: Number(s.bsize) * Number(s.blocks),
+        free: Number(s.bsize) * Number(s.bavail),
+      };
+    }
+  } catch {
+    /* fall through */
+  }
+  return { total: null, free: null };
+}
+
+export function getDiagnosticsReport(): DiagnosticsReport {
+  const db = getDB();
+  const generatedAt = Math.floor(Date.now() / 1000);
+
+  const dbFileBytes = safeStatBytes(DB_PATH);
+  const walBytes = safeStatBytes(`${DB_PATH}-wal`);
+  const shmBytes = safeStatBytes(`${DB_PATH}-shm`);
+
+  let pageCount: number | null = null;
+  let pageSize: number | null = null;
+  let freelistCount: number | null = null;
+  try { pageCount = (db.pragma('page_count', { simple: true }) as number) ?? null; } catch { /* ignore */ }
+  try { pageSize = (db.pragma('page_size', { simple: true }) as number) ?? null; } catch { /* ignore */ }
+  try { freelistCount = (db.pragma('freelist_count', { simple: true }) as number) ?? null; } catch { /* ignore */ }
+
+  const { total, free } = safeDiskFreeBytes(DATA_DIR);
+  const freePct = total && free ? (free / total) * 100 : null;
+  const isCritical = (free !== null && free < 50 * 1024 * 1024) || (freePct !== null && freePct < 5);
+
+  const tableSizes: { name: string; rowCount: number }[] = [];
+  for (const tableName of DIAGNOSTICS_TABLES) {
+    try {
+      const row = db.prepare(`SELECT COUNT(*) as c FROM ${tableName}`).get() as { c: number } | undefined;
+      tableSizes.push({ name: tableName, rowCount: Number(row?.c ?? 0) });
+    } catch {
+      /* table may not exist yet */
+    }
+  }
+
+  let crawlerStates: CrawlerStateRow[] = [];
+  try {
+    crawlerStates = db.prepare(`
+      SELECT source, job_type, last_status, last_started_at, last_completed_at, blocked_streak, next_attempt_at, message
+      FROM crawler_state
+      ORDER BY COALESCE(last_started_at, 0) DESC
+    `).all() as CrawlerStateRow[];
+  } catch { /* table may not exist yet */ }
+
+  let recentBrowserFallbackErrors: RecentCrawlerError[] = [];
+  try {
+    recentBrowserFallbackErrors = db.prepare(`
+      SELECT id, source, job_type, project_id, url, status_code, message, occurred_at
+      FROM crawler_errors
+      WHERE job_type = 'browser_fallback'
+      ORDER BY COALESCE(last_occurred_at, occurred_at) DESC, id DESC
+      LIMIT 5
+    `).all() as RecentCrawlerError[];
+  } catch { /* ignore */ }
+
+  const fetchUrl = process.env.KICKSTARTER_BROWSER_FETCH_URL?.trim() || null;
+  const tokenConfigured = !!process.env.BROWSER_WORKER_TOKEN?.trim();
+
+  return {
+    generatedAt,
+    database: {
+      path: DB_PATH,
+      fileBytes: dbFileBytes,
+      walBytes,
+      shmBytes,
+      pageCount,
+      pageSize,
+      freelistCount,
+    },
+    storage: {
+      dataDir: DATA_DIR,
+      diskTotalBytes: total,
+      diskFreeBytes: free,
+      diskFreePct: freePct !== null ? Math.round(freePct * 10) / 10 : null,
+      isCritical,
+    },
+    tableSizes,
+    browserWorker: {
+      configured: !!fetchUrl,
+      fetchUrl: fetchUrl ? maskUrl(fetchUrl) : null,
+      timeoutMs: Number(process.env.KICKSTARTER_BROWSER_TIMEOUT_MS ?? 60_000),
+      tokenConfigured,
+    },
+    crawlerStates,
+    recentBrowserFallbackErrors,
+  };
+}
+
+function maskUrl(rawUrl: string): string {
+  try {
+    const url = new URL(rawUrl);
+    return `${url.protocol}//${url.host}${url.pathname || ''}`;
+  } catch {
+    return rawUrl.length > 40 ? `${rawUrl.slice(0, 24)}...${rawUrl.slice(-12)}` : rawUrl;
+  }
+}
+
+export interface PruneOptions {
+  errorAgeDays?: number;
+  payloadAgeDays?: number;
+  debugAgeDays?: number;
+  runAgeDays?: number;
+  syncLogAgeDays?: number;
+  vacuum?: boolean;
+}
+
+export interface PruneSummary {
+  startedAt: number;
+  finishedAt: number;
+  errorsDeleted: number;
+  payloadsDeleted: number;
+  debugDeleted: number;
+  runsDeleted: number;
+  syncLogsDeleted: number;
+  walCheckpointed: boolean;
+  vacuumed: boolean;
+  diskFullEncountered: boolean;
+}
+
+export function pruneOldDiagnostics(options: PruneOptions = {}): PruneSummary {
+  const startedAt = Math.floor(Date.now() / 1000);
+  const summary: PruneSummary = {
+    startedAt,
+    finishedAt: startedAt,
+    errorsDeleted: 0,
+    payloadsDeleted: 0,
+    debugDeleted: 0,
+    runsDeleted: 0,
+    syncLogsDeleted: 0,
+    walCheckpointed: false,
+    vacuumed: false,
+    diskFullEncountered: false,
+  };
+
+  const db = getDB();
+  const now = startedAt;
+  const errorCutoff = now - (options.errorAgeDays ?? 7) * 86400;
+  const payloadCutoff = now - (options.payloadAgeDays ?? 7) * 86400;
+  const debugCutoff = now - (options.debugAgeDays ?? 7) * 86400;
+  const runCutoff = now - (options.runAgeDays ?? 30) * 86400;
+  const syncCutoffIso = new Date((now - (options.syncLogAgeDays ?? 30) * 86400) * 1000).toISOString();
+
+  type PruneCountKey = 'errorsDeleted' | 'payloadsDeleted' | 'debugDeleted' | 'runsDeleted' | 'syncLogsDeleted';
+  const safeRun = (label: PruneCountKey, sql: string, params: Record<string, unknown>) => {
+    try {
+      const info = db.prepare(sql).run(params);
+      summary[label] = summary[label] + Number(info.changes ?? 0);
+    } catch (err) {
+      if (isDiskFullError(err)) {
+        summary.diskFullEncountered = true;
+      } else {
+        console.error(`[db] prune ${label} failed:`, err);
+      }
+    }
+  };
+
+  safeRun('errorsDeleted', `DELETE FROM crawler_errors WHERE COALESCE(last_occurred_at, occurred_at) < @cutoff`, { cutoff: errorCutoff });
+  safeRun('payloadsDeleted', `DELETE FROM source_raw_payloads WHERE fetched_at < @cutoff`, { cutoff: payloadCutoff });
+  try {
+    db.prepare(`SELECT 1 FROM kicktraq_import_debug LIMIT 1`).get();
+    safeRun('debugDeleted', `DELETE FROM kicktraq_import_debug WHERE created_at < @cutoff`, { cutoff: debugCutoff });
+  } catch { /* table may not exist yet */ }
+  safeRun('runsDeleted', `DELETE FROM crawl_runs WHERE started_at < @cutoff`, { cutoff: runCutoff });
+  safeRun('syncLogsDeleted', `DELETE FROM sync_logs WHERE COALESCE(completed_at, started_at) < @cutoff`, { cutoff: syncCutoffIso });
+
+  try {
+    db.pragma('wal_checkpoint(TRUNCATE)');
+    summary.walCheckpointed = true;
+  } catch (err) {
+    if (isDiskFullError(err)) summary.diskFullEncountered = true;
+  }
+
+  if (options.vacuum) {
+    try {
+      db.exec('VACUUM');
+      summary.vacuumed = true;
+    } catch (err) {
+      if (isDiskFullError(err)) summary.diskFullEncountered = true;
+    }
+  }
+
+  summary.finishedAt = Math.floor(Date.now() / 1000);
+  return summary;
 }
 
 export interface RecentCrawlerError {
@@ -1720,9 +2105,11 @@ export function getDataQualityReport() {
   `).all();
 
   const recentErrors = db.prepare(`
-    SELECT id, source, job_type, project_id, url, status_code, message, occurred_at
+    SELECT id, source, job_type, project_id, url, status_code, message,
+           COALESCE(last_occurred_at, occurred_at) as occurred_at,
+           COALESCE(occurrence_count, 1) as occurrence_count
     FROM crawler_errors
-    ORDER BY occurred_at DESC, id DESC
+    ORDER BY COALESCE(last_occurred_at, occurred_at) DESC, id DESC
     LIMIT 10
   `).all();
 
@@ -1766,6 +2153,13 @@ export function getDataQualityReport() {
     ORDER BY last_completed_at DESC
   `).all();
 
+  let diagnostics: DiagnosticsReport | null = null;
+  try {
+    diagnostics = getDiagnosticsReport();
+  } catch (err) {
+    console.error('[db] getDiagnosticsReport failed:', err);
+  }
+
   const report = {
     generatedAt: now,
     totals: {
@@ -1797,6 +2191,7 @@ export function getDataQualityReport() {
     recentRuns,
     recentErrors,
     recentKsLiveProjects,
+    diagnostics,
   };
   dataQualityReportCache = { expiresAt: cacheNow + 20_000, value: report };
   return report;

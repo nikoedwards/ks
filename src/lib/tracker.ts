@@ -5,6 +5,8 @@ import {
   getRecentCrawlerErrors,
   recordCrawlerError,
   upsertTrackingSettings,
+  getCrawlerState,
+  pruneOldDiagnostics,
 } from './db';
 import { buildKSJsonUrl, scrapeAndStore, extractCreatorSlug, extractProjectSlug } from './scraper';
 import { runKickstarterLiveSync } from './kickstarterLive';
@@ -15,11 +17,13 @@ let started = false;
 let lastLiveSync = 0;
 let lastKicktraqSync = 0;
 let lastAutoTrack = 0;
+let lastDiagnosticsPrune = 0;
 
 const LIVE_SYNC_INTERVAL = Number(process.env.LIVE_DISCOVERY_INTERVAL_MS ?? 15 * 60 * 1000);
 const KICKTRAQ_SYNC_INTERVAL = 6 * 60 * 60 * 1000;
 const AUTO_TRACK_INTERVAL = 15 * 60 * 1000;
 const TRACKER_CYCLE_INTERVAL = 5 * 60 * 1000;
+const DIAGNOSTICS_PRUNE_INTERVAL = 60 * 60 * 1000;
 const TRACKING_BATCH_SIZE = Number(process.env.TRACKER_BATCH_SIZE ?? 20);
 const AUTO_TRACK_BATCH_SIZE = Number(process.env.AUTO_TRACK_BATCH_SIZE ?? 250);
 
@@ -40,6 +44,29 @@ async function runCycle() {
   await enrollLiveProjects(now);
   await scrapeDueProjects();
   startDiscoveryJobs(now);
+  runDiagnosticsPrune(now);
+}
+
+function runDiagnosticsPrune(now: number) {
+  if (now - lastDiagnosticsPrune <= DIAGNOSTICS_PRUNE_INTERVAL) return;
+  lastDiagnosticsPrune = now;
+  try {
+    const summary = pruneOldDiagnostics();
+    if (summary.errorsDeleted || summary.payloadsDeleted || summary.debugDeleted || summary.runsDeleted || summary.syncLogsDeleted) {
+      console.log(
+        `[tracker] diagnostics prune: errors=${summary.errorsDeleted} payloads=${summary.payloadsDeleted} debug=${summary.debugDeleted} runs=${summary.runsDeleted} sync_logs=${summary.syncLogsDeleted} wal_checkpoint=${summary.walCheckpointed}${summary.diskFullEncountered ? ' DISK_FULL' : ''}`,
+      );
+    }
+  } catch (e) {
+    console.error('[tracker] diagnostics prune error:', e);
+  }
+}
+
+function isDiscoveryDue(source: string, jobType: string, lastRunAt: number, defaultIntervalMs: number, nowMs: number): boolean {
+  if (nowMs - lastRunAt <= defaultIntervalMs) return false;
+  const state = getCrawlerState(source, jobType);
+  if (state?.next_attempt_at && state.next_attempt_at * 1000 > nowMs) return false;
+  return true;
 }
 
 export async function runOfficialPipelineOnce(options: {
@@ -137,7 +164,7 @@ async function scrapeDueProjects() {
 }
 
 function startDiscoveryJobs(now: number) {
-  if (now - lastLiveSync > LIVE_SYNC_INTERVAL) {
+  if (isDiscoveryDue('ks_live', 'discover:live', lastLiveSync, LIVE_SYNC_INTERVAL, now)) {
     lastLiveSync = now;
     console.log('[tracker] Starting KS live discovery sync...');
     runKickstarterLiveSync({
@@ -146,8 +173,10 @@ function startDiscoveryJobs(now: number) {
       since: Math.floor(Date.now() / 1000) - Number(process.env.LIVE_DISCOVERY_LOOKBACK_DAYS ?? 3) * 24 * 3600,
     }).then(result => {
       console.log(`[tracker] KS live sync done: ${result.insertedOrUpdated} upserted, stopped=${result.stoppedReason}`);
-      const auto = autoTrackLiveProjects(AUTO_TRACK_BATCH_SIZE);
-      console.log(`[tracker] post-KS auto-track: inserted=${auto.inserted}, remaining=${auto.remaining}`);
+      if (result.stoppedReason !== 'blocked') {
+        const auto = autoTrackLiveProjects(AUTO_TRACK_BATCH_SIZE);
+        console.log(`[tracker] post-KS auto-track: inserted=${auto.inserted}, remaining=${auto.remaining}`);
+      }
     }).catch(e => {
       console.error('[tracker] KS live sync error:', e);
       recordCrawlerError({
@@ -158,7 +187,7 @@ function startDiscoveryJobs(now: number) {
     });
   }
 
-  if (now - lastKicktraqSync > KICKTRAQ_SYNC_INTERVAL) {
+  if (isDiscoveryDue('kicktraq_active', 'discover', lastKicktraqSync, KICKTRAQ_SYNC_INTERVAL, now)) {
     lastKicktraqSync = now;
     console.log('[tracker] Starting Kicktraq active sync...');
     runKicktraqActiveSync({

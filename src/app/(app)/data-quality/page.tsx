@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Activity, AlertTriangle, CheckCircle2, Clock3, Database, ExternalLink, PlayCircle, RefreshCw, RadioTower, Search, ShieldCheck, Trash2, UploadCloud, type LucideIcon } from 'lucide-react';
+import { Activity, AlertTriangle, CheckCircle2, Clock3, Database, ExternalLink, HardDrive, PlayCircle, RefreshCw, RadioTower, Search, ShieldCheck, Trash2, UploadCloud, type LucideIcon } from 'lucide-react';
 import { useLanguage } from '@/hooks/useLanguage';
 
 interface SourceHealth {
@@ -42,6 +42,45 @@ interface CrawlerError {
   status_code: number | null;
   message: string;
   occurred_at: number;
+  occurrence_count?: number;
+}
+
+interface DiagnosticsReport {
+  generatedAt: number;
+  database: {
+    path: string;
+    fileBytes: number | null;
+    walBytes: number | null;
+    shmBytes: number | null;
+    pageCount: number | null;
+    pageSize: number | null;
+    freelistCount: number | null;
+  };
+  storage: {
+    dataDir: string;
+    diskTotalBytes: number | null;
+    diskFreeBytes: number | null;
+    diskFreePct: number | null;
+    isCritical: boolean;
+  };
+  tableSizes: { name: string; rowCount: number }[];
+  browserWorker: {
+    configured: boolean;
+    fetchUrl: string | null;
+    timeoutMs: number;
+    tokenConfigured: boolean;
+  };
+  crawlerStates: {
+    source: string;
+    job_type: string;
+    last_status: string | null;
+    last_started_at: number | null;
+    last_completed_at: number | null;
+    blocked_streak: number;
+    next_attempt_at: number | null;
+    message: string | null;
+  }[];
+  recentBrowserFallbackErrors: CrawlerError[];
 }
 
 interface RecentKsLiveProject {
@@ -121,10 +160,21 @@ interface QualityReport {
   recentRuns: CrawlRun[];
   recentErrors: CrawlerError[];
   recentKsLiveProjects: RecentKsLiveProject[];
+  diagnostics?: DiagnosticsReport | null;
 }
 
 function fmtNum(value: number | null | undefined) {
   return Number(value ?? 0).toLocaleString();
+}
+
+function fmtBytes(value: number | null | undefined) {
+  if (value === null || value === undefined) return '—';
+  const n = Number(value);
+  if (!Number.isFinite(n)) return '—';
+  if (n >= 1024 ** 3) return `${(n / 1024 ** 3).toFixed(2)} GB`;
+  if (n >= 1024 ** 2) return `${(n / 1024 ** 2).toFixed(1)} MB`;
+  if (n >= 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${n} B`;
 }
 
 function fmtTime(ts: number | null | undefined, lang: string) {
@@ -161,6 +211,128 @@ function sourceLabel(source: string) {
     kicktraq_full_scan: 'Kicktraq Full Scan',
   };
   return labels[source] ?? source;
+}
+
+function DiagnosticsSection({ diagnostics, cn, lang }: { diagnostics: DiagnosticsReport; cn: boolean; lang: string }) {
+  const dbBytes = (diagnostics.database.fileBytes ?? 0) + (diagnostics.database.walBytes ?? 0) + (diagnostics.database.shmBytes ?? 0);
+  const diskFreeBytes = diagnostics.storage.diskFreeBytes;
+  const diskFreePct = diagnostics.storage.diskFreePct;
+  const diskCritical = diagnostics.storage.isCritical;
+  const workerOk = diagnostics.browserWorker.configured;
+  const blockedState = diagnostics.crawlerStates.find(s => s.last_status === 'blocked');
+
+  const fmtTimeLocal = (ts: number | null | undefined) => {
+    if (!ts) return cn ? '暂无' : 'None';
+    return new Date(ts * 1000).toLocaleString(lang === 'cn' ? 'zh-CN' : 'en-US');
+  };
+
+  return (
+    <section className={`rounded-lg border p-5 ${diskCritical || !workerOk || blockedState ? 'border-amber-200 bg-amber-50/40' : 'border-gray-100 bg-white'}`}>
+      <div className="flex items-center gap-2 mb-4">
+        <HardDrive className={`w-4 h-4 ${diskCritical ? 'text-red-500' : 'text-ks-green'}`} />
+        <h2 className="font-semibold text-gray-800">{cn ? '存储与抓取诊断' : 'Storage & Crawler Diagnostics'}</h2>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className={`rounded-lg p-4 border ${diskCritical ? 'border-red-200 bg-red-50' : 'border-gray-100 bg-white'}`}>
+          <p className="text-xs text-gray-500">{cn ? '磁盘可用空间' : 'Disk free space'}</p>
+          <p className={`text-2xl font-bold mt-1 ${diskCritical ? 'text-red-700' : 'text-gray-900'}`}>
+            {fmtBytes(diskFreeBytes)}
+            {diskFreePct !== null && <span className="text-sm text-gray-500 font-normal ml-2">({diskFreePct}%)</span>}
+          </p>
+          <p className="text-xs text-gray-400 mt-1">
+            {cn ? `数据目录: ${diagnostics.storage.dataDir}` : `Data dir: ${diagnostics.storage.dataDir}`}
+          </p>
+          {diskCritical && (
+            <p className="text-xs text-red-600 mt-2 font-medium">
+              {cn
+                ? '⚠ 空间紧张：去 Railway 给 volume 扩容，或在下方点 Prune 清理日志'
+                : '⚠ Critically low — expand the Railway volume or click Prune below to free space.'}
+            </p>
+          )}
+        </div>
+
+        <div className="rounded-lg p-4 border border-gray-100 bg-white">
+          <p className="text-xs text-gray-500">{cn ? 'SQLite 总占用' : 'SQLite total size'}</p>
+          <p className="text-2xl font-bold text-gray-900 mt-1">{fmtBytes(dbBytes)}</p>
+          <p className="text-xs text-gray-400 mt-1">
+            DB {fmtBytes(diagnostics.database.fileBytes)} · WAL {fmtBytes(diagnostics.database.walBytes)} · SHM {fmtBytes(diagnostics.database.shmBytes)}
+          </p>
+        </div>
+
+        <div className={`rounded-lg p-4 border ${workerOk ? 'border-gray-100 bg-white' : 'border-amber-200 bg-amber-50'}`}>
+          <p className="text-xs text-gray-500">{cn ? 'Browser Worker' : 'Browser Worker'}</p>
+          <p className={`text-2xl font-bold mt-1 ${workerOk ? 'text-gray-900' : 'text-amber-700'}`}>
+            {workerOk ? (cn ? '已配置' : 'Configured') : (cn ? '未配置' : 'Not configured')}
+          </p>
+          {workerOk ? (
+            <p className="text-xs text-gray-400 mt-1 truncate">
+              {diagnostics.browserWorker.fetchUrl}
+              {diagnostics.browserWorker.tokenConfigured ? ' · token ✓' : ' · token ✗'}
+            </p>
+          ) : (
+            <p className="text-xs text-amber-600 mt-1">
+              {cn
+                ? 'KS Live 抓取依赖 browser-worker，否则会被 Cloudflare 拦截'
+                : 'KS Live fetching needs browser-worker; without it Cloudflare blocks every request.'}
+            </p>
+          )}
+        </div>
+      </div>
+
+      {diagnostics.tableSizes.length > 0 && (
+        <details className="mt-4 group">
+          <summary className="cursor-pointer text-xs text-gray-500 hover:text-gray-700">
+            {cn ? '展开各表行数（用于排查表膨胀）' : 'Show table row counts (for spotting bloat)'}
+          </summary>
+          <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+            {diagnostics.tableSizes.map(t => (
+              <div key={t.name} className="rounded bg-gray-50 px-2 py-1.5 flex justify-between">
+                <span className="text-gray-600 font-mono">{t.name}</span>
+                <span className="font-semibold text-gray-900">{fmtNum(t.rowCount)}</span>
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
+
+      {diagnostics.crawlerStates.length > 0 && (
+        <div className="mt-4 rounded-lg border border-gray-100 bg-white overflow-hidden">
+          <div className="px-4 py-2 bg-gray-50 text-xs font-semibold text-gray-600">
+            {cn ? '抓取器状态（含 backoff）' : 'Crawler states (with backoff)'}
+          </div>
+          <table className="w-full text-xs">
+            <thead className="text-gray-500">
+              <tr>
+                <th className="text-left px-4 py-2 font-medium">{cn ? '来源 / 任务' : 'Source / Job'}</th>
+                <th className="text-left px-3 py-2 font-medium">{cn ? '状态' : 'Status'}</th>
+                <th className="text-left px-3 py-2 font-medium">{cn ? '上次完成' : 'Last completed'}</th>
+                <th className="text-left px-3 py-2 font-medium">{cn ? '下次重试' : 'Next attempt'}</th>
+                <th className="text-left px-4 py-2 font-medium">{cn ? '消息' : 'Message'}</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-50">
+              {diagnostics.crawlerStates.map(s => {
+                const tone = s.last_status === 'completed' ? 'text-green-700'
+                  : s.last_status === 'blocked' ? 'text-amber-700'
+                  : s.last_status === 'error' ? 'text-red-700'
+                  : 'text-gray-500';
+                return (
+                  <tr key={`${s.source}:${s.job_type}`}>
+                    <td className="px-4 py-2 font-mono text-gray-700">{s.source} / {s.job_type}</td>
+                    <td className={`px-3 py-2 font-semibold ${tone}`}>{s.last_status ?? '—'}</td>
+                    <td className="px-3 py-2 text-gray-600">{fmtTimeLocal(s.last_completed_at)}</td>
+                    <td className="px-3 py-2 text-gray-600">{s.next_attempt_at ? fmtTimeLocal(s.next_attempt_at) : '—'}</td>
+                    <td className="px-4 py-2 text-gray-500 max-w-md truncate" title={s.message ?? ''}>{s.message ?? '—'}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  );
 }
 
 function StatTile({
@@ -414,6 +586,10 @@ export default function DataQualityPage() {
           tone={staleTone}
         />
       </div>
+
+      {report.diagnostics && (
+        <DiagnosticsSection diagnostics={report.diagnostics} cn={cn} lang={lang} />
+      )}
 
       <section className="bg-white border border-gray-100 rounded-lg p-5">
         <div className="flex items-center gap-2 mb-4">
@@ -875,7 +1051,13 @@ export default function DataQualityPage() {
               <div key={error.id} className="px-5 py-3">
                 <div className="flex items-center gap-2 flex-wrap">
                   <span className="text-sm font-medium text-gray-900">{sourceLabel(error.source)}</span>
+                  {error.job_type && <span className="text-xs text-gray-500">{error.job_type}</span>}
                   {error.status_code && <span className="text-xs text-red-600">HTTP {error.status_code}</span>}
+                  {error.occurrence_count && error.occurrence_count > 1 && (
+                    <span className="text-xs font-semibold text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded">
+                      ×{error.occurrence_count}
+                    </span>
+                  )}
                   <span className="text-xs text-gray-400">{fmtTime(error.occurred_at, lang)}</span>
                 </div>
                 <p className="text-sm text-red-700 mt-1 break-words">{error.message}</p>

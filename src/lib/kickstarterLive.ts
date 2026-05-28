@@ -7,6 +7,7 @@ import {
   updateSyncLog,
   upsertProjects,
   saveDB,
+  updateCrawlerState,
 } from './db';
 import { updateSyncState } from './syncState';
 
@@ -206,40 +207,58 @@ function sleep(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-async function fetchDiscoverViaBrowser(url: string) {
+interface BrowserFetchOutcome {
+  body: DiscoverResponse | null;
+  reason: string | null;
+}
+
+function isBrowserWorkerConfigured(): boolean {
+  return !!getOptionalEnv('KICKSTARTER_BROWSER_FETCH_URL');
+}
+
+async function fetchDiscoverViaBrowser(url: string): Promise<BrowserFetchOutcome> {
   const proxyUrl = getOptionalEnv('KICKSTARTER_BROWSER_FETCH_URL');
   if (!proxyUrl) {
+    const message = 'KICKSTARTER_BROWSER_FETCH_URL is not configured on the main service. Deploy the browser-worker (see browser-worker/README.md) and set this env var.';
     recordCrawlerError({
       source: 'ks_live',
       job_type: 'browser_fallback',
       url,
-      message: 'KICKSTARTER_BROWSER_FETCH_URL is not configured on the main service.',
+      message,
     });
-    return null;
+    return { body: null, reason: 'browser_worker_not_configured' };
   }
   const token = getOptionalEnv('BROWSER_WORKER_TOKEN');
 
-  const res = await fetch(proxyUrl, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Accept': 'application/json, text/plain, */*',
-      ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
-    },
-    body: JSON.stringify({ url, expect: 'json' }),
-    signal: AbortSignal.timeout(Number(getOptionalEnv('KICKSTARTER_BROWSER_TIMEOUT_MS') || 60_000)),
-    cache: 'no-store',
-  });
+  let res: Response;
+  try {
+    res = await fetch(proxyUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json, text/plain, */*',
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ url, expect: 'json' }),
+      signal: AbortSignal.timeout(Number(getOptionalEnv('KICKSTARTER_BROWSER_TIMEOUT_MS') || 60_000)),
+      cache: 'no-store',
+    });
+  } catch (err) {
+    const message = `Browser worker request failed (${proxyUrl}): ${err instanceof Error ? err.message : String(err)}`;
+    recordCrawlerError({ source: 'ks_live', job_type: 'browser_fallback', url, message });
+    return { body: null, reason: message };
+  }
   const text = await res.text();
   if (!res.ok) {
+    const message = `Browser worker HTTP ${res.status}: ${text.slice(0, 500)}`;
     recordCrawlerError({
       source: 'ks_live',
       job_type: 'browser_fallback',
       url,
       status_code: res.status,
-      message: `Browser worker HTTP ${res.status}: ${text.slice(0, 500)}`,
+      message,
     });
-    return null;
+    return { body: null, reason: message };
   }
 
   try {
@@ -250,25 +269,27 @@ async function fetchDiscoverViaBrowser(url: string) {
         ? JSON.parse(data.text) as DiscoverResponse
         : data as DiscoverResponse;
     if (!Array.isArray(body.projects)) {
+      const message = `Browser worker response did not contain projects. Keys=${Object.keys(body as Record<string, unknown>).join(',')}; preview=${text.slice(0, 500)}`;
       recordCrawlerError({
         source: 'ks_live',
         job_type: 'browser_fallback',
         url,
         status_code: res.status,
-        message: `Browser worker response did not contain projects. Keys=${Object.keys(body as Record<string, unknown>).join(',')}; preview=${text.slice(0, 500)}`,
+        message,
       });
-      return null;
+      return { body: null, reason: message };
     }
-    return body;
+    return { body, reason: null };
   } catch (err) {
+    const message = `Browser worker JSON parse failed: ${err instanceof Error ? err.message : String(err)}; preview=${text.slice(0, 500)}`;
     recordCrawlerError({
       source: 'ks_live',
       job_type: 'browser_fallback',
       url,
       status_code: res.status,
-      message: `Browser worker JSON parse failed: ${err instanceof Error ? err.message : String(err)}; preview=${text.slice(0, 500)}`,
+      message,
     });
-    return null;
+    return { body: null, reason: message };
   }
 }
 
@@ -284,6 +305,7 @@ async function fetchDiscoverPage(page: number, opts: Required<Pick<LiveSyncOptio
   const timeoutMs = Number(getOptionalEnv('LIVE_DISCOVERY_FETCH_TIMEOUT_MS') || 60_000);
   const attempts = Math.max(1, Math.min(Number(getOptionalEnv('LIVE_DISCOVERY_FETCH_ATTEMPTS') || 2), 4));
   let lastError: unknown = null;
+  let lastBlockReason: string | null = null;
 
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
@@ -298,20 +320,23 @@ async function fetchDiscoverPage(page: number, opts: Required<Pick<LiveSyncOptio
 
       const text = await res.text();
       if (isBlockedHtml(text)) {
-        const body = await fetchDiscoverViaBrowser(url);
-        if (body) return { blocked: false as const, status: 200, body };
-        return { blocked: true as const, status: res.status, body: null };
+        const outcome = await fetchDiscoverViaBrowser(url);
+        if (outcome.body) return { blocked: false as const, status: 200, body: outcome.body };
+        lastBlockReason = outcome.reason;
+        return { blocked: true as const, status: res.status, body: null, reason: outcome.reason };
       }
       if (!res.ok) {
-        const body = await fetchDiscoverViaBrowser(url);
-        if (body) return { blocked: false as const, status: 200, body };
+        const outcome = await fetchDiscoverViaBrowser(url);
+        if (outcome.body) return { blocked: false as const, status: 200, body: outcome.body };
+        lastBlockReason = outcome.reason;
         throw new Error(`Kickstarter discover HTTP ${res.status}`);
       }
       try {
         return { blocked: false as const, status: res.status, body: JSON.parse(text) as DiscoverResponse };
       } catch (err) {
-        const body = await fetchDiscoverViaBrowser(url);
-        if (body) return { blocked: false as const, status: 200, body };
+        const outcome = await fetchDiscoverViaBrowser(url);
+        if (outcome.body) return { blocked: false as const, status: 200, body: outcome.body };
+        lastBlockReason = outcome.reason;
         throw err;
       }
     } catch (err) {
@@ -330,9 +355,13 @@ async function fetchDiscoverPage(page: number, opts: Required<Pick<LiveSyncOptio
     }
   }
 
-  const body = await fetchDiscoverViaBrowser(url);
-  if (body) return { blocked: false as const, status: 200, body };
-  throw lastError instanceof Error ? lastError : new Error(String(lastError ?? 'Kickstarter discover failed'));
+  const outcome = await fetchDiscoverViaBrowser(url);
+  if (outcome.body) return { blocked: false as const, status: 200, body: outcome.body };
+  lastBlockReason = outcome.reason ?? lastBlockReason;
+  const baseMessage = lastError instanceof Error
+    ? lastError.message
+    : String(lastError ?? 'Kickstarter discover failed');
+  throw new Error(lastBlockReason ? `${baseMessage} (browser fallback: ${lastBlockReason})` : baseMessage);
 }
 
 export async function runKickstarterLiveSync(options: LiveSyncOptions = {}): Promise<LiveSyncResult> {
@@ -345,10 +374,37 @@ export async function runKickstarterLiveSync(options: LiveSyncOptions = {}): Pro
 
 async function runKickstarterLiveSyncInternal(options: LiveSyncOptions = {}): Promise<LiveSyncResult> {
   const startedAt = new Date().toISOString();
+  const startedAtSec = Math.floor(Date.now() / 1000);
   const since = options.since ?? Math.floor(Date.now() / 1000) - 30 * 86400;
   const maxPages = Math.max(1, Math.min(options.maxPages ?? 25, 100));
   const state = options.state ?? 'live';
   const now = Math.floor(Date.now() / 1000);
+  const jobType = `discover:${state}`;
+
+  updateCrawlerState('ks_live', jobType, {
+    last_status: 'running',
+    last_started_at: startedAtSec,
+    next_attempt_at: null,
+  });
+
+  if (!isBrowserWorkerConfigured()) {
+    const message = 'KS Live discovery skipped: KICKSTARTER_BROWSER_FETCH_URL is not configured. Deploy browser-worker (see browser-worker/README.md) and set this env var on the main service.';
+    recordCrawlerError({
+      source: 'ks_live',
+      job_type: jobType,
+      url: `${DISCOVER_URL}?sort=newest&state=${state}`,
+      message,
+    });
+    updateCrawlerState('ks_live', jobType, {
+      last_status: 'blocked',
+      last_completed_at: Math.floor(Date.now() / 1000),
+      blocked_streak: 1,
+      next_attempt_at: Math.floor(Date.now() / 1000) + 6 * 3600,
+      message,
+    });
+    updateSyncState({ status: 'error', message, error: message, completedAt: new Date().toISOString(), progress: 0 });
+    return { discovered: 0, insertedOrUpdated: 0, snapshots: 0, pages: 0, stoppedReason: 'blocked', message };
+  }
 
   updateSyncState({
     status: 'running',
@@ -369,7 +425,7 @@ async function runKickstarterLiveSyncInternal(options: LiveSyncOptions = {}): Pr
   let crawlRunId: number | undefined;
 
   try {
-    crawlRunId = startCrawlRun('ks_live', `discover:${state}`);
+    crawlRunId = startCrawlRun('ks_live', jobType);
     logId = await insertSyncLog({
       url: `ks_live:${state}:since=${since}:maxPages=${maxPages}`,
       started_at: startedAt,
@@ -386,7 +442,10 @@ async function runKickstarterLiveSyncInternal(options: LiveSyncOptions = {}): Pr
 
       const pageData = await fetchDiscoverPage(page, { state });
       if (pageData.blocked) {
-        const message = 'Kickstarter returned a Cloudflare challenge. Use a browser-backed crawler or provide harvested project URLs for this environment.';
+        const reason = pageData.reason ?? null;
+        const message = reason
+          ? `Kickstarter blocked the discover endpoint and the browser worker fallback failed: ${reason}`
+          : 'Kickstarter returned a Cloudflare challenge and no browser-backed crawler is reachable.';
         completeCrawlRun(crawlRunId, {
           status: 'blocked',
           discovered_count: discovered,
@@ -398,9 +457,17 @@ async function runKickstarterLiveSyncInternal(options: LiveSyncOptions = {}): Pr
         });
         recordCrawlerError({
           source: 'ks_live',
-          job_type: `discover:${state}`,
+          job_type: jobType,
           url: `${DISCOVER_URL}?sort=newest&state=${state}&page=${page}`,
           status_code: pageData.status,
+          message,
+        });
+        const nextAttemptAt = Math.floor(Date.now() / 1000) + 6 * 3600;
+        updateCrawlerState('ks_live', jobType, {
+          last_status: 'blocked',
+          last_completed_at: Math.floor(Date.now() / 1000),
+          blocked_streak: 1,
+          next_attempt_at: nextAttemptAt,
           message,
         });
         updateSyncState({ status: 'error', message, error: message, completedAt: new Date().toISOString(), progress: 0 });
@@ -416,6 +483,13 @@ async function runKickstarterLiveSyncInternal(options: LiveSyncOptions = {}): Pr
           imported_count: insertedOrUpdated,
           snapshot_count: snapshots,
           page_count: pages,
+          message: 'No more projects returned.',
+        });
+        updateCrawlerState('ks_live', jobType, {
+          last_status: 'completed',
+          last_completed_at: Math.floor(Date.now() / 1000),
+          blocked_streak: 0,
+          next_attempt_at: null,
           message: 'No more projects returned.',
         });
         await complete(logId, insertedOrUpdated, 'No more projects returned.');
@@ -452,6 +526,13 @@ async function runKickstarterLiveSyncInternal(options: LiveSyncOptions = {}): Pr
           page_count: pages,
           message: 'Reached the requested launch-date cutoff.',
         });
+        updateCrawlerState('ks_live', jobType, {
+          last_status: 'completed',
+          last_completed_at: Math.floor(Date.now() / 1000),
+          blocked_streak: 0,
+          next_attempt_at: null,
+          message: 'Reached the requested launch-date cutoff.',
+        });
         await complete(logId, insertedOrUpdated, 'Reached the requested launch-date cutoff.');
         return { discovered, insertedOrUpdated, snapshots, pages, stoppedReason: 'since_reached' };
       }
@@ -463,6 +544,13 @@ async function runKickstarterLiveSyncInternal(options: LiveSyncOptions = {}): Pr
           imported_count: insertedOrUpdated,
           snapshot_count: snapshots,
           page_count: pages,
+          message: 'No more Kickstarter pages.',
+        });
+        updateCrawlerState('ks_live', jobType, {
+          last_status: 'completed',
+          last_completed_at: Math.floor(Date.now() / 1000),
+          blocked_streak: 0,
+          next_attempt_at: null,
           message: 'No more Kickstarter pages.',
         });
         await complete(logId, insertedOrUpdated, 'No more Kickstarter pages.');
@@ -480,6 +568,13 @@ async function runKickstarterLiveSyncInternal(options: LiveSyncOptions = {}): Pr
       page_count: pages,
       message: 'Reached max pages.',
     });
+    updateCrawlerState('ks_live', jobType, {
+      last_status: 'completed',
+      last_completed_at: Math.floor(Date.now() / 1000),
+      blocked_streak: 0,
+      next_attempt_at: null,
+      message: 'Reached max pages.',
+    });
     await complete(logId, insertedOrUpdated, 'Reached max pages.');
     return { discovered, insertedOrUpdated, snapshots, pages, stoppedReason: 'max_pages' };
   } catch (err) {
@@ -495,10 +590,16 @@ async function runKickstarterLiveSyncInternal(options: LiveSyncOptions = {}): Pr
     });
     recordCrawlerError({
       source: 'ks_live',
-      job_type: `discover:${state}`,
+      job_type: jobType,
       url: `${DISCOVER_URL}?sort=newest&state=${state}`,
       message,
       context: { since, maxPages, pages },
+    });
+    updateCrawlerState('ks_live', jobType, {
+      last_status: 'error',
+      last_completed_at: Math.floor(Date.now() / 1000),
+      next_attempt_at: Math.floor(Date.now() / 1000) + 30 * 60,
+      message,
     });
     updateSyncState({ status: 'error', message: `Live sync failed: ${message}`, error: message, completedAt: new Date().toISOString(), progress: 0 });
     if (logId) await updateSyncLog(logId, { completed_at: new Date().toISOString(), status: 'error', error_message: message });
