@@ -10,6 +10,7 @@ import {
   updateCrawlerState,
 } from './db';
 import { updateSyncState } from './syncState';
+import { runKicktraqActiveSync } from './kicktraqActive';
 
 const DISCOVER_URL = 'https://www.kickstarter.com/discover/advanced';
 
@@ -401,15 +402,72 @@ async function fetchDiscoverPage(page: number, opts: Required<Pick<LiveSyncOptio
   throw new Error(lastBlockReason ? `${baseMessage} (browser fallback: ${lastBlockReason})` : baseMessage);
 }
 
+/**
+ * KS Live sync orchestrator.
+ *
+ * First principles: the product wants "the latest projects from Kickstarter,
+ * ingested into our database". Kicktraq mirrors Kickstarter's public listings
+ * without Cloudflare friction, so that is our reliable data path. The direct
+ * `kickstarter.com/discover/advanced?format=json` endpoint is currently
+ * Cloudflare-challenged from every IP we tested (Railway + China-via-Clash)
+ * and only adds value as enrichment (image URLs, numeric KS ids, comments).
+ *
+ * Set `LIVE_DISCOVERY_KS_DIRECT=1` to opt into the legacy direct path (still
+ * via the browser-worker fallback) on top of the Kicktraq pass. By default we
+ * skip it to keep the worker from being slammed by failing CF requests.
+ */
 export async function runKickstarterLiveSync(options: LiveSyncOptions = {}): Promise<LiveSyncResult> {
   if (activeLiveSync) return activeLiveSync;
-  activeLiveSync = runKickstarterLiveSyncInternal(options).finally(() => {
+  activeLiveSync = runLiveSyncOrchestrator(options).finally(() => {
     activeLiveSync = null;
   });
   return activeLiveSync;
 }
 
-async function runKickstarterLiveSyncInternal(options: LiveSyncOptions = {}): Promise<LiveSyncResult> {
+async function runLiveSyncOrchestrator(options: LiveSyncOptions = {}): Promise<LiveSyncResult> {
+  const state = options.state ?? 'live';
+  const kicktraq = await runKicktraqActiveSync({
+    maxPages: options.maxPages ?? 5,
+    since: options.since,
+    onlyCurrentlyLive: state === 'live',
+  });
+
+  const result: LiveSyncResult = {
+    discovered: kicktraq.imported,
+    insertedOrUpdated: kicktraq.imported,
+    snapshots: kicktraq.snapshots,
+    pages: kicktraq.pages,
+    stoppedReason: kicktraq.stoppedReason === 'error' ? 'error' : 'no_more_projects',
+    message: kicktraq.message
+      ? `kicktraq: ${kicktraq.message}`
+      : `kicktraq imported ${kicktraq.imported}, snapshots ${kicktraq.snapshots}, pages ${kicktraq.pages}`,
+  };
+
+  if (getOptionalEnv('LIVE_DISCOVERY_KS_DIRECT') !== '1') {
+    return result;
+  }
+
+  // Opt-in legacy path: try the direct KS discover API as enrichment. Failures
+  // here do not fail the overall sync — Kicktraq already covered the basics.
+  try {
+    const direct = await runDirectKickstarterDiscover(options);
+    return {
+      discovered: result.discovered + direct.discovered,
+      insertedOrUpdated: result.insertedOrUpdated + direct.insertedOrUpdated,
+      snapshots: result.snapshots + direct.snapshots,
+      pages: result.pages + direct.pages,
+      stoppedReason: result.stoppedReason,
+      message: `${result.message ?? ''} | direct=${direct.stoppedReason}: ${direct.message ?? ''}`.trim(),
+    };
+  } catch (err) {
+    return {
+      ...result,
+      message: `${result.message ?? ''} | direct enrichment threw: ${err instanceof Error ? err.message : String(err)}`.trim(),
+    };
+  }
+}
+
+async function runDirectKickstarterDiscover(options: LiveSyncOptions = {}): Promise<LiveSyncResult> {
   const startedAt = new Date().toISOString();
   const startedAtSec = Math.floor(Date.now() / 1000);
   const since = options.since ?? Math.floor(Date.now() / 1000) - 30 * 86400;
