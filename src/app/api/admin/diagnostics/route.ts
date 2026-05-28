@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSessionUser, SESSION_COOKIE } from '@/lib/auth';
-import { getDiagnosticsReport, pruneOldDiagnostics } from '@/lib/db';
+import { getDiagnosticsReport, pruneOldDiagnostics, purgeKsLiveErrors } from '@/lib/db';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -75,13 +75,26 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   if (!requireAdmin(req)) return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   const body = await req.json().catch(() => ({})) as {
-    action?: 'prune' | 'vacuum';
+    action?: 'prune' | 'vacuum' | 'purge_ks_live_errors';
     errorAgeDays?: number;
     payloadAgeDays?: number;
     debugAgeDays?: number;
     runAgeDays?: number;
     syncLogAgeDays?: number;
+    keepRecent?: number;
   };
+  if (body.action === 'purge_ks_live_errors') {
+    const purge = purgeKsLiveErrors({ keepRecent: body.keepRecent ?? 20 });
+    const summary = pruneOldDiagnostics({
+      errorAgeDays: body.errorAgeDays ?? 7,
+      payloadAgeDays: body.payloadAgeDays ?? 7,
+      debugAgeDays: body.debugAgeDays ?? 7,
+      runAgeDays: body.runAgeDays ?? 30,
+      syncLogAgeDays: body.syncLogAgeDays ?? 30,
+      vacuum: true,
+    });
+    return NextResponse.json({ ok: true, purge, summary });
+  }
   if (body.action === 'vacuum') {
     const summary = pruneOldDiagnostics({
       errorAgeDays: body.errorAgeDays ?? 7,

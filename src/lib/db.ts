@@ -1549,6 +1549,80 @@ export function pruneOldDiagnostics(options: PruneOptions = {}): PruneSummary {
   return summary;
 }
 
+export interface PurgeSummary {
+  ksLiveBlockedDeleted: number;
+  browserFallbackDeleted: number;
+  ksLiveDirectDeleted: number;
+  totalDeleted: number;
+  recentKept: number;
+  diskFullEncountered: boolean;
+}
+
+export function purgeKsLiveErrors(options: { keepRecent?: number } = {}): PurgeSummary {
+  const keepRecent = Math.max(0, Math.min(options.keepRecent ?? 20, 200));
+  const db = getDB();
+  const summary: PurgeSummary = {
+    ksLiveBlockedDeleted: 0,
+    browserFallbackDeleted: 0,
+    ksLiveDirectDeleted: 0,
+    totalDeleted: 0,
+    recentKept: 0,
+    diskFullEncountered: false,
+  };
+
+  const safeDelete = (label: keyof Pick<PurgeSummary, 'ksLiveBlockedDeleted' | 'browserFallbackDeleted' | 'ksLiveDirectDeleted'>, sql: string) => {
+    try {
+      const info = db.prepare(sql).run();
+      summary[label] = Number(info.changes ?? 0);
+      summary.totalDeleted += summary[label];
+    } catch (err) {
+      if (isDiskFullError(err)) {
+        summary.diskFullEncountered = true;
+      } else {
+        console.error(`[db] purgeKsLiveErrors ${label} failed:`, err);
+      }
+    }
+  };
+
+  let keptIds: number[] = [];
+  if (keepRecent > 0) {
+    try {
+      keptIds = (db.prepare(`
+        SELECT id FROM crawler_errors
+        WHERE source = 'ks_live'
+        ORDER BY id DESC
+        LIMIT ?
+      `).all(keepRecent) as { id: number }[]).map(r => r.id);
+      summary.recentKept = keptIds.length;
+    } catch { /* ignore */ }
+  }
+
+  const keepClause = keptIds.length
+    ? ` AND id NOT IN (${keptIds.join(',')})`
+    : '';
+
+  safeDelete(
+    'ksLiveBlockedDeleted',
+    `DELETE FROM crawler_errors WHERE source = 'ks_live' AND (job_type LIKE 'discover:%' OR job_type IS NULL)${keepClause}`,
+  );
+  safeDelete(
+    'browserFallbackDeleted',
+    `DELETE FROM crawler_errors WHERE source = 'ks_live' AND job_type = 'browser_fallback'${keepClause}`,
+  );
+  safeDelete(
+    'ksLiveDirectDeleted',
+    `DELETE FROM crawler_errors WHERE source = 'ks_live' AND job_type LIKE 'discover:%:direct'${keepClause}`,
+  );
+
+  try {
+    db.pragma('wal_checkpoint(TRUNCATE)');
+  } catch (err) {
+    if (isDiskFullError(err)) summary.diskFullEncountered = true;
+  }
+
+  return summary;
+}
+
 export interface RecentCrawlerError {
   id: number;
   source: string;
