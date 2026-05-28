@@ -29,10 +29,51 @@ const ALLOWED_HOSTS = new Set([
 let browserPromise;
 let lastLaunchError = null;
 const launchHistory = [];
+const requestHistory = [];
+let nextRequestId = 1;
 
 function recordLaunchOutcome(entry) {
   launchHistory.push(entry);
   while (launchHistory.length > 20) launchHistory.shift();
+}
+
+function recordRequestOutcome(entry) {
+  requestHistory.push(entry);
+  while (requestHistory.length > 30) requestHistory.shift();
+}
+
+function trackRequestStart(input) {
+  const id = nextRequestId++;
+  const entry = {
+    id,
+    startedAt: new Date().toISOString(),
+    url: typeof input?.url === 'string' ? input.url.slice(0, 240) : null,
+    expect: input?.expect ?? 'json',
+    mode: input?.mode ?? null,
+    basicOnly: Boolean(input?.basicOnly),
+    steps: [],
+    ok: null,
+    status: null,
+    durationMs: null,
+    error: null,
+  };
+  recordRequestOutcome(entry);
+  return {
+    id,
+    step(label, info = {}) {
+      entry.steps.push({ at: new Date().toISOString(), label, ...info });
+      if (entry.steps.length > 60) entry.steps.shift();
+      console.log(`[fetch#${id}] ${label}${info && Object.keys(info).length ? ' ' + JSON.stringify(info).slice(0, 400) : ''}`);
+    },
+    finish(result) {
+      entry.ok = result.ok ?? null;
+      entry.status = result.status ?? null;
+      entry.finalUrl = result.finalUrl ?? null;
+      entry.durationMs = result.durationMs ?? null;
+      entry.error = result.error ?? null;
+      console.log(`[fetch#${id}] done ok=${entry.ok} status=${entry.status} durationMs=${entry.durationMs}${entry.error ? ' error=' + JSON.stringify(entry.error).slice(0, 200) : ''}`);
+    },
+  };
 }
 
 function getProxyOptions() {
@@ -1291,13 +1332,16 @@ async function tryBrowserContextJson(context, page, targetUrl, timeoutMs, input)
   };
 }
 
-async function fetchWithBrowser(input) {
+async function fetchWithBrowser(input, tracker = null) {
+  const step = (label, info) => tracker?.step?.(label, info);
   const targetUrl = normalizeTarget(input.url);
+  step('normalized_target', { targetUrl });
   if (input.mode === 'project_detail_debug') {
     return fetchProjectDetailDebug(input);
   }
   const expect = input.expect === 'html' ? 'html' : 'json';
   const timeoutMs = Math.max(10_000, Math.min(Number(input.timeoutMs || DEFAULT_TIMEOUT), 180_000));
+  step('context_creating', { timeoutMs, expect });
   const context = await newBrowserContext(contextOptions({
     locale: 'en-US',
     timezoneId: 'America/Los_Angeles',
@@ -1307,6 +1351,7 @@ async function fetchWithBrowser(input) {
       'Accept-Language': 'en-US,en;q=0.9',
     },
   }));
+  step('context_created');
 
   const page = await context.newPage();
   if (BLOCK_HEAVY_RESOURCES) await installResourceGuards(page);
@@ -1333,7 +1378,9 @@ async function fetchWithBrowser(input) {
     let requestFallback = null;
     if (expect === 'json') {
       try {
+        step('try_browser_context_json:start');
         const result = await tryBrowserContextJson(context, page, targetUrl, timeoutMs, input);
+        step('try_browser_context_json:done', { ok: result.ok, status: result.status, finalUrl: result.finalUrl });
         if (result.ok) {
           requestJsonResult = result;
           if (!isKickstarterProjectUrl(targetUrl)) {
@@ -1368,19 +1415,24 @@ async function fetchWithBrowser(input) {
     }
 
     const navigationUrl = navigationUrlForTarget(targetUrl, expect);
+    step('page_goto:start', { navigationUrl });
     const response = await page.goto(navigationUrl, {
       waitUntil: 'domcontentloaded',
       timeout: timeoutMs,
     });
+    step('page_goto:done', { status: response?.status?.() ?? null, finalUrl: page.url() });
     if (!response) {
       throw new Error('No browser response');
     }
 
     if (pageCrashed) throw new Error(`Page crashed while navigating to ${navigationUrl}`);
-    await waitForChallengeResolution(page, response, 'generic_fetch_navigation');
+    step('waitForChallengeResolution:start');
+    const challengeCleared = await waitForChallengeResolution(page, response, 'generic_fetch_navigation');
+    step('waitForChallengeResolution:done', { challengeCleared });
     await page.waitForLoadState('networkidle', { timeout: Math.min(timeoutMs, 20_000) }).catch(() => {});
     await saveBrowserStorageState(context).catch(() => {});
     await page.waitForTimeout(Number(input.settleMs || 1200));
+    step('post_goto_settle_done');
     if (expect === 'json') {
       await scrollForLazyContent(page, input);
       await page.waitForTimeout(Number(input.settleMs || 1200));
@@ -1692,6 +1744,23 @@ async function handle(req, res) {
     return;
   }
 
+  if (req.method === 'GET' && (req.url === '/requests' || req.url.startsWith('/requests?'))) {
+    if (!assertAuthorized(req)) {
+      send(res, 401, { error: 'Unauthorized' });
+      return;
+    }
+    const url = new URL(req.url, 'http://localhost');
+    const limit = Math.max(1, Math.min(Number(url.searchParams.get('limit') || 10), 30));
+    send(res, 200, {
+      ok: true,
+      service: 'kicksonar-browser-worker',
+      now: new Date().toISOString(),
+      total: requestHistory.length,
+      requests: requestHistory.slice(-limit).reverse(),
+    });
+    return;
+  }
+
   if (req.method === 'GET' && (req.url === '/diag' || req.url.startsWith('/diag?'))) {
     if (!assertAuthorized(req)) {
       send(res, 401, { error: 'Unauthorized' });
@@ -1724,12 +1793,29 @@ async function handle(req, res) {
     return;
   }
 
+  let tracker = null;
+  const startedAt = Date.now();
   try {
     const body = await readJson(req);
-    const result = await fetchWithBrowser(body);
+    tracker = trackRequestStart(body);
+    tracker.step('fetch_start', { hasProxy: Boolean(getProxyOptions()) });
+    const result = await fetchWithBrowser(body, tracker);
+    tracker.finish({
+      ok: result.ok ?? false,
+      status: result.status ?? null,
+      finalUrl: result.finalUrl ?? null,
+      durationMs: Date.now() - startedAt,
+    });
     send(res, 200, result);
   } catch (err) {
     const errorInfo = safeError(err);
+    if (tracker) {
+      tracker.finish({
+        ok: false,
+        durationMs: Date.now() - startedAt,
+        error: errorInfo,
+      });
+    }
     send(res, 500, {
       ok: false,
       error: errorInfo.message,
