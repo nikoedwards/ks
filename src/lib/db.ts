@@ -76,6 +76,8 @@ function ensureRuntimeMigrations(db: Database) {
   } catch { /* best-effort backfill */ }
   try { db.exec('ALTER TABLE tracking_settings ADD COLUMN subscriber_count INTEGER DEFAULT 0'); } catch { /* already exists */ }
   try { db.exec('ALTER TABLE tracking_settings ADD COLUMN priority_score INTEGER DEFAULT 0'); } catch { /* already exists */ }
+  try { db.exec('ALTER TABLE tracking_settings ADD COLUMN consecutive_failures INTEGER DEFAULT 0'); } catch { /* already exists */ }
+  try { db.exec('ALTER TABLE tracking_settings ADD COLUMN last_failure_at INTEGER'); } catch { /* already exists */ }
   try { db.exec('ALTER TABLE crawler_errors ADD COLUMN occurrence_count INTEGER DEFAULT 1'); } catch { /* already exists */ }
   try { db.exec('ALTER TABLE crawler_errors ADD COLUMN last_occurred_at INTEGER'); } catch { /* already exists */ }
   try { db.exec('UPDATE crawler_errors SET last_occurred_at = occurred_at WHERE last_occurred_at IS NULL'); } catch { /* nothing to backfill */ }
@@ -263,6 +265,8 @@ function getDB(): Database {
       priority_score INTEGER DEFAULT 0,
       last_fetched INTEGER,
       next_fetch INTEGER,
+      consecutive_failures INTEGER DEFAULT 0,
+      last_failure_at INTEGER,
       created_at INTEGER DEFAULT (unixepoch())
     );
 
@@ -2771,6 +2775,8 @@ export interface TrackingSettings {
   priority_score: number;
   last_fetched: number | null;
   next_fetch: number | null;
+  consecutive_failures: number;
+  last_failure_at: number | null;
   created_at: number;
 }
 
@@ -2964,13 +2970,46 @@ export function markFetched(projectId: string) {
         ? 2 * 3600
         : 6 * 3600;
   }
-  getDB().prepare('UPDATE tracking_settings SET last_fetched = ?, next_fetch = ? WHERE project_id = ?').run(now, now + interval, projectId);
+  getDB().prepare(
+    'UPDATE tracking_settings SET last_fetched = ?, next_fetch = ?, consecutive_failures = 0, last_failure_at = NULL WHERE project_id = ?'
+  ).run(now, now + interval, projectId);
 }
 
-export function getDueProjects(limit = 25): { project_id: string; priority: number; track_rewards: number; track_comments: number; track_text_diff: number }[] {
+export function recordScrapeSuccess(projectId: string, nextFetchIntervalSec: number) {
+  const now = Math.floor(Date.now() / 1000);
+  getDB().prepare(`
+    UPDATE tracking_settings
+    SET last_fetched = ?, next_fetch = ?, consecutive_failures = 0, last_failure_at = NULL
+    WHERE project_id = ?
+  `).run(now, now + nextFetchIntervalSec, projectId);
+}
+
+export function recordScrapeFailure(projectId: string): { consecutive_failures: number; next_fetch: number } {
+  const now = Math.floor(Date.now() / 1000);
+  const tx = getDB().transaction(() => {
+    const row = getDB().prepare(
+      'SELECT COALESCE(consecutive_failures, 0) AS consecutive_failures FROM tracking_settings WHERE project_id = ?'
+    ).get(projectId) as { consecutive_failures: number } | undefined;
+    const failures = (row?.consecutive_failures ?? 0) + 1;
+    // Exponential backoff: 30m, 2h, 6h, 24h, then capped at 24h.
+    const backoffStepsSec = [30 * 60, 2 * 3600, 6 * 3600, 24 * 3600];
+    const stepIndex = Math.min(failures - 1, backoffStepsSec.length - 1);
+    const nextFetch = now + backoffStepsSec[stepIndex];
+    getDB().prepare(`
+      UPDATE tracking_settings
+      SET next_fetch = ?, consecutive_failures = ?, last_failure_at = ?, last_fetched = COALESCE(last_fetched, ?)
+      WHERE project_id = ?
+    `).run(nextFetch, failures, now, now, projectId);
+    return { consecutive_failures: failures, next_fetch: nextFetch };
+  });
+  return tx();
+}
+
+export function getDueProjects(limit = 25): { project_id: string; priority: number; track_rewards: number; track_comments: number; track_text_diff: number; consecutive_failures: number }[] {
   const now = Math.floor(Date.now() / 1000);
   return getDB().prepare(`
-    SELECT t.project_id, t.priority, t.track_rewards, t.track_comments, t.track_text_diff
+    SELECT t.project_id, t.priority, t.track_rewards, t.track_comments, t.track_text_diff,
+           COALESCE(t.consecutive_failures, 0) as consecutive_failures
     FROM tracking_settings t
     JOIN projects p ON p.id = t.project_id
     WHERE t.is_tracking = 1
@@ -2978,7 +3017,7 @@ export function getDueProjects(limit = 25): { project_id: string; priority: numb
       AND (t.next_fetch IS NULL OR t.next_fetch <= ?)
     ORDER BY t.priority DESC, t.priority_score DESC, COALESCE(t.next_fetch, 0) ASC, t.last_fetched ASC
     LIMIT ?
-  `).all(now, limit) as { project_id: string; priority: number; track_rewards: number; track_comments: number; track_text_diff: number }[];
+  `).all(now, limit) as { project_id: string; priority: number; track_rewards: number; track_comments: number; track_text_diff: number; consecutive_failures: number }[];
 }
 
 export function autoTrackLiveProjects(limit = 250): { inserted: number; reactivated: number; totalTrackable: number; remaining: number } {

@@ -4,6 +4,7 @@ import {
   getProjectById,
   getRecentCrawlerErrors,
   recordCrawlerError,
+  recordScrapeFailure,
   upsertTrackingSettings,
   getCrawlerState,
   pruneOldDiagnostics,
@@ -116,7 +117,7 @@ async function scrapeDueProjects() {
     if (!due.length) return;
 
     console.log(`[tracker] scraping ${due.length} due project(s)`);
-    for (const { project_id, track_comments, track_text_diff } of due) {
+    for (const { project_id, track_comments, track_text_diff, consecutive_failures } of due) {
       const project = await getProjectById(project_id) as { source_url?: string; creator_slug?: string; slug?: string } | null;
       if (!project) continue;
 
@@ -136,7 +137,9 @@ async function scrapeDueProjects() {
 
       const result = await scrapeAndStore(project_id, jsonUrl, { track_rewards: 0, track_comments, track_text_diff });
       if (!result.ok) {
-        console.warn(`[tracker] Scrape failed for ${project_id}, will retry in 30min`);
+        const backoff = recordScrapeFailure(project_id);
+        const minutes = Math.round((backoff.next_fetch - Math.floor(Date.now() / 1000)) / 60);
+        console.warn(`[tracker] Scrape failed for ${project_id} (failures=${backoff.consecutive_failures}), retry in ${minutes}min`);
         const pageUrl = jsonUrl.replace(/\.json(?:[?#].*)?$/, '');
         const recentDetail = getRecentCrawlerErrors({ projectId: project_id, urls: [jsonUrl, pageUrl], limit: 1 })[0]?.message;
         recordCrawlerError({
@@ -145,11 +148,12 @@ async function scrapeDueProjects() {
           project_id,
           url: jsonUrl,
           message: recentDetail
-            ? `Kickstarter project sync failed: ${recentDetail}`
-            : 'Kickstarter project JSON scrape failed.',
+            ? `Kickstarter project sync failed (#${backoff.consecutive_failures}): ${recentDetail}`
+            : `Kickstarter project JSON scrape failed (#${backoff.consecutive_failures}).`,
         });
-        upsertTrackingSettings({ project_id, next_fetch: Math.floor(Date.now() / 1000) + 30 * 60 });
       }
+      // On success, the scrape pipeline already wrote next_fetch + reset consecutive_failures.
+      void consecutive_failures;
 
       await sleep(900);
     }
