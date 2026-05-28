@@ -2,7 +2,44 @@ import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { chromium } from 'playwright';
+import { chromium } from 'playwright-extra';
+import StealthPlugin from 'puppeteer-extra-plugin-stealth';
+
+// Apply stealth evasions so Cloudflare's bot management can't trivially flag
+// headless chromium (`navigator.webdriver`, WebGL renderer, missing chrome
+// runtime, audio context fingerprint, etc.). The user has confirmed real
+// Chrome opens kickstarter.com immediately; we want our headless browser to
+// look the same to Cloudflare.
+const STEALTH_ENABLED = !/^(0|false|no)$/i.test(process.env.BROWSER_STEALTH_ENABLED || '1');
+let stealthPluginInstance = null;
+if (STEALTH_ENABLED) {
+  stealthPluginInstance = StealthPlugin();
+  // The `chrome.runtime` evasion can interfere with some sites and Cloudflare's
+  // challenge JS expects a real value; default-on is fine, but expose a kill
+  // switch via env in case we need to disable specific evasions later.
+  const disabled = (process.env.BROWSER_STEALTH_DISABLE_EVASIONS || '').split(',').map(s => s.trim()).filter(Boolean);
+  for (const ev of disabled) stealthPluginInstance.enabledEvasions.delete(ev);
+  chromium.use(stealthPluginInstance);
+}
+
+function stealthDiagnostics() {
+  if (!STEALTH_ENABLED) return { enabled: false, evasions: [] };
+  let evasions = [];
+  try {
+    if (stealthPluginInstance?.enabledEvasions instanceof Set) {
+      evasions = Array.from(stealthPluginInstance.enabledEvasions);
+    } else if (Array.isArray(stealthPluginInstance?.enabledEvasions)) {
+      evasions = [...stealthPluginInstance.enabledEvasions];
+    }
+  } catch { /* ignore */ }
+  let pluginCount = 0;
+  try {
+    const list = chromium?.plugins?.list;
+    if (Array.isArray(list)) pluginCount = list.length;
+    else if (typeof list === 'function') pluginCount = list().length;
+  } catch { /* ignore */ }
+  return { enabled: true, evasions, pluginCount };
+}
 
 const PORT = Number(process.env.PORT || 8080);
 const TOKEN = (process.env.BROWSER_WORKER_TOKEN || '').trim();
@@ -1071,7 +1108,10 @@ async function fetchProjectDetailDebug(input) {
     context = await newBrowserContext(contextOptions({
       locale: 'en-US',
       timezoneId: 'America/Los_Angeles',
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+      // Let the stealth plugin's user-agent-override evasion handle UA spoofing
+      // (it rewrites HeadlessChrome → Chrome while keeping the real version).
+      // Manually setting Chrome/125 conflicts with stealth's logic and creates
+      // a UA-vs-other-signal mismatch that CF can detect.
       viewport: { width: 1440, height: 1200 },
       extraHTTPHeaders: {
         'Accept-Language': 'en-US,en;q=0.9',
@@ -1345,7 +1385,7 @@ async function fetchWithBrowser(input, tracker = null) {
   const context = await newBrowserContext(contextOptions({
     locale: 'en-US',
     timezoneId: 'America/Los_Angeles',
-    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+    // UA handled by stealth's user-agent-override evasion; see launch site above.
     viewport: { width: 1440, height: 1200 },
     extraHTTPHeaders: {
       'Accept-Language': 'en-US,en;q=0.9',
@@ -1682,7 +1722,7 @@ async function runDiagnostics({ skipLaunch = false, fetchUrl = null } = {}) {
       context = await newBrowserContext(contextOptions({
         locale: 'en-US',
         timezoneId: 'America/Los_Angeles',
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+        // UA handled by stealth plugin.
       }));
       const response = await context.request.get(fetchUrl, {
         timeout: Math.max(10_000, Math.min(Number(process.env.BROWSER_DIAG_FETCH_TIMEOUT_MS || 25_000), 60_000)),
@@ -1714,6 +1754,7 @@ async function runDiagnostics({ skipLaunch = false, fetchUrl = null } = {}) {
     runningBrowser,
     launchTest,
     fetchTest,
+    stealth: stealthDiagnostics(),
     storageState: await storageStateInfo(),
     env: workerEnvSummary(),
   };
