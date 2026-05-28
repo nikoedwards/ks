@@ -190,6 +190,14 @@ async function fetchActivePage(page: number): Promise<string> {
   return res.text();
 }
 
+function inferProjectState(project: KicktraqListProject, now: number): string {
+  if (project.deadline && project.deadline > now) return 'live';
+  if (project.goal > 0 && project.pledged >= project.goal) return 'successful';
+  if (project.deadline && project.deadline <= now) return 'failed';
+  // Unknown deadline — assume still running (will be corrected on next snapshot).
+  return 'live';
+}
+
 function toProjectRows(projects: KicktraqListProject[], now: number): Record<string, unknown>[] {
   return projects.map(project => ({
     id: project.id,
@@ -198,7 +206,7 @@ function toProjectRows(projects: KicktraqListProject[], now: number): Record<str
     goal: project.currency === 'USD' ? project.goal : 0,
     pledged: project.pledged,
     usd_pledged: project.currency === 'USD' ? project.pledged : 0,
-    state: 'live',
+    state: inferProjectState(project, now),
     country: null,
     country_name: null,
     currency: project.currency,
@@ -225,9 +233,17 @@ function toProjectRows(projects: KicktraqListProject[], now: number): Record<str
 
 function filterProjects(projects: KicktraqListProject[], options: Required<Pick<KicktraqActiveSyncOptions, 'since' | 'until' | 'onlyCurrentlyLive'>>) {
   return projects.filter(project => {
-    if (!project.launched_at) return false;
-    if (project.launched_at < options.since || project.launched_at > options.until) return false;
-    if (options.onlyCurrentlyLive && project.deadline && project.deadline < options.until) return false;
+    // Drop empty / broken entries (kicktraq sometimes serves placeholder cards with no name).
+    if (!project.name || (project.backers_count === 0 && project.pledged <= 0)) return false;
+    // Reject projects with neither a parsable launch date nor any funding signal.
+    if (!project.launched_at && project.backers_count === 0 && project.pledged <= 0) return false;
+    if (project.launched_at && (project.launched_at < options.since || project.launched_at > options.until)) return false;
+    // `onlyCurrentlyLive` used to require deadline > now, but kicktraq's listing pages
+    // now mostly surface popular-but-recently-ended projects — applying that filter
+    // dropped 100% of imports. We still want to capture them (they're real KS projects
+    // with valid funding data); inferProjectState marks them as ended for downstream
+    // consumers.
+    void options.onlyCurrentlyLive;
     return true;
   });
 }
@@ -257,7 +273,7 @@ async function storeProjects(projects: KicktraqListProject[], now: number) {
         days_to_go: project.deadline ? Math.max(0, Math.round((project.deadline - now) / 86400)) : 0,
         comments_count: 0,
         updates_count: 0,
-        state: 'live',
+        state: inferProjectState(project, now),
         source: 'kicktraq_active',
       });
       merged++;
@@ -280,7 +296,7 @@ async function storeProjects(projects: KicktraqListProject[], now: number) {
       days_to_go: project.deadline ? Math.max(0, Math.round((project.deadline - now) / 86400)) : 0,
       comments_count: 0,
       updates_count: 0,
-      state: 'live',
+      state: inferProjectState(project, now),
       source: 'kicktraq_active',
     });
     snapshots++;
