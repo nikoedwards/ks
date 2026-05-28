@@ -520,8 +520,10 @@ async function fetchHtmlViaBrowserProxy(url: string, projectId?: string): Promis
         'Accept': 'application/json, text/plain, */*',
         ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
       },
-      body: JSON.stringify({ url, expect: 'html' }),
-      signal: AbortSignal.timeout(Number(getOptionalEnv('KICKSTARTER_BROWSER_TIMEOUT_MS') || 60_000)),
+      // Match the discover-path timeout: Cloudflare's challenge wait alone is
+      // ~45s, so a 60s cap aborts before the worker can recover.
+      body: JSON.stringify({ url, expect: 'html', timeoutMs: 170_000, settleMs: 1500 }),
+      signal: AbortSignal.timeout(Math.max(60_000, Math.min(Number(getOptionalEnv('KICKSTARTER_BROWSER_TIMEOUT_MS') || 180_000), 300_000))),
       cache: 'no-store',
     });
     const text = await res.text();

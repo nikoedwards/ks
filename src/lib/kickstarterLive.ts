@@ -267,6 +267,12 @@ async function fetchDiscoverViaBrowser(url: string): Promise<BrowserFetchOutcome
   }
   const token = getOptionalEnv('BROWSER_WORKER_TOKEN');
 
+  // The browser worker now passes a 45s Cloudflare challenge per cold-cached
+  // page, so the per-request budget needs to be well above that. Default 180s
+  // (was 60s) gives the worker headroom for one CF challenge + page render +
+  // JSON extraction. Subsequent pages in the same sync reuse cf_clearance
+  // cookies and complete much faster.
+  const workerTimeoutMs = Math.max(60_000, Math.min(Number(getOptionalEnv('KICKSTARTER_BROWSER_TIMEOUT_MS') || 180_000), 300_000));
   let res: Response;
   try {
     res = await fetch(proxyUrl, {
@@ -276,8 +282,11 @@ async function fetchDiscoverViaBrowser(url: string): Promise<BrowserFetchOutcome
         'Accept': 'application/json, text/plain, */*',
         ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
       },
-      body: JSON.stringify({ url, expect: 'json' }),
-      signal: AbortSignal.timeout(Number(getOptionalEnv('KICKSTARTER_BROWSER_TIMEOUT_MS') || 60_000)),
+      // Explicitly tell the worker how long IT has, so its internal page-goto
+      // / challenge-wait can fit inside our outer abort signal (otherwise the
+      // worker uses its 60s default and we'd abort before it can recover).
+      body: JSON.stringify({ url, expect: 'json', timeoutMs: workerTimeoutMs - 10_000, settleMs: 1500 }),
+      signal: AbortSignal.timeout(workerTimeoutMs),
       cache: 'no-store',
     });
   } catch (err) {
