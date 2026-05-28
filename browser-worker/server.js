@@ -27,6 +27,13 @@ const ALLOWED_HOSTS = new Set([
 ]);
 
 let browserPromise;
+let lastLaunchError = null;
+const launchHistory = [];
+
+function recordLaunchOutcome(entry) {
+  launchHistory.push(entry);
+  while (launchHistory.length > 20) launchHistory.shift();
+}
 
 function getProxyOptions() {
   const rawServer = (process.env.BROWSER_PROXY_URL
@@ -71,17 +78,66 @@ function contextOptions(base = {}) {
   };
 }
 
-function launchBrowser() {
+const CHROMIUM_LAUNCH_ARGS = [
+  '--disable-blink-features=AutomationControlled',
+  '--disable-dev-shm-usage',
+  '--no-sandbox',
+];
+
+const LAUNCH_MAX_ATTEMPTS = Math.max(1, Math.min(Number(process.env.BROWSER_LAUNCH_MAX_ATTEMPTS || 3), 5));
+
+async function attemptLaunch(label = 'launch') {
   const proxy = getProxyOptions();
-  const promise = chromium.launch({
-    headless: true,
-    ...(proxy ? { proxy } : {}),
-    args: [
-      '--disable-blink-features=AutomationControlled',
-      '--disable-dev-shm-usage',
-      '--no-sandbox',
-    ],
-  }).then(browser => {
+  const startedAt = Date.now();
+  try {
+    const browser = await chromium.launch({
+      headless: true,
+      ...(proxy ? { proxy } : {}),
+      args: CHROMIUM_LAUNCH_ARGS,
+    });
+    const outcome = {
+      label,
+      ok: true,
+      hasProxy: Boolean(proxy),
+      elapsedMs: Date.now() - startedAt,
+      at: new Date().toISOString(),
+    };
+    recordLaunchOutcome(outcome);
+    lastLaunchError = null;
+    return browser;
+  } catch (err) {
+    const outcome = {
+      label,
+      ok: false,
+      hasProxy: Boolean(proxy),
+      elapsedMs: Date.now() - startedAt,
+      at: new Date().toISOString(),
+      error: safeError(err),
+    };
+    recordLaunchOutcome(outcome);
+    lastLaunchError = outcome;
+    throw err;
+  }
+}
+
+async function launchWithRetries(maxAttempts = LAUNCH_MAX_ATTEMPTS) {
+  let lastErr = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await attemptLaunch(`launch_attempt_${attempt}`);
+    } catch (err) {
+      lastErr = err;
+      if (attempt < maxAttempts) {
+        const backoff = Math.min(8000, 1000 * Math.pow(2, attempt - 1));
+        await new Promise(resolve => setTimeout(resolve, backoff));
+      }
+    }
+  }
+  throw lastErr;
+}
+
+function launchBrowser() {
+  const promise = launchWithRetries().then(browser => {
     browser.on('disconnected', () => {
       if (browserPromise === promise) browserPromise = null;
     });
@@ -358,11 +414,17 @@ function hasProjectDetails(project) {
 }
 
 function safeError(err) {
-  return {
+  if (!err) return { name: 'Unknown', message: 'Unknown error' };
+  const info = {
     name: err instanceof Error ? err.name : 'Error',
     message: err instanceof Error ? err.message : String(err),
     stack: err instanceof Error ? err.stack?.slice(0, 2000) : undefined,
   };
+  if (err && typeof err === 'object') {
+    if (err.code) info.code = String(err.code);
+    if (err.cause) info.cause = err.cause instanceof Error ? err.cause.message : String(err.cause);
+  }
+  return info;
 }
 
 function countDetails(project) {
@@ -1484,6 +1546,127 @@ async function fetchWithBrowser(input) {
   }
 }
 
+async function probeBrowserConnection() {
+  if (!browserPromise) {
+    return { initialized: false, connected: null, version: null };
+  }
+  try {
+    const browser = await browserPromise;
+    return {
+      initialized: true,
+      connected: browser.isConnected?.() ?? null,
+      version: typeof browser.version === 'function' ? browser.version() : null,
+    };
+  } catch (err) {
+    return { initialized: false, connected: false, version: null, error: safeError(err) };
+  }
+}
+
+function workerEnvSummary() {
+  const memory = process.memoryUsage();
+  const proxy = getProxyOptions();
+  return {
+    node: process.version,
+    platform: process.platform,
+    arch: process.arch,
+    uptimeSec: Math.round(process.uptime()),
+    memoryMB: {
+      rss: Math.round(memory.rss / 1024 / 1024),
+      heapUsed: Math.round(memory.heapUsed / 1024 / 1024),
+      heapTotal: Math.round(memory.heapTotal / 1024 / 1024),
+      external: Math.round(memory.external / 1024 / 1024),
+    },
+    proxy: {
+      configured: Boolean(proxy),
+      server: proxy?.server ?? null,
+      hasUsername: Boolean(proxy?.username),
+      hasPassword: Boolean(proxy?.password),
+      bypass: proxy?.bypass ?? null,
+    },
+    flags: {
+      debugScreenshots: DEBUG_SCREENSHOTS,
+      blockHeavyResources: BLOCK_HEAVY_RESOURCES,
+      ignoreHTTPSErrors: IGNORE_HTTPS_ERRORS,
+      challengeWaitMs: CHALLENGE_WAIT_MS,
+      oxylabsUserAgentType: OXYLABS_USER_AGENT_TYPE || null,
+      launchMaxAttempts: LAUNCH_MAX_ATTEMPTS,
+      tokenConfigured: Boolean(TOKEN),
+      playwrightBrowsersPath: process.env.PLAYWRIGHT_BROWSERS_PATH || null,
+    },
+    lastLaunchError,
+    launchHistory: launchHistory.slice(-10),
+  };
+}
+
+async function runDiagnostics({ skipLaunch = false, fetchUrl = null } = {}) {
+  const startedAt = Date.now();
+  const runningBrowser = await probeBrowserConnection();
+
+  const launchTest = { attempted: false, skipped: skipLaunch, ok: false, elapsedMs: null, error: null, browserVersion: null };
+  if (!skipLaunch) {
+    launchTest.attempted = true;
+    const lt = Date.now();
+    let testBrowser = null;
+    try {
+      testBrowser = await attemptLaunch('diag_launch_test');
+      launchTest.ok = true;
+      launchTest.browserVersion = typeof testBrowser.version === 'function' ? testBrowser.version() : null;
+    } catch (err) {
+      launchTest.error = safeError(err);
+    } finally {
+      launchTest.elapsedMs = Date.now() - lt;
+      if (testBrowser) {
+        await testBrowser.close().catch(() => {});
+      }
+    }
+  }
+
+  let fetchTest = null;
+  if (fetchUrl) {
+    let context = null;
+    const ft = { attempted: true, url: fetchUrl, ok: false, status: null, elapsedMs: null, error: null, contentTypePreview: null, bodyPreview: null };
+    const fts = Date.now();
+    try {
+      context = await newBrowserContext(contextOptions({
+        locale: 'en-US',
+        timezoneId: 'America/Los_Angeles',
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+      }));
+      const response = await context.request.get(fetchUrl, {
+        timeout: Math.max(10_000, Math.min(Number(process.env.BROWSER_DIAG_FETCH_TIMEOUT_MS || 25_000), 60_000)),
+        headers: {
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.9',
+        },
+      });
+      ft.ok = response.ok();
+      ft.status = response.status();
+      const headers = response.headers();
+      ft.contentTypePreview = (headers['content-type'] || '').slice(0, 120);
+      const text = await response.text();
+      ft.bodyPreview = text.slice(0, 240);
+    } catch (err) {
+      ft.error = safeError(err);
+    } finally {
+      ft.elapsedMs = Date.now() - fts;
+      await context?.close?.().catch(() => {});
+      fetchTest = ft;
+    }
+  }
+
+  return {
+    ok: skipLaunch ? true : launchTest.ok,
+    service: 'kicksonar-browser-worker',
+    now: new Date().toISOString(),
+    elapsedMs: Date.now() - startedAt,
+    runningBrowser,
+    launchTest,
+    fetchTest,
+    storageState: await storageStateInfo(),
+    env: workerEnvSummary(),
+  };
+}
+
 async function handle(req, res) {
   if (req.method === 'GET' && req.url === '/health') {
     let browserConnected = null;
@@ -1504,7 +1687,30 @@ async function handle(req, res) {
       blockHeavyResources: BLOCK_HEAVY_RESOURCES,
       ignoreHTTPSErrors: IGNORE_HTTPS_ERRORS,
       oxylabsUserAgentType: OXYLABS_USER_AGENT_TYPE || null,
+      lastLaunchError,
     });
+    return;
+  }
+
+  if (req.method === 'GET' && (req.url === '/diag' || req.url.startsWith('/diag?'))) {
+    if (!assertAuthorized(req)) {
+      send(res, 401, { error: 'Unauthorized' });
+      return;
+    }
+    const url = new URL(req.url, 'http://localhost');
+    const skipLaunch = url.searchParams.get('skipLaunch') === '1';
+    const fetchUrl = url.searchParams.get('fetchUrl');
+    try {
+      const result = await runDiagnostics({ skipLaunch, fetchUrl });
+      send(res, result.ok ? 200 : 503, result);
+    } catch (err) {
+      send(res, 500, {
+        ok: false,
+        service: 'kicksonar-browser-worker',
+        error: safeError(err),
+        env: workerEnvSummary(),
+      });
+    }
     return;
   }
 
@@ -1523,9 +1729,17 @@ async function handle(req, res) {
     const result = await fetchWithBrowser(body);
     send(res, 200, result);
   } catch (err) {
+    const errorInfo = safeError(err);
     send(res, 500, {
       ok: false,
-      error: err instanceof Error ? err.message : String(err),
+      error: errorInfo.message,
+      errorDetails: {
+        ...errorInfo,
+        proxyConfigured: Boolean(getProxyOptions()),
+        proxyServer: getProxyOptions()?.server ?? null,
+        browserInitialized: Boolean(browserPromise),
+        lastLaunchError,
+      },
     });
   }
 }

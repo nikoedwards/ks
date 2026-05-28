@@ -17,41 +17,43 @@ interface WorkerHealthResult {
   latencyMs: number | null;
   message: string | null;
   endpoint: string | null;
+  body?: unknown;
 }
 
-async function probeBrowserWorker(): Promise<WorkerHealthResult> {
-  const fetchUrl = process.env.KICKSTARTER_BROWSER_FETCH_URL?.trim();
-  if (!fetchUrl) {
-    return { ok: false, status: null, latencyMs: null, message: 'KICKSTARTER_BROWSER_FETCH_URL is not set on the main service.', endpoint: null };
-  }
-  let healthUrl: string;
+function deriveWorkerUrl(fetchUrl: string, suffix: string): string | null {
   try {
     const u = new URL(fetchUrl);
-    u.pathname = u.pathname.replace(/\/fetch\/?$/, '/health');
-    if (!u.pathname.endsWith('/health')) {
-      u.pathname = u.pathname.replace(/\/?$/, '/health');
+    u.pathname = u.pathname.replace(/\/fetch\/?$/, suffix);
+    if (!u.pathname.endsWith(suffix)) {
+      u.pathname = u.pathname.replace(/\/?$/, suffix);
     }
-    healthUrl = u.toString();
+    u.search = '';
+    return u.toString();
   } catch {
-    return { ok: false, status: null, latencyMs: null, message: `Invalid KICKSTARTER_BROWSER_FETCH_URL: ${fetchUrl.slice(0, 80)}`, endpoint: null };
+    return null;
   }
+}
 
+async function probeWorkerEndpoint(targetUrl: string, timeoutMs = 25_000): Promise<WorkerHealthResult> {
   const token = process.env.BROWSER_WORKER_TOKEN?.trim();
   const startedAt = Date.now();
   try {
-    const res = await fetch(healthUrl, {
+    const res = await fetch(targetUrl, {
       method: 'GET',
       headers: token ? { 'Authorization': `Bearer ${token}` } : undefined,
-      signal: AbortSignal.timeout(10_000),
+      signal: AbortSignal.timeout(timeoutMs),
       cache: 'no-store',
     });
     const text = await res.text();
+    let body: unknown = undefined;
+    try { body = JSON.parse(text); } catch { body = text.slice(0, 800); }
     return {
       ok: res.ok,
       status: res.status,
       latencyMs: Date.now() - startedAt,
-      message: res.ok ? text.slice(0, 200) || 'ok' : `HTTP ${res.status}: ${text.slice(0, 200)}`,
-      endpoint: healthUrl,
+      message: res.ok ? 'ok' : `HTTP ${res.status}`,
+      endpoint: targetUrl,
+      body,
     };
   } catch (err) {
     return {
@@ -59,17 +61,38 @@ async function probeBrowserWorker(): Promise<WorkerHealthResult> {
       status: null,
       latencyMs: Date.now() - startedAt,
       message: err instanceof Error ? err.message : String(err),
-      endpoint: healthUrl,
+      endpoint: targetUrl,
     };
   }
+}
+
+async function probeBrowserWorker(): Promise<{ health: WorkerHealthResult; diag: WorkerHealthResult | null }> {
+  const fetchUrl = process.env.KICKSTARTER_BROWSER_FETCH_URL?.trim();
+  if (!fetchUrl) {
+    return {
+      health: { ok: false, status: null, latencyMs: null, message: 'KICKSTARTER_BROWSER_FETCH_URL is not set on the main service.', endpoint: null },
+      diag: null,
+    };
+  }
+  const healthUrl = deriveWorkerUrl(fetchUrl, '/health');
+  const diagUrl = deriveWorkerUrl(fetchUrl, '/diag');
+  if (!healthUrl) {
+    return {
+      health: { ok: false, status: null, latencyMs: null, message: `Invalid KICKSTARTER_BROWSER_FETCH_URL: ${fetchUrl.slice(0, 80)}`, endpoint: null },
+      diag: null,
+    };
+  }
+  const health = await probeWorkerEndpoint(healthUrl, 10_000);
+  const diag = diagUrl ? await probeWorkerEndpoint(diagUrl, 40_000) : null;
+  return { health, diag };
 }
 
 export async function GET(req: NextRequest) {
   if (!requireAdmin(req)) return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   const probeWorker = req.nextUrl.searchParams.get('probeWorker') !== '0';
   const diagnostics = getDiagnosticsReport();
-  const workerHealth = probeWorker ? await probeBrowserWorker() : null;
-  return NextResponse.json({ diagnostics, workerHealth });
+  const worker = probeWorker ? await probeBrowserWorker() : { health: null, diag: null };
+  return NextResponse.json({ diagnostics, workerHealth: worker.health, workerDiag: worker.diag });
 }
 
 export async function POST(req: NextRequest) {

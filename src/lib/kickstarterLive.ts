@@ -216,6 +216,42 @@ function isBrowserWorkerConfigured(): boolean {
   return !!getOptionalEnv('KICKSTARTER_BROWSER_FETCH_URL');
 }
 
+function summarizeWorkerError(text: string): string {
+  if (!text) return '(empty body)';
+  try {
+    const parsed = JSON.parse(text) as {
+      error?: string;
+      errorDetails?: {
+        name?: string;
+        message?: string;
+        code?: string;
+        proxyConfigured?: boolean;
+        proxyServer?: string | null;
+        browserInitialized?: boolean;
+        lastLaunchError?: { error?: { message?: string; name?: string; code?: string }; hasProxy?: boolean; elapsedMs?: number } | null;
+      };
+    };
+    const details = parsed.errorDetails;
+    if (details) {
+      const parts: string[] = [];
+      if (details.name && details.name !== 'Error') parts.push(details.name);
+      if (details.message) parts.push(details.message);
+      if (details.code) parts.push(`code=${details.code}`);
+      if (details.proxyConfigured) parts.push(`proxy=${details.proxyServer ?? 'configured'}`);
+      const lastLaunch = details.lastLaunchError?.error;
+      if (lastLaunch?.message && lastLaunch.message !== details.message) {
+        parts.push(`lastLaunch=${lastLaunch.name ?? 'Error'}:${lastLaunch.message}`);
+      }
+      const summary = parts.filter(Boolean).join(' | ');
+      if (summary) return summary.slice(0, 1200);
+    }
+    if (parsed.error) return String(parsed.error).slice(0, 1200);
+    return JSON.stringify(parsed).slice(0, 1200);
+  } catch {
+    return text.slice(0, 1200);
+  }
+}
+
 async function fetchDiscoverViaBrowser(url: string): Promise<BrowserFetchOutcome> {
   const proxyUrl = getOptionalEnv('KICKSTARTER_BROWSER_FETCH_URL');
   if (!proxyUrl) {
@@ -250,7 +286,8 @@ async function fetchDiscoverViaBrowser(url: string): Promise<BrowserFetchOutcome
   }
   const text = await res.text();
   if (!res.ok) {
-    const message = `Browser worker HTTP ${res.status}: ${text.slice(0, 500)}`;
+    const detail = summarizeWorkerError(text);
+    const message = `Browser worker HTTP ${res.status}: ${detail}`;
     recordCrawlerError({
       source: 'ks_live',
       job_type: 'browser_fallback',
