@@ -49,7 +49,10 @@ const STORAGE_STATE_PATH = process.env.BROWSER_STORAGE_STATE_PATH
   || path.join(os.tmpdir(), 'kicksonar-browser-worker-storage-state.json');
 const DEBUG_SCREENSHOTS = !/^(0|false|no)$/i.test(process.env.BROWSER_DEBUG_SCREENSHOTS || '1');
 const BLOCK_HEAVY_RESOURCES = /^(1|true|yes)$/i.test(process.env.BROWSER_BLOCK_HEAVY_RESOURCES || '0');
-const CHALLENGE_WAIT_MS = Math.max(3000, Math.min(Number(process.env.BROWSER_CHALLENGE_WAIT_MS || 15_000), 60_000));
+// Default 45s — Cloudflare managed challenge solves in 3-10s for well-faked
+// browsers, but a cold first hit can take longer. Cap at 120s so we don't
+// hang requests forever. Override via BROWSER_CHALLENGE_WAIT_MS.
+const CHALLENGE_WAIT_MS = Math.max(3000, Math.min(Number(process.env.BROWSER_CHALLENGE_WAIT_MS || 45_000), 120_000));
 const OXYLABS_USER_AGENT_TYPE = (process.env.OXYLABS_USER_AGENT_TYPE
   || process.env.BROWSER_OXYLABS_USER_AGENT_TYPE
   || '').trim();
@@ -156,11 +159,29 @@ function contextOptions(base = {}) {
   };
 }
 
+// `--headless=new` is Chrome's modern headless mode (Chrome 109+) — it uses
+// the same browser binary as headed Chrome, which makes Cloudflare's managed
+// challenge significantly more likely to clear. The legacy mode used by
+// Playwright's default `headless: true` is detectable via subtle differences
+// in CDP / GPU / font enumeration. Toggle with `BROWSER_HEADLESS_MODE` env:
+//   "new"   → --headless=new (default; recommended)
+//   "old"   → --headless (legacy; matches previous behavior)
+//   "false" → headed mode (will fail in Docker without xvfb)
+const HEADLESS_MODE = (process.env.BROWSER_HEADLESS_MODE || 'new').toLowerCase();
+const USE_HEADED = HEADLESS_MODE === 'false' || HEADLESS_MODE === '0' || HEADLESS_MODE === 'no';
+const USE_NEW_HEADLESS = !USE_HEADED && HEADLESS_MODE !== 'old';
+
 const CHROMIUM_LAUNCH_ARGS = [
   '--disable-blink-features=AutomationControlled',
   '--disable-dev-shm-usage',
   '--no-sandbox',
+  // Avoid the GPU-disabled fingerprint when running headless.
+  '--use-gl=swiftshader',
+  '--enable-webgl',
+  // Slight realism nudges that real Chrome ships with.
+  '--disable-features=IsolateOrigins,site-per-process,SitePerProcess',
 ];
+if (USE_NEW_HEADLESS) CHROMIUM_LAUNCH_ARGS.push('--headless=new');
 
 const LAUNCH_MAX_ATTEMPTS = Math.max(1, Math.min(Number(process.env.BROWSER_LAUNCH_MAX_ATTEMPTS || 3), 5));
 
@@ -169,7 +190,11 @@ async function attemptLaunch(label = 'launch') {
   const startedAt = Date.now();
   try {
     const browser = await chromium.launch({
-      headless: true,
+      // With --headless=new in CHROMIUM_LAUNCH_ARGS, Playwright still routes
+      // through its headless code paths but the browser binary behaves like
+      // headed Chrome. Pass `headless: false` for true headed mode (needs
+      // xvfb in Docker, which we don't ship).
+      headless: !USE_HEADED,
       ...(proxy ? { proxy } : {}),
       args: CHROMIUM_LAUNCH_ARGS,
     });
@@ -1049,20 +1074,40 @@ async function warmupKickstarterSession(page, campaignUrl, diagnostics, pageTime
   return true;
 }
 
-async function waitForChallengeResolution(page, response, label) {
+async function waitForChallengeResolution(page, response, _label) {
   const headers = response?.headers?.() || {};
   const mitigated = String(headers['cf-mitigated'] || '').toLowerCase();
   const status = response?.status?.() ?? null;
   const initialLooksBlocked = status === 403 || mitigated === 'challenge';
   if (!initialLooksBlocked) return false;
 
-  await page.waitForTimeout(CHALLENGE_WAIT_MS);
-  await page.waitForLoadState('networkidle', { timeout: Math.min(CHALLENGE_WAIT_MS, 20_000) }).catch(() => {});
-  const stillBlocked = await page.evaluate(() => {
-    const text = (document.body?.innerText || document.documentElement?.textContent || '').replace(/\s+/g, ' ').trim();
-    return /cf_chl|just a moment|enable javascript and cookies|cloudflare|forbidden|access denied/i.test(text);
-  }).catch(() => true);
-  return !stillBlocked;
+  // Poll for resolution: Cloudflare's managed challenge JS resolves by either
+  // (a) navigating the page to a URL without `__cf_chl_rt_tk`, or
+  // (b) re-rendering the original document. We watch BOTH the URL and the
+  // visible body text, with a tighter polling interval, so we exit as soon as
+  // CF has actually let us through (often 3-10s with --headless=new) rather
+  // than always sleeping the full max wait.
+  const deadline = Date.now() + CHALLENGE_WAIT_MS;
+  let cleared = false;
+  while (Date.now() < deadline) {
+    await page.waitForTimeout(500);
+    const url = page.url();
+    const onChallengeUrl = /__cf_chl_(?:rt_)?tk=/.test(url);
+    const stillBlocked = await page.evaluate(() => {
+      const text = (document.body?.innerText || document.documentElement?.textContent || '').slice(0, 4000);
+      return /cf_chl|just a moment|enable javascript and cookies|access denied|forbidden/i.test(text);
+    }).catch(() => true);
+    if (!onChallengeUrl && !stillBlocked) {
+      cleared = true;
+      break;
+    }
+  }
+
+  // Give any post-challenge XHRs a moment to land.
+  if (cleared) {
+    await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
+  }
+  return cleared;
 }
 
 async function newWorkerPage(context, pageTimeoutMs, diagnostics) {
@@ -1473,6 +1518,48 @@ async function fetchWithBrowser(input, tracker = null) {
     await saveBrowserStorageState(context).catch(() => {});
     await page.waitForTimeout(Number(input.settleMs || 1200));
     step('post_goto_settle_done');
+
+    // If CF challenge cleared during the page.goto pass, the browser context
+    // now holds a valid cf_clearance cookie. The earlier context.request.get
+    // (in tryBrowserContextJson) ran before that cookie existed, so its 403
+    // doesn't mean the endpoint is unreachable — retry through the same
+    // context now that we're authenticated.
+    if (expect === 'json' && challengeCleared && (!requestJsonResult || !requestJsonResult.ok)) {
+      step('post_challenge_json_retry:start');
+      try {
+        const retry = await context.request.get(targetUrl, {
+          timeout: Math.min(timeoutMs, 30_000),
+          headers: {
+            'Accept': 'application/json, text/plain, */*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': page.url(),
+            'X-Requested-With': 'XMLHttpRequest',
+            'Sec-Fetch-Dest': 'empty',
+            'Sec-Fetch-Mode': 'cors',
+            'Sec-Fetch-Site': 'same-origin',
+          },
+        });
+        step('post_challenge_json_retry:done', { status: retry.status(), ok: retry.ok() });
+        if (retry.ok()) {
+          const retryText = await retry.text();
+          const sizedText = Buffer.byteLength(retryText) > MAX_BODY_BYTES
+            ? retryText.slice(0, MAX_BODY_BYTES) : retryText;
+          try {
+            const parsed = JSON.parse(sizedText);
+            return {
+              ok: true,
+              status: retry.status(),
+              contentType: contentTypeFromHeaders(retry.headers()),
+              finalUrl: targetUrl,
+              body: isKickstarterProjectUrl(targetUrl) ? findBestProject(parsed) || parsed : parsed,
+              elapsedMs: Date.now() - startedAt,
+            };
+          } catch { /* fall through to page extraction below */ }
+        }
+      } catch (err) {
+        step('post_challenge_json_retry:error', { error: err instanceof Error ? err.message : String(err) });
+      }
+    }
     if (expect === 'json') {
       await scrollForLazyContent(page, input);
       await page.waitForTimeout(Number(input.settleMs || 1200));

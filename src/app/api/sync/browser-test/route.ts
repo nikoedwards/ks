@@ -87,12 +87,12 @@ export async function GET(req: NextRequest) {
       body: JSON.stringify({
         url: testUrl,
         expect: 'json',
-        timeoutMs: 90_000,
+        timeoutMs: 130_000,
         settleMs: 1500,
         scrollSteps: target ? 10 : 1,
       }),
       cache: 'no-store',
-      signal: AbortSignal.timeout(100_000),
+      signal: AbortSignal.timeout(150_000),
     });
     const text = await res.text();
     const body = safeJson(text);
