@@ -785,7 +785,32 @@ async function scrapeBasicFallback(projectId: string, jsonUrl: string, opts: Scr
   };
 }
 
+function shouldSkipKsDirectScrape(opts: ScrapeOptions): boolean {
+  // Manual user-triggered refreshes always try KS direct first.
+  if (opts.manual) return false;
+  return process.env.SKIP_KS_DIRECT_SCRAPE === '1';
+}
+
 export async function scrapeAndStore(projectId: string, jsonUrl: string, opts: ScrapeOptions = {}): Promise<ScrapeResult> {
+  // When KS direct paths are known to be Cloudflare-blocked, skip the long
+  // KS JSON / HTML fetch attempts (each can stall 18-60s while Cloudflare
+  // serves a challenge page) and go straight to the Kicktraq summary path.
+  if (shouldSkipKsDirectScrape(opts)) {
+    const fallback = await scrapeBasicFallback(projectId, jsonUrl, {
+      ...opts,
+      allowHtmlFallback: false,
+    });
+    if (fallback) return fallback;
+    return {
+      ok: false,
+      full: false,
+      source: 'failed',
+      rewardCount: 0,
+      collaboratorCount: 0,
+      message: 'Kickstarter project sync failed (KS direct skipped, Kicktraq summary unavailable).',
+    };
+  }
+
   const p = await scrapeKSJson(jsonUrl, projectId, opts);
   if (!p) {
     const fallback = await scrapeBasicFallback(projectId, jsonUrl, opts);
