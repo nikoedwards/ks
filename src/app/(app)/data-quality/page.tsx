@@ -156,6 +156,23 @@ interface QualityReport {
     autoTrackedLive: number;
     untrackedLive: number;
   };
+  schedule: {
+    overdue: number;
+    within1h: number;
+    within6h: number;
+    within24h: number;
+    beyond24h: number;
+    batchSize: number;
+    cycleSeconds: number;
+    upcoming: {
+      id: string;
+      name: string;
+      state: string;
+      lastFetched: number | null;
+      nextFetch: number | null;
+      consecutiveFailures: number;
+    }[];
+  };
   sourceHealth: SourceHealth[];
   syncSources: SourceHealth[];
   recentRuns: CrawlRun[];
@@ -415,6 +432,143 @@ function StorageSection({ diagnostics, cn }: { diagnostics: DiagnosticsReport; c
             ))}
           </div>
         </details>
+      )}
+    </section>
+  );
+}
+
+function TrackingSection({ report, cn }: { report: QualityReport; cn: boolean }) {
+  const t = report.tracking;
+  const s = report.schedule;
+  const untrackable = Math.max(0, report.totals.liveProjects - t.liveTrackable);
+
+  const perHour = s.cycleSeconds > 0 ? Math.round((s.batchSize / s.cycleSeconds) * 3600) : 0;
+  const drainHours = perHour > 0 ? Math.ceil(s.overdue / perHour) : null;
+
+  const buckets = [
+    { key: 'overdue', label: cn ? '待抓（已到期）' : 'Due now', value: s.overdue, color: 'bg-amber-400', text: 'text-amber-700' },
+    { key: 'within1h', label: cn ? '1 小时内' : '< 1h', value: s.within1h, color: 'bg-blue-400', text: 'text-blue-700' },
+    { key: 'within6h', label: cn ? '6 小时内' : '< 6h', value: s.within6h, color: 'bg-ks-green', text: 'text-green-700' },
+    { key: 'within24h', label: cn ? '24 小时内' : '< 24h', value: s.within24h, color: 'bg-teal-400', text: 'text-teal-700' },
+    { key: 'beyond24h', label: cn ? '更久' : '> 24h', value: s.beyond24h, color: 'bg-gray-300', text: 'text-gray-600' },
+  ];
+  const bucketTotal = Math.max(1, buckets.reduce((sum, b) => sum + b.value, 0));
+
+  const fmtSched = (ts: number | null) => {
+    if (!ts) return cn ? '未排期' : 'unscheduled';
+    return fmtRelative(ts, cn);
+  };
+
+  return (
+    <section className="bg-white border border-gray-100 rounded-lg p-5">
+      <div className="flex items-center gap-2 mb-4">
+        <RadioTower className="w-4 h-4 text-ks-green" />
+        <h2 className="font-semibold text-gray-800">{cn ? '追踪覆盖与排期' : 'Tracking Coverage & Schedule'}</h2>
+      </div>
+
+      {/* Coverage funnel — explains why "tracking now" < "live total" */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="bg-gray-50 rounded-lg p-4">
+          <p className="text-xs text-gray-500">{cn ? '进行中项目' : 'Live projects'}</p>
+          <p className="text-2xl font-bold text-gray-900 mt-1">{fmtNum(report.totals.liveProjects)}</p>
+          <p className="text-[11px] text-gray-400 mt-1">{cn ? '全部 live 状态' : 'All live'}</p>
+        </div>
+        <div className="bg-green-50 rounded-lg p-4">
+          <p className="text-xs text-green-700">{cn ? '已追踪（实时）' : 'Tracking now'}</p>
+          <p className="text-2xl font-bold text-green-900 mt-1">{fmtNum(t.autoTrackedLive)}</p>
+          <p className="text-[11px] text-green-600/70 mt-1">{cn ? '已在定时打点名单' : 'On the schedule'}</p>
+        </div>
+        <div className="bg-amber-50 rounded-lg p-4">
+          <p className="text-xs text-amber-700">{cn ? '待纳入' : 'Pending enroll'}</p>
+          <p className="text-2xl font-bold text-amber-900 mt-1">{fmtNum(t.untrackedLive)}</p>
+          <p className="text-[11px] text-amber-600/70 mt-1">{cn ? '可追踪但还没入队' : 'Trackable, not yet enrolled'}</p>
+        </div>
+        <div className="bg-gray-50 rounded-lg p-4">
+          <p className="text-xs text-gray-500">{cn ? '不可追踪' : 'Untrackable'}</p>
+          <p className="text-2xl font-bold text-gray-900 mt-1">{fmtNum(untrackable)}</p>
+          <p className="text-[11px] text-gray-400 mt-1">{cn ? '缺有效 KS 链接 / slug' : 'No valid KS URL / slug'}</p>
+        </div>
+      </div>
+      <p className="text-xs text-gray-400 mt-3 leading-relaxed">
+        {cn
+          ? `关系：进行中 ${fmtNum(report.totals.liveProjects)} = 已追踪 ${fmtNum(t.autoTrackedLive)} + 待纳入 ${fmtNum(t.untrackedLive)} + 不可追踪 ${fmtNum(untrackable)}。“待纳入”会每 15 分钟分批自动入队；“不可追踪”是只有基础数据、没有可用 Kickstarter 链接的项目（多来自 Kicktraq），无法定时抓取。`
+          : `Live ${fmtNum(report.totals.liveProjects)} = tracking ${fmtNum(t.autoTrackedLive)} + pending ${fmtNum(t.untrackedLive)} + untrackable ${fmtNum(untrackable)}. Pending ones are auto-enrolled in batches every 15 min; untrackable ones lack a usable Kickstarter URL/slug (mostly Kicktraq-only rows) and can't be fetched on a schedule.`}
+      </p>
+
+      {/* Cadence rules */}
+      <div className="mt-5 pt-4 border-t border-gray-100">
+        <p className="text-xs font-semibold text-gray-600 mb-2">{cn ? '抓取节奏（按项目热度）' : 'Refresh cadence (by project heat)'}</p>
+        <div className="flex flex-wrap gap-2 text-[11px]">
+          <span className="rounded-full bg-blue-50 text-blue-700 px-2.5 py-1">{cn ? '每 1 小时：发布首日 / 临近截止 48h / 高优先' : 'Every 1h: first day / last 48h / high priority'}</span>
+          <span className="rounded-full bg-green-50 text-green-700 px-2.5 py-1">{cn ? '每 2 小时：热门（≥$500k 或 ≥5000 支持者）' : 'Every 2h: hot (≥$500k or ≥5000 backers)'}</span>
+          <span className="rounded-full bg-gray-100 text-gray-600 px-2.5 py-1">{cn ? '每 6 小时：普通进行中项目' : 'Every 6h: normal live projects'}</span>
+          <span className="rounded-full bg-amber-50 text-amber-700 px-2.5 py-1">{cn ? '失败重试：30m → 2h → 6h → 24h' : 'Retry backoff: 30m → 2h → 6h → 24h'}</span>
+        </div>
+      </div>
+
+      {/* Schedule distribution */}
+      <div className="mt-5 pt-4 border-t border-gray-100">
+        <div className="flex items-center justify-between mb-2">
+          <p className="text-xs font-semibold text-gray-600">{cn ? '下次抓取排期分布' : 'Next-fetch schedule'}</p>
+          <p className="text-[11px] text-gray-400">
+            {cn
+              ? `每 ${Math.round(s.cycleSeconds / 60)} 分钟一批 · 每批 ${s.batchSize} 个 ≈ ${fmtNum(perHour)}/小时`
+              : `${s.batchSize}/batch every ${Math.round(s.cycleSeconds / 60)}m ≈ ${fmtNum(perHour)}/h`}
+          </p>
+        </div>
+        <div className="flex h-2.5 w-full overflow-hidden rounded-full bg-gray-100">
+          {buckets.map(b => (
+            b.value > 0 ? <div key={b.key} className={b.color} style={{ width: `${(b.value / bucketTotal) * 100}%` }} title={`${b.label}: ${b.value}`} /> : null
+          ))}
+        </div>
+        <div className="mt-3 grid grid-cols-2 sm:grid-cols-5 gap-2">
+          {buckets.map(b => (
+            <div key={b.key} className="rounded-lg border border-gray-100 px-2.5 py-2">
+              <div className="flex items-center gap-1.5">
+                <span className={`h-2 w-2 rounded-full ${b.color}`} />
+                <span className="text-[11px] text-gray-500">{b.label}</span>
+              </div>
+              <p className={`text-lg font-bold mt-0.5 tabular-nums ${b.text}`}>{fmtNum(b.value)}</p>
+            </div>
+          ))}
+        </div>
+        {s.overdue > 0 && drainHours !== null && (
+          <p className="text-xs text-gray-400 mt-3">
+            {cn
+              ? `当前有 ${fmtNum(s.overdue)} 个已到期待抓，按上面的吞吐速度约需 ${drainHours} 小时清空（实际受 browser worker 抓取速度影响，可能更久）。`
+              : `${fmtNum(s.overdue)} overdue now — at the throughput above it takes ~${drainHours}h to clear (real speed depends on the browser worker).`}
+          </p>
+        )}
+      </div>
+
+      {/* Upcoming queue */}
+      {s.upcoming.length > 0 && (
+        <div className="mt-5 pt-4 border-t border-gray-100">
+          <p className="text-xs font-semibold text-gray-600 mb-2">{cn ? '即将 / 最该抓取的项目' : 'Next up in the queue'}</p>
+          <div className="rounded-lg border border-gray-100 divide-y divide-gray-50">
+            {s.upcoming.map(p => {
+              const due = !p.nextFetch || p.nextFetch * 1000 <= Date.now();
+              return (
+                <div key={p.id} className="flex items-center justify-between gap-3 px-3 py-2">
+                  <a href={`/projects/${p.id}`} target="_blank" rel="noreferrer" className="min-w-0 text-sm text-gray-800 hover:text-ks-green truncate">
+                    {p.name || p.id}
+                  </a>
+                  <div className="flex items-center gap-3 flex-shrink-0 text-[11px]">
+                    {p.consecutiveFailures > 0 && (
+                      <span className="text-red-600">{cn ? `失败 ${p.consecutiveFailures}×` : `${p.consecutiveFailures} fails`}</span>
+                    )}
+                    <span className="text-gray-400">
+                      {cn ? '上次 ' : 'last '}{p.lastFetched ? fmtRelative(p.lastFetched, cn) : (cn ? '从未' : 'never')}
+                    </span>
+                    <span className={`font-semibold ${due ? 'text-amber-700' : 'text-gray-600'}`}>
+                      {due ? (cn ? '待抓' : 'due') : `${cn ? '下次 ' : 'next '}${fmtSched(p.nextFetch)}`}
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
       )}
     </section>
   );
@@ -750,35 +904,7 @@ export default function DataQualityPage() {
         <StorageSection diagnostics={report.diagnostics} cn={cn} />
       )}
 
-      <section className="bg-white border border-gray-100 rounded-lg p-5">
-        <div className="flex items-center gap-2 mb-4">
-          <RadioTower className="w-4 h-4 text-ks-green" />
-          <h2 className="font-semibold text-gray-800">{cn ? '自动巡航覆盖' : 'Autopilot Coverage'}</h2>
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-          <div className="bg-gray-50 rounded-lg p-4">
-            <p className="text-xs text-gray-500">{cn ? '可追踪 live' : 'Trackable live'}</p>
-            <p className="text-2xl font-bold text-gray-900 mt-1">{fmtNum(report.tracking.liveTrackable)}</p>
-          </div>
-          <div className="bg-green-50 rounded-lg p-4">
-            <p className="text-xs text-green-700">{cn ? '已自动追踪' : 'Auto-tracked'}</p>
-            <p className="text-2xl font-bold text-green-900 mt-1">{fmtNum(report.tracking.autoTrackedLive)}</p>
-          </div>
-          <div className="bg-amber-50 rounded-lg p-4">
-            <p className="text-xs text-amber-700">{cn ? '待纳入' : 'Remaining'}</p>
-            <p className="text-2xl font-bold text-amber-900 mt-1">{fmtNum(report.tracking.untrackedLive)}</p>
-          </div>
-          <div className="bg-blue-50 rounded-lg p-4">
-            <p className="text-xs text-blue-700">{cn ? '到期待抓' : 'Due now'}</p>
-            <p className="text-2xl font-bold text-blue-900 mt-1">{fmtNum(report.tracking.dueProjects)}</p>
-          </div>
-        </div>
-        <p className="text-xs text-gray-400 mt-3">
-          {cn
-            ? '后台会分批纳入 live 项目并按优先级刷新 JSON、奖励档位和文案快照。'
-            : 'The background tracker enrolls live projects in batches and refreshes JSON, reward tiers, and text snapshots by priority.'}
-        </p>
-      </section>
+      <TrackingSection report={report} cn={cn} />
 
       <section className="bg-white border border-gray-100 rounded-lg overflow-hidden">
         <div className="px-5 py-4 border-b border-gray-100">

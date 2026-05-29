@@ -2265,6 +2265,30 @@ function computeDataQualityReport() {
     WHERE t.is_tracking = 1
   `).get({ now }) as Record<string, number | null>;
 
+  // Distribution of when the live tracked projects are next scheduled to be
+  // fetched — so the UI can show "what's queued and when".
+  const scheduleBuckets = db.prepare(`
+    SELECT
+      SUM(CASE WHEN t.next_fetch IS NULL OR t.next_fetch <= @now THEN 1 ELSE 0 END) as overdue,
+      SUM(CASE WHEN t.next_fetch > @now AND t.next_fetch <= @now + 3600 THEN 1 ELSE 0 END) as within1h,
+      SUM(CASE WHEN t.next_fetch > @now + 3600 AND t.next_fetch <= @now + 6 * 3600 THEN 1 ELSE 0 END) as within6h,
+      SUM(CASE WHEN t.next_fetch > @now + 6 * 3600 AND t.next_fetch <= @now + 24 * 3600 THEN 1 ELSE 0 END) as within24h,
+      SUM(CASE WHEN t.next_fetch > @now + 24 * 3600 THEN 1 ELSE 0 END) as beyond24h
+    FROM tracking_settings t
+    JOIN projects p ON p.id = t.project_id
+    WHERE t.is_tracking = 1 AND p.state = 'live'
+  `).get({ now }) as Record<string, number | null>;
+
+  const upcomingFetches = db.prepare(`
+    SELECT p.id, p.name, p.state, t.last_fetched, t.next_fetch,
+           COALESCE(t.consecutive_failures, 0) as consecutive_failures
+    FROM tracking_settings t
+    JOIN projects p ON p.id = t.project_id
+    WHERE t.is_tracking = 1 AND p.state = 'live'
+    ORDER BY COALESCE(t.next_fetch, 0) ASC, t.priority DESC
+    LIMIT 12
+  `).all() as Record<string, unknown>[];
+
   const recentRuns = db.prepare(`
     SELECT id, source, job_type, status, started_at, completed_at,
            discovered_count, imported_count, snapshot_count, page_count,
@@ -2373,6 +2397,23 @@ function computeDataQualityReport() {
       liveTrackable: Number(liveTracking.live_trackable ?? 0),
       autoTrackedLive: Number(liveTracking.auto_tracked_live ?? 0),
       untrackedLive: Number(liveTracking.untracked_live ?? 0),
+    },
+    schedule: {
+      overdue: Number(scheduleBuckets.overdue ?? 0),
+      within1h: Number(scheduleBuckets.within1h ?? 0),
+      within6h: Number(scheduleBuckets.within6h ?? 0),
+      within24h: Number(scheduleBuckets.within24h ?? 0),
+      beyond24h: Number(scheduleBuckets.beyond24h ?? 0),
+      batchSize: Number(process.env.TRACKER_BATCH_SIZE ?? 20),
+      cycleSeconds: 5 * 60,
+      upcoming: upcomingFetches.map(r => ({
+        id: String(r.id),
+        name: (r.name as string) ?? '',
+        state: (r.state as string) ?? '',
+        lastFetched: r.last_fetched != null ? Number(r.last_fetched) : null,
+        nextFetch: r.next_fetch != null ? Number(r.next_fetch) : null,
+        consecutiveFailures: Number(r.consecutive_failures ?? 0),
+      })),
     },
     sourceHealth,
     syncSources,
