@@ -2254,12 +2254,15 @@ function computeDataQualityReport() {
       )
   `).get() as Record<string, number | null>;
 
+  // due_projects mirrors getDueProjects(): only live, tracking-enabled projects
+  // whose next_fetch has passed — so it's always a subset of auto_tracked_live.
   const tracking = db.prepare(`
     SELECT
       COUNT(*) as tracked_projects,
-      SUM(CASE WHEN next_fetch IS NULL OR next_fetch <= @now THEN 1 ELSE 0 END) as due_projects
-    FROM tracking_settings
-    WHERE is_tracking = 1
+      SUM(CASE WHEN p.state = 'live' AND (t.next_fetch IS NULL OR t.next_fetch <= @now) THEN 1 ELSE 0 END) as due_projects
+    FROM tracking_settings t
+    JOIN projects p ON p.id = t.project_id
+    WHERE t.is_tracking = 1
   `).get({ now }) as Record<string, number | null>;
 
   const recentRuns = db.prepare(`

@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { AlertTriangle, CheckCircle2, Database, ExternalLink, HardDrive, PlayCircle, RefreshCw, RadioTower, Search, ShieldCheck, Trash2, UploadCloud, type LucideIcon } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, ChevronLeft, ChevronRight, Database, ExternalLink, HardDrive, Info, PlayCircle, RefreshCw, RadioTower, Search, ShieldCheck, Trash2, UploadCloud, type LucideIcon } from 'lucide-react';
 import { useLanguage } from '@/hooks/useLanguage';
 
 interface SourceHealth {
@@ -420,17 +420,58 @@ function StorageSection({ diagnostics, cn }: { diagnostics: DiagnosticsReport; c
   );
 }
 
+function InfoTip({ text }: { text: string }) {
+  return (
+    <span className="group relative inline-flex align-middle">
+      <Info className="h-3.5 w-3.5 text-gray-300 hover:text-gray-500 cursor-help" />
+      <span
+        role="tooltip"
+        className="pointer-events-none absolute left-1/2 top-full z-30 mt-2 w-64 -translate-x-1/2 rounded-lg bg-gray-900 px-3 py-2 text-xs font-normal leading-relaxed text-white opacity-0 shadow-lg transition-opacity duration-150 group-hover:opacity-100"
+      >
+        {text}
+      </span>
+    </span>
+  );
+}
+
+function Pager({ page, totalPages, onChange, cn }: { page: number; totalPages: number; onChange: (p: number) => void; cn: boolean }) {
+  if (totalPages <= 1) return null;
+  return (
+    <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-gray-100 text-xs text-gray-500">
+      <button
+        onClick={() => onChange(page - 1)}
+        disabled={page <= 0}
+        className="inline-flex items-center gap-1 rounded-lg border border-gray-200 px-2.5 py-1.5 font-medium hover:bg-gray-50 disabled:opacity-40 disabled:hover:bg-transparent"
+      >
+        <ChevronLeft className="h-3.5 w-3.5" />
+        {cn ? '上一页' : 'Prev'}
+      </button>
+      <span className="tabular-nums">{cn ? `第 ${page + 1} / ${totalPages} 页` : `${page + 1} / ${totalPages}`}</span>
+      <button
+        onClick={() => onChange(page + 1)}
+        disabled={page >= totalPages - 1}
+        className="inline-flex items-center gap-1 rounded-lg border border-gray-200 px-2.5 py-1.5 font-medium hover:bg-gray-50 disabled:opacity-40 disabled:hover:bg-transparent"
+      >
+        {cn ? '下一页' : 'Next'}
+        <ChevronRight className="h-3.5 w-3.5" />
+      </button>
+    </div>
+  );
+}
+
 function StatTile({
   icon: Icon,
   label,
   value,
   hint,
+  tip,
   tone = 'gray',
 }: {
   icon: LucideIcon;
   label: string;
   value: string;
   hint: string;
+  tip?: string;
   tone?: 'gray' | 'green' | 'blue' | 'amber' | 'red';
 }) {
   const tones = {
@@ -449,7 +490,10 @@ function StatTile({
         </div>
         <p className="text-2xl font-bold text-gray-900 tabular-nums">{value}</p>
       </div>
-      <p className="text-sm font-medium text-gray-700 mt-3">{label}</p>
+      <p className="text-sm font-medium text-gray-700 mt-3 flex items-center gap-1.5">
+        {label}
+        {tip && <InfoTip text={tip} />}
+      </p>
       <p className="text-xs text-gray-400 mt-1">{hint}</p>
     </div>
   );
@@ -469,13 +513,21 @@ export default function DataQualityPage() {
   const [selectedProjectIds, setSelectedProjectIds] = useState<string[]>([]);
   const [actionMessage, setActionMessage] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
   const [runningAction, setRunningAction] = useState<string | null>(null);
+  const [ksLivePage, setKsLivePage] = useState(0);
+  const [runsPage, setRunsPage] = useState(0);
+  const [errorsPage, setErrorsPage] = useState(0);
+
+  const WORKBENCH_LIMIT = 25;
+  const KS_LIVE_PAGE_SIZE = 8;
+  const RUNS_PAGE_SIZE = 6;
+  const ERRORS_PAGE_SIZE = 5;
 
   const cn = lang === 'cn';
 
-  const loadWorkbench = async (filter = workbenchFilter, query = workbenchQuery) => {
+  const loadWorkbench = async (filter = workbenchFilter, query = workbenchQuery, offset = 0) => {
     setWorkbenchLoading(true);
     try {
-      const params = new URLSearchParams({ filter, limit: '25' });
+      const params = new URLSearchParams({ filter, limit: String(WORKBENCH_LIMIT), offset: String(offset) });
       if (query.trim()) params.set('q', query.trim());
       if (workbenchState !== 'all') params.set('state', workbenchState);
       if (workbenchMinPledged.trim()) params.set('minPledged', workbenchMinPledged.trim());
@@ -616,6 +668,21 @@ export default function DataQualityPage() {
     );
   }
 
+  const workbenchPage = Math.floor((workbench?.offset ?? 0) / WORKBENCH_LIMIT);
+  const workbenchTotalPages = Math.max(1, Math.ceil((workbench?.total ?? 0) / WORKBENCH_LIMIT));
+
+  const ksLiveTotalPages = Math.max(1, Math.ceil(report.recentKsLiveProjects.length / KS_LIVE_PAGE_SIZE));
+  const ksLivePageClamped = Math.min(ksLivePage, ksLiveTotalPages - 1);
+  const ksLiveSlice = report.recentKsLiveProjects.slice(ksLivePageClamped * KS_LIVE_PAGE_SIZE, ksLivePageClamped * KS_LIVE_PAGE_SIZE + KS_LIVE_PAGE_SIZE);
+
+  const runsTotalPages = Math.max(1, Math.ceil(report.recentRuns.length / RUNS_PAGE_SIZE));
+  const runsPageClamped = Math.min(runsPage, runsTotalPages - 1);
+  const runsSlice = report.recentRuns.slice(runsPageClamped * RUNS_PAGE_SIZE, runsPageClamped * RUNS_PAGE_SIZE + RUNS_PAGE_SIZE);
+
+  const errorsTotalPages = Math.max(1, Math.ceil(report.recentErrors.length / ERRORS_PAGE_SIZE));
+  const errorsPageClamped = Math.min(errorsPage, errorsTotalPages - 1);
+  const errorsSlice = report.recentErrors.slice(errorsPageClamped * ERRORS_PAGE_SIZE, errorsPageClamped * ERRORS_PAGE_SIZE + ERRORS_PAGE_SIZE);
+
   return (
     <div className="max-w-6xl mx-auto space-y-6">
       <div className="flex items-start justify-between gap-4">
@@ -641,6 +708,9 @@ export default function DataQualityPage() {
           label={cn ? '项目总入库量' : 'Total projects in DB'}
           value={fmtNum(report.totals.totalProjects)}
           hint={cn ? `其中 ${fmtNum(report.totals.liveProjects)} 个进行中` : `${fmtNum(report.totals.liveProjects)} currently live`}
+          tip={cn
+            ? '数据库里目前收录的所有 Kickstarter 项目总数，包含已结束和进行中的。'
+            : 'Total Kickstarter projects stored in the database, including ended and live ones.'}
           tone="blue"
         />
         <StatTile
@@ -648,6 +718,9 @@ export default function DataQualityPage() {
           label={cn ? '24h 新增入库' : 'New in last 24h'}
           value={fmtNum(report.totals.newProjects24h)}
           hint={cn ? '首次入库时间在过去 24 小时内' : 'First seen within the last 24 hours'}
+          tip={cn
+            ? '过去 24 小时内第一次被我们收录进数据库的新项目数量，反映最近的抓取产出。'
+            : 'Projects first added to the database in the last 24 hours — a measure of recent crawl output.'}
           tone="green"
         />
         <StatTile
@@ -657,6 +730,9 @@ export default function DataQualityPage() {
           hint={cn
             ? `正在定时打点的进行中项目 · ${fmtNum(report.tracking.dueProjects)} 个待抓`
             : `Live projects on the snapshot schedule · ${fmtNum(report.tracking.dueProjects)} due`}
+          tip={cn
+            ? '正在进行中、且已纳入定时更新名单的项目数量——系统会定期抓取它们最新的金额、支持者等数据。其中“待抓”是这些项目里已经到点、正排队等待本轮抓取的数量（始终 ≤ 追踪中总数）。'
+            : 'Live projects enrolled in the auto-refresh schedule. "Due" is the subset that has reached its scheduled time and is queued for the next fetch (always ≤ tracked).'}
           tone="amber"
         />
       </div>
@@ -893,29 +969,32 @@ export default function DataQualityPage() {
                       )}
                     </td>
                     <td className="px-5 py-4">
-                      <div className="flex justify-end gap-2">
+                      <div className="flex flex-nowrap justify-end gap-1.5">
                         <button
                           onClick={() => runWorkbenchRequest(project.id, 'kickstarter_basic_sync')}
                           disabled={!!runningAction}
-                          className="inline-flex items-center gap-1.5 rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-xs font-bold text-green-700 hover:bg-green-100 disabled:opacity-50"
+                          title={cn ? '补抓金额/支持者等基础字段' : 'Backfill basic fields'}
+                          className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg border border-green-200 bg-green-50 px-2.5 py-1.5 text-xs font-semibold text-green-700 hover:bg-green-100 disabled:opacity-50"
                         >
-                          <CheckCircle2 className={`h-3.5 w-3.5 ${runningBasic ? 'animate-pulse' : ''}`} />
+                          <CheckCircle2 className={`h-3.5 w-3.5 flex-shrink-0 ${runningBasic ? 'animate-pulse' : ''}`} />
                           {cn ? '更新基础' : 'Basic'}
                         </button>
                         <button
                           onClick={() => runWorkbenchAction(project.id, 'kickstarter_sync')}
                           disabled={!!runningAction}
-                          className="inline-flex items-center gap-1.5 rounded-lg bg-ks-green px-3 py-2 text-xs font-bold text-white hover:bg-ks-green-dark disabled:opacity-50"
+                          title={cn ? '官方完整同步（调试页）' : 'Full official sync (debug)'}
+                          className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg bg-ks-green px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-ks-green-dark disabled:opacity-50"
                         >
-                          <PlayCircle className={`h-3.5 w-3.5 ${runningKs ? 'animate-pulse' : ''}`} />
+                          <PlayCircle className={`h-3.5 w-3.5 flex-shrink-0 ${runningKs ? 'animate-pulse' : ''}`} />
                           {cn ? '官方同步' : 'KS Sync'}
                         </button>
                         <button
                           onClick={() => runWorkbenchAction(project.id, 'kicktraq_import')}
                           disabled={!!runningAction}
-                          className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-2 text-xs font-bold text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                          title={cn ? '从 Kicktraq 导入历史曲线' : 'Import history curve from Kicktraq'}
+                          className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-50"
                         >
-                          <UploadCloud className={`h-3.5 w-3.5 ${runningKt ? 'animate-pulse' : ''}`} />
+                          <UploadCloud className={`h-3.5 w-3.5 flex-shrink-0 ${runningKt ? 'animate-pulse' : ''}`} />
                           {cn ? '导入曲线' : 'Kicktraq'}
                         </button>
                       </div>
@@ -933,10 +1012,33 @@ export default function DataQualityPage() {
             </tbody>
           </table>
         </div>
-        <div className="px-5 py-3 border-t border-gray-100 text-xs text-gray-400">
-          {cn
-            ? `当前筛选共 ${fmtNum(workbench?.total ?? 0)} 个项目，最多显示 25 个。`
-            : `${fmtNum(workbench?.total ?? 0)} matching projects, showing up to 25.`}
+        <div className="flex items-center justify-between gap-2 px-5 py-3 border-t border-gray-100 text-xs text-gray-400">
+          <span>
+            {cn
+              ? `当前筛选共 ${fmtNum(workbench?.total ?? 0)} 个项目`
+              : `${fmtNum(workbench?.total ?? 0)} matching projects`}
+          </span>
+          {workbenchTotalPages > 1 && (
+            <div className="flex items-center gap-2 text-gray-500">
+              <button
+                onClick={() => loadWorkbench(workbenchFilter, workbenchQuery, (workbenchPage - 1) * WORKBENCH_LIMIT)}
+                disabled={workbenchPage <= 0 || workbenchLoading}
+                className="inline-flex items-center gap-1 rounded-lg border border-gray-200 px-2.5 py-1.5 font-medium hover:bg-gray-50 disabled:opacity-40 disabled:hover:bg-transparent"
+              >
+                <ChevronLeft className="h-3.5 w-3.5" />
+                {cn ? '上一页' : 'Prev'}
+              </button>
+              <span className="tabular-nums">{cn ? `第 ${workbenchPage + 1} / ${workbenchTotalPages} 页` : `${workbenchPage + 1} / ${workbenchTotalPages}`}</span>
+              <button
+                onClick={() => loadWorkbench(workbenchFilter, workbenchQuery, (workbenchPage + 1) * WORKBENCH_LIMIT)}
+                disabled={workbenchPage >= workbenchTotalPages - 1 || workbenchLoading}
+                className="inline-flex items-center gap-1 rounded-lg border border-gray-200 px-2.5 py-1.5 font-medium hover:bg-gray-50 disabled:opacity-40 disabled:hover:bg-transparent"
+              >
+                {cn ? '下一页' : 'Next'}
+                <ChevronRight className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          )}
         </div>
       </section>
 
@@ -946,10 +1048,10 @@ export default function DataQualityPage() {
             <RadioTower className="w-4 h-4 text-ks-green" />
             <h2 className="font-semibold text-gray-800">{cn ? '最近 KS Live 入库项目' : 'Recent KS Live Projects'}</h2>
           </div>
-          <span className="text-xs text-gray-400">{cn ? '最多 20 个' : 'Latest 20'}</span>
+          <span className="text-xs text-gray-400">{cn ? `共 ${fmtNum(report.recentKsLiveProjects.length)} 个` : `${fmtNum(report.recentKsLiveProjects.length)} total`}</span>
         </div>
         <div className="divide-y divide-gray-50">
-          {report.recentKsLiveProjects.map(project => (
+          {ksLiveSlice.map(project => (
             <a
               key={project.id}
               href={`/projects/${project.id}`}
@@ -998,6 +1100,7 @@ export default function DataQualityPage() {
             </div>
           )}
         </div>
+        <Pager page={ksLivePageClamped} totalPages={ksLiveTotalPages} onChange={setKsLivePage} cn={cn} />
       </section>
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
@@ -1087,7 +1190,7 @@ export default function DataQualityPage() {
           <h2 className="font-semibold text-gray-800">{cn ? '最近采集运行' : 'Recent crawl runs'}</h2>
         </div>
         <div className="divide-y divide-gray-50">
-          {report.recentRuns.map(run => (
+          {runsSlice.map(run => (
             <div key={run.id} className="px-5 py-4 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
               <div className="min-w-0">
                 <div className="flex items-center gap-2 flex-wrap">
@@ -1124,6 +1227,7 @@ export default function DataQualityPage() {
             </div>
           )}
         </div>
+        <Pager page={runsPageClamped} totalPages={runsTotalPages} onChange={setRunsPage} cn={cn} />
       </section>
 
       {!!report.recentErrors.length && (
@@ -1133,7 +1237,7 @@ export default function DataQualityPage() {
             <h2 className="font-semibold text-gray-800">{cn ? '最近错误' : 'Recent errors'}</h2>
           </div>
           <div className="divide-y divide-red-50">
-            {report.recentErrors.map(error => (
+            {errorsSlice.map(error => (
               <div key={error.id} className="px-5 py-3">
                 <div className="flex items-center gap-2 flex-wrap">
                   <span className="text-sm font-medium text-gray-900">{sourceLabel(error.source)}</span>
@@ -1150,6 +1254,7 @@ export default function DataQualityPage() {
               </div>
             ))}
           </div>
+          <Pager page={errorsPageClamped} totalPages={errorsTotalPages} onChange={setErrorsPage} cn={cn} />
         </section>
       )}
     </div>
