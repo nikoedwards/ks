@@ -466,34 +466,44 @@ function TrackingSection({ report, cn }: { report: QualityReport; cn: boolean })
         <h2 className="font-semibold text-gray-800">{cn ? '追踪覆盖与排期' : 'Tracking Coverage & Schedule'}</h2>
       </div>
 
-      {/* Coverage funnel — explains why "tracking now" < "live total" */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <div className="bg-gray-50 rounded-lg p-4">
-          <p className="text-xs text-gray-500">{cn ? '进行中项目' : 'Live projects'}</p>
-          <p className="text-2xl font-bold text-gray-900 mt-1">{fmtNum(report.totals.liveProjects)}</p>
-          <p className="text-[11px] text-gray-400 mt-1">{cn ? '全部 live 状态' : 'All live'}</p>
-        </div>
-        <div className="bg-green-50 rounded-lg p-4">
-          <p className="text-xs text-green-700">{cn ? '已追踪（实时）' : 'Tracking now'}</p>
-          <p className="text-2xl font-bold text-green-900 mt-1">{fmtNum(t.autoTrackedLive)}</p>
-          <p className="text-[11px] text-green-600/70 mt-1">{cn ? '已在定时打点名单' : 'On the schedule'}</p>
-        </div>
-        <div className="bg-amber-50 rounded-lg p-4">
-          <p className="text-xs text-amber-700">{cn ? '待纳入' : 'Pending enroll'}</p>
-          <p className="text-2xl font-bold text-amber-900 mt-1">{fmtNum(t.untrackedLive)}</p>
-          <p className="text-[11px] text-amber-600/70 mt-1">{cn ? '可追踪但还没入队' : 'Trackable, not yet enrolled'}</p>
-        </div>
-        <div className="bg-gray-50 rounded-lg p-4">
-          <p className="text-xs text-gray-500">{cn ? '不可追踪' : 'Untrackable'}</p>
-          <p className="text-2xl font-bold text-gray-900 mt-1">{fmtNum(untrackable)}</p>
-          <p className="text-[11px] text-gray-400 mt-1">{cn ? '缺有效 KS 链接 / slug' : 'No valid KS URL / slug'}</p>
-        </div>
-      </div>
-      <p className="text-xs text-gray-400 mt-3 leading-relaxed">
-        {cn
-          ? `关系：进行中 ${fmtNum(report.totals.liveProjects)} = 已追踪 ${fmtNum(t.autoTrackedLive)} + 待纳入 ${fmtNum(t.untrackedLive)} + 不可追踪 ${fmtNum(untrackable)}。“待纳入”会每 15 分钟分批自动入队；“不可追踪”是只有基础数据、没有可用 Kickstarter 链接的项目（多来自 Kicktraq），无法定时抓取。`
-          : `Live ${fmtNum(report.totals.liveProjects)} = tracking ${fmtNum(t.autoTrackedLive)} + pending ${fmtNum(t.untrackedLive)} + untrackable ${fmtNum(untrackable)}. Pending ones are auto-enrolled in batches every 15 min; untrackable ones lack a usable Kickstarter URL/slug (mostly Kicktraq-only rows) and can't be fetched on a schedule.`}
-      </p>
+      {/* Coverage breakdown — explains why "tracking now" < total live projects.
+          Rendered as one stacked bar + compact legend so we don't repeat the
+          hero "tracking now" number as another giant tile. */}
+      {(() => {
+        const liveTotal = Math.max(1, report.totals.liveProjects);
+        const segs = [
+          { key: 'tracked', label: cn ? '已追踪' : 'Tracking', value: t.autoTrackedLive, color: 'bg-ks-green', text: 'text-green-700' },
+          { key: 'pending', label: cn ? '待纳入' : 'Pending', value: t.untrackedLive, color: 'bg-amber-400', text: 'text-amber-700' },
+          { key: 'untrackable', label: cn ? '不可追踪' : 'Untrackable', value: untrackable, color: 'bg-gray-300', text: 'text-gray-500' },
+        ];
+        return (
+          <div>
+            <div className="flex items-baseline justify-between">
+              <p className="text-sm text-gray-500">{cn ? '进行中项目' : 'Live projects'}</p>
+              <p className="text-xl font-bold text-gray-900 tabular-nums">{fmtNum(report.totals.liveProjects)}</p>
+            </div>
+            <div className="mt-2 flex h-2.5 w-full overflow-hidden rounded-full bg-gray-100">
+              {segs.map(seg => (
+                seg.value > 0 ? <div key={seg.key} className={seg.color} style={{ width: `${(seg.value / liveTotal) * 100}%` }} title={`${seg.label}: ${seg.value}`} /> : null
+              ))}
+            </div>
+            <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1.5">
+              {segs.map(seg => (
+                <span key={seg.key} className="inline-flex items-center gap-1.5 text-xs">
+                  <span className={`h-2 w-2 rounded-full ${seg.color}`} />
+                  <span className="text-gray-500">{seg.label}</span>
+                  <span className={`font-semibold tabular-nums ${seg.text}`}>{fmtNum(seg.value)}</span>
+                </span>
+              ))}
+            </div>
+            <p className="text-xs text-gray-400 mt-3 leading-relaxed">
+              {cn
+                ? `“已追踪”就是顶部的“实时追踪中”。“待纳入”是可追踪但还没轮到入队的（每 15 分钟批量自动纳入，通常为 0）。“不可追踪”是只有基础数据、没有可用 Kickstarter 链接的项目（多来自 Kicktraq），无法定时抓取——这部分就是进行中总数和追踪数之间差额的主要来源。`
+                : `"Tracking" is the hero "Tracking now" number. "Pending" are trackable but not-yet-enrolled (auto-enrolled every 15 min, usually 0). "Untrackable" projects only have basic data with no usable Kickstarter URL (mostly Kicktraq) and can't be fetched on a schedule — that's the main reason live total exceeds the tracked count.`}
+            </p>
+          </div>
+        );
+      })()}
 
       {/* Cadence rules */}
       <div className="mt-5 pt-4 border-t border-gray-100">
@@ -670,18 +680,18 @@ export default function DataQualityPage() {
   const [ksLivePage, setKsLivePage] = useState(0);
   const [runsPage, setRunsPage] = useState(0);
   const [errorsPage, setErrorsPage] = useState(0);
+  const [workbenchLimit, setWorkbenchLimit] = useState(5);
 
-  const WORKBENCH_LIMIT = 25;
   const KS_LIVE_PAGE_SIZE = 8;
   const RUNS_PAGE_SIZE = 6;
   const ERRORS_PAGE_SIZE = 5;
 
   const cn = lang === 'cn';
 
-  const loadWorkbench = async (filter = workbenchFilter, query = workbenchQuery, offset = 0) => {
+  const loadWorkbench = async (filter = workbenchFilter, query = workbenchQuery, offset = 0, limit = workbenchLimit) => {
     setWorkbenchLoading(true);
     try {
-      const params = new URLSearchParams({ filter, limit: String(WORKBENCH_LIMIT), offset: String(offset) });
+      const params = new URLSearchParams({ filter, limit: String(limit), offset: String(offset) });
       if (query.trim()) params.set('q', query.trim());
       if (workbenchState !== 'all') params.set('state', workbenchState);
       if (workbenchMinPledged.trim()) params.set('minPledged', workbenchMinPledged.trim());
@@ -822,8 +832,9 @@ export default function DataQualityPage() {
     );
   }
 
-  const workbenchPage = Math.floor((workbench?.offset ?? 0) / WORKBENCH_LIMIT);
-  const workbenchTotalPages = Math.max(1, Math.ceil((workbench?.total ?? 0) / WORKBENCH_LIMIT));
+  const workbenchPageLimit = workbench?.limit ?? workbenchLimit;
+  const workbenchPage = Math.floor((workbench?.offset ?? 0) / Math.max(1, workbenchPageLimit));
+  const workbenchTotalPages = Math.max(1, Math.ceil((workbench?.total ?? 0) / Math.max(1, workbenchPageLimit)));
 
   const ksLiveTotalPages = Math.max(1, Math.ceil(report.recentKsLiveProjects.length / KS_LIVE_PAGE_SIZE));
   const ksLivePageClamped = Math.min(ksLivePage, ksLiveTotalPages - 1);
@@ -1144,27 +1155,43 @@ export default function DataQualityPage() {
               ? `当前筛选共 ${fmtNum(workbench?.total ?? 0)} 个项目`
               : `${fmtNum(workbench?.total ?? 0)} matching projects`}
           </span>
-          {workbenchTotalPages > 1 && (
-            <div className="flex items-center gap-2 text-gray-500">
-              <button
-                onClick={() => loadWorkbench(workbenchFilter, workbenchQuery, (workbenchPage - 1) * WORKBENCH_LIMIT)}
-                disabled={workbenchPage <= 0 || workbenchLoading}
-                className="inline-flex items-center gap-1 rounded-lg border border-gray-200 px-2.5 py-1.5 font-medium hover:bg-gray-50 disabled:opacity-40 disabled:hover:bg-transparent"
+          <div className="flex items-center gap-2 text-gray-500">
+            <label className="flex items-center gap-1.5">
+              <span>{cn ? '每页' : 'Per page'}</span>
+              <select
+                value={workbenchLimit}
+                onChange={e => {
+                  const next = Number(e.target.value);
+                  setWorkbenchLimit(next);
+                  loadWorkbench(workbenchFilter, workbenchQuery, 0, next);
+                }}
+                className="rounded-lg border border-gray-200 px-2 py-1 text-xs outline-none focus:border-ks-green"
               >
-                <ChevronLeft className="h-3.5 w-3.5" />
-                {cn ? '上一页' : 'Prev'}
-              </button>
-              <span className="tabular-nums">{cn ? `第 ${workbenchPage + 1} / ${workbenchTotalPages} 页` : `${workbenchPage + 1} / ${workbenchTotalPages}`}</span>
-              <button
-                onClick={() => loadWorkbench(workbenchFilter, workbenchQuery, (workbenchPage + 1) * WORKBENCH_LIMIT)}
-                disabled={workbenchPage >= workbenchTotalPages - 1 || workbenchLoading}
-                className="inline-flex items-center gap-1 rounded-lg border border-gray-200 px-2.5 py-1.5 font-medium hover:bg-gray-50 disabled:opacity-40 disabled:hover:bg-transparent"
-              >
-                {cn ? '下一页' : 'Next'}
-                <ChevronRight className="h-3.5 w-3.5" />
-              </button>
-            </div>
-          )}
+                {[5, 10, 25, 50].map(n => <option key={n} value={n}>{n}</option>)}
+              </select>
+            </label>
+            {workbenchTotalPages > 1 && (
+              <>
+                <button
+                  onClick={() => loadWorkbench(workbenchFilter, workbenchQuery, (workbenchPage - 1) * workbenchPageLimit)}
+                  disabled={workbenchPage <= 0 || workbenchLoading}
+                  className="inline-flex items-center gap-1 rounded-lg border border-gray-200 px-2.5 py-1.5 font-medium hover:bg-gray-50 disabled:opacity-40 disabled:hover:bg-transparent"
+                >
+                  <ChevronLeft className="h-3.5 w-3.5" />
+                  {cn ? '上一页' : 'Prev'}
+                </button>
+                <span className="tabular-nums">{cn ? `第 ${workbenchPage + 1} / ${workbenchTotalPages} 页` : `${workbenchPage + 1} / ${workbenchTotalPages}`}</span>
+                <button
+                  onClick={() => loadWorkbench(workbenchFilter, workbenchQuery, (workbenchPage + 1) * workbenchPageLimit)}
+                  disabled={workbenchPage >= workbenchTotalPages - 1 || workbenchLoading}
+                  className="inline-flex items-center gap-1 rounded-lg border border-gray-200 px-2.5 py-1.5 font-medium hover:bg-gray-50 disabled:opacity-40 disabled:hover:bg-transparent"
+                >
+                  {cn ? '下一页' : 'Next'}
+                  <ChevronRight className="h-3.5 w-3.5" />
+                </button>
+              </>
+            )}
+          </div>
         </div>
       </section>
 
