@@ -4,6 +4,77 @@
 > shipped during this session, current production state, and the
 > outstanding follow-ups so this can be resumed from another machine.
 
+---
+
+## SESSION 2 UPDATE (2026-05-29 evening) — worker stabilization + CF wall
+
+After session 1, the browser worker kept wedging and KS Live `ks_live:`
+syncs kept erroring. This session hardened the worker and isolated the
+final blocker.
+
+### What was wrong (in order discovered)
+1. **`spawn EAGAIN` then `spawn E2BIG`** — the long-lived worker degraded
+   over ~12h until chromium couldn't launch at all, and stayed wedged for
+   hours. Both are container resource-exhaustion errors at `exec()` time.
+2. **Event-loop starvation → HTTP 000** — the worker accepted unlimited
+   concurrent `/fetch`, but has only ONE browser. Tracker traffic piled up
+   (observed queue at 3-5 constantly, rss 232MB), starving the Node event
+   loop so even `/health` timed out at Railway's ~100s/5s edge limits.
+3. **Cold CF challenge > edge timeout** — a *cold* `/fetch` (no
+   cf_clearance) takes 100-160s to clear CF, exceeding Railway's edge
+   connection timeout → caller gets HTTP 000. Warm (~6s) works.
+4. **THE WALL: `discover?format=json` is hard-blocked by CF** — even with
+   a valid 35KB cf_clearance cookie (homepage warm-up succeeded,
+   `warmup.ok:true`), the discover JSON API still returns 403. CF clears
+   HTML pages (homepage, project pages) but specifically rejects the JSON
+   API endpoint now. This is the remaining blocker for the direct enrich.
+
+### Commits shipped this session
+| Commit | Subject |
+|---|---|
+| `d77c199` | fix spawn E2BIG + self-heal exit on wedged launches (curated launch env; exit→Railway restart on E2BIG/EAGAIN/ENOMEM/EMFILE/ENFILE) |
+| `e318281` | serialize `/fetch` (concurrency gate, default 1; queue→503+Retry-After; body parsed before queue) |
+| `b3aa66c` | self-warm cf_clearance on startup (in-process, bypasses edge timeout) |
+| `814764a` | reserve worker for discover (tracker per-project scrapes default to Kicktraq summary now) + warm CF via homepage HTML not JSON |
+
+### Worker env knobs added this session
+- `BROWSER_CURATE_LAUNCH_ENV` (default 1)
+- `BROWSER_EXIT_ON_LAUNCH_FAILURE` (default 1)
+- `BROWSER_MAX_CONCURRENCY` (default 1), `BROWSER_MAX_QUEUE` (default 6), `BROWSER_QUEUE_WAIT_MS` (default 120000)
+- `BROWSER_WARMUP_ON_START` (default 1), `BROWSER_WARMUP_URL` (default homepage), `BROWSER_WARMUP_MAX_ATTEMPTS` (default 3)
+- `SKIP_KS_DIRECT_SCRAPE` semantics **flipped**: now ON by default (per-project tracker scrapes use Kicktraq). Set `=0` to re-enable per-project KS-direct.
+
+### Current production state (end of session 2)
+- ✅ Kicktraq discovery: 69-70 projects/cycle, every cycle completes. **Primary goal (latest projects → DB) is met and stable.**
+- ✅ Worker no longer wedges: self-heal exit + recycle + concurrency gate + startup warm-up all live. `warmup.ok:true` confirmed (homepage cleared CF).
+- ✅ Worker clears CF for **HTML** (homepage warm-up, project pages ~6s warm).
+- ❌ `discover?format=json` returns **403 even with cf_clearance** — CF hard-blocks this API endpoint. This is the only thing standing between us and the rich direct-enrich layer.
+
+### THE FORK — how to beat the JSON 403 (pick one, next session)
+1. **Parse discover HTML instead of JSON.** CF clears
+   `kickstarter.com/discover/advanced?sort=newest&state=live` (HTML, no
+   `format=json`). Fetch that page via the worker (expect:'html') and
+   extract the project list from the embedded `__NEXT_DATA__` /
+   `window.__INITIAL_STATE__` script blob. The worker already has a
+   deep `findBest` JSON walker for project *detail* pages; the discover
+   listing needs an analogous extractor. **Recommended — code-only, no
+   new infra, and HTML is proven to clear.**
+2. **Residential / rotating proxy** on `BROWSER_PROXY_URL`. CF appears to
+   have flagged our datacenter IP + fingerprint (JSON that cleared in 76s
+   yesterday now 403s). A residential proxy would likely restore the JSON
+   path. Costs money + config.
+3. **Accept kicktraq-only discovery** (current state). KS Live is
+   functionally healthy on kicktraq; the direct enrich (image URLs,
+   numeric IDs, comments_count, rewards) is the only thing missing. If
+   those fields aren't critical, no further work needed.
+
+### Operator note
+The `SKIP_KS_DIRECT_SCRAPE` env on Railway main service can now be
+**removed** (default behavior is the safe one). Only set `=0` if you
+later want per-project tracker scrapes to use the worker again.
+
+---
+
 ## 1. The problem we were solving
 
 KS Live had been silently broken for days:
