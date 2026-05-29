@@ -2143,8 +2143,11 @@ const server = http.createServer((req, res) => {
 // stay comfortably under the edge limit. Re-runs on every boot, including the
 // self-heal restarts. Disable with BROWSER_WARMUP_ON_START=0.
 const WARMUP_ON_START = !/^(0|false|no)$/i.test(process.env.BROWSER_WARMUP_ON_START || '1');
-const WARMUP_URL = (process.env.BROWSER_WARMUP_URL
-  || 'https://www.kickstarter.com/discover/advanced?sort=newest&page=1&format=json&state=live').trim();
+// cf_clearance is a per-DOMAIN cookie, so warming via the lightest kickstarter
+// page primes it for the (harder) discover JSON endpoint too. The homepage /
+// a project HTML page clears CF far more reliably than discover?format=json,
+// which CF treats more aggressively. Warm via HTML, reap the cookie for JSON.
+const WARMUP_URL = (process.env.BROWSER_WARMUP_URL || 'https://www.kickstarter.com/').trim();
 
 let warmupState = { attempted: false, ok: false, attempts: 0, lastError: null, lastAt: null, elapsedMs: null };
 
@@ -2160,7 +2163,9 @@ async function warmUpChallenge() {
     try {
       await acquireFetchSlot();
       slotHeld = true;
-      const result = await fetchWithBrowser({ url: WARMUP_URL, expect: 'json', timeoutMs: 170_000, settleMs: 1500 });
+      // expect:'html' — we just need the navigation to clear CF and persist
+      // cf_clearance into storageState; we don't care about the body.
+      const result = await fetchWithBrowser({ url: WARMUP_URL, expect: 'html', timeoutMs: 170_000, settleMs: 1500 });
       warmupState.elapsedMs = Date.now() - startedAt;
       if (result?.ok) {
         warmupState.ok = true;

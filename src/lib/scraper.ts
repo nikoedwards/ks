@@ -790,7 +790,16 @@ async function scrapeBasicFallback(projectId: string, jsonUrl: string, opts: Scr
 function shouldSkipKsDirectScrape(opts: ScrapeOptions): boolean {
   // Manual user-triggered refreshes always try KS direct first.
   if (opts.manual) return false;
-  return process.env.SKIP_KS_DIRECT_SCRAPE === '1';
+  // Default ON: per-project tracker scrapes go straight to the Kicktraq summary
+  // and never touch the browser worker. There is a SINGLE browser worker and
+  // letting the tracker fire a KS-direct browser fetch for every due project
+  // saturates its queue (observed 3-5 requests queued continuously), which
+  // starves the low-frequency KS Live *discover* enrich and the startup
+  // warm-up. The discover path (runKickstarterLiveSync, gated by
+  // LIVE_DISCOVERY_KS_DIRECT) still uses the worker — that's the intended,
+  // bounded consumer. Opt back into per-project KS-direct with
+  // SKIP_KS_DIRECT_SCRAPE=0 once the worker has spare capacity.
+  return process.env.SKIP_KS_DIRECT_SCRAPE !== '0';
 }
 
 export async function scrapeAndStore(projectId: string, jsonUrl: string, opts: ScrapeOptions = {}): Promise<ScrapeResult> {
