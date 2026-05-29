@@ -1849,6 +1849,9 @@ function workerEnvSummary() {
       requestsSinceLaunch,
       curateLaunchEnv: CURATE_LAUNCH_ENV,
       exitOnLaunchFailure: EXIT_ON_LAUNCH_FAILURE,
+      maxConcurrency: MAX_CONCURRENCY,
+      activeFetches,
+      queuedFetches: fetchWaiters.length,
     },
     launchEnv: {
       // Helps confirm the E2BIG fix: how much smaller the curated env is vs the
@@ -1935,6 +1938,54 @@ async function runDiagnostics({ skipLaunch = false, fetchUrl = null } = {}) {
   };
 }
 
+// Concurrency gate for /fetch. The worker has a SINGLE chromium browser; in a
+// resource-constrained container, running many contexts concurrently piles up
+// memory, starves the Node event loop (so even /health times out at Railway's
+// 5s edge limit → HTTP 000), and makes Cloudflare clearance flaky from
+// contention. Serializing /fetch (default 1) keeps the worker responsive and
+// CF clearance reliable. Extra requests queue briefly, then 503 so callers
+// back off instead of dogpiling.
+const MAX_CONCURRENCY = Math.max(1, Math.min(Number(process.env.BROWSER_MAX_CONCURRENCY || 1), 4));
+const MAX_QUEUE = Math.max(0, Math.min(Number(process.env.BROWSER_MAX_QUEUE || 6), 50));
+const FETCH_QUEUE_WAIT_MS = Math.max(1000, Math.min(Number(process.env.BROWSER_QUEUE_WAIT_MS || 120_000), 300_000));
+let activeFetches = 0;
+const fetchWaiters = [];
+
+function acquireFetchSlot() {
+  return new Promise((resolve, reject) => {
+    if (activeFetches < MAX_CONCURRENCY) {
+      activeFetches++;
+      resolve();
+      return;
+    }
+    if (fetchWaiters.length >= MAX_QUEUE) {
+      const e = new Error(`Worker busy: fetch queue full (active=${activeFetches}, queued=${fetchWaiters.length})`);
+      e.code = 'QUEUE_FULL';
+      reject(e);
+      return;
+    }
+    const waiter = { resolve, reject, timer: null };
+    waiter.timer = setTimeout(() => {
+      const idx = fetchWaiters.indexOf(waiter);
+      if (idx >= 0) fetchWaiters.splice(idx, 1);
+      const e = new Error('Worker busy: queued fetch timed out waiting for a slot');
+      e.code = 'QUEUE_TIMEOUT';
+      reject(e);
+    }, FETCH_QUEUE_WAIT_MS);
+    fetchWaiters.push(waiter);
+  });
+}
+
+function releaseFetchSlot() {
+  const next = fetchWaiters.shift();
+  if (next) {
+    if (next.timer) clearTimeout(next.timer);
+    next.resolve(); // hand the slot off without changing activeFetches
+  } else {
+    activeFetches = Math.max(0, activeFetches - 1);
+  }
+}
+
 async function handle(req, res) {
   if (req.method === 'GET' && req.url === '/health') {
     let browserConnected = null;
@@ -1955,6 +2006,9 @@ async function handle(req, res) {
       blockHeavyResources: BLOCK_HEAVY_RESOURCES,
       ignoreHTTPSErrors: IGNORE_HTTPS_ERRORS,
       oxylabsUserAgentType: OXYLABS_USER_AGENT_TYPE || null,
+      activeFetches,
+      queuedFetches: fetchWaiters.length,
+      maxConcurrency: MAX_CONCURRENCY,
       lastLaunchError,
     });
     return;
@@ -2009,12 +2063,37 @@ async function handle(req, res) {
     return;
   }
 
+  // Read the body before queueing so a malformed request fails fast.
+  let body;
+  try {
+    body = await readJson(req);
+  } catch (err) {
+    send(res, 400, { ok: false, error: `Invalid JSON body: ${err instanceof Error ? err.message : String(err)}` });
+    return;
+  }
+
+  // Acquire a concurrency slot (serialized by default). Reject fast with 503 if
+  // the worker is saturated, so the caller backs off instead of piling on.
+  try {
+    await acquireFetchSlot();
+  } catch (err) {
+    const retryable = err && (err.code === 'QUEUE_FULL' || err.code === 'QUEUE_TIMEOUT');
+    res.setHeader('Retry-After', '30');
+    send(res, retryable ? 503 : 500, {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+      code: err?.code ?? null,
+      active: activeFetches,
+      queued: fetchWaiters.length,
+    });
+    return;
+  }
+
   let tracker = null;
   const startedAt = Date.now();
   try {
-    const body = await readJson(req);
     tracker = trackRequestStart(body);
-    tracker.step('fetch_start', { hasProxy: Boolean(getProxyOptions()) });
+    tracker.step('fetch_start', { hasProxy: Boolean(getProxyOptions()), active: activeFetches, queued: fetchWaiters.length });
     const result = await fetchWithBrowser(body, tracker);
     tracker.finish({
       ok: result.ok ?? false,
@@ -2043,6 +2122,8 @@ async function handle(req, res) {
         lastLaunchError,
       },
     });
+  } finally {
+    releaseFetchSlot();
   }
 }
 
