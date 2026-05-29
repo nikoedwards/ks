@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Activity, AlertTriangle, CheckCircle2, Clock3, Database, ExternalLink, HardDrive, PlayCircle, RefreshCw, RadioTower, Search, ShieldCheck, Trash2, UploadCloud, type LucideIcon } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Database, ExternalLink, HardDrive, PlayCircle, RefreshCw, RadioTower, Search, ShieldCheck, Trash2, UploadCloud, type LucideIcon } from 'lucide-react';
 import { useLanguage } from '@/hooks/useLanguage';
 
 interface SourceHealth {
@@ -134,6 +134,7 @@ interface QualityReport {
   totals: {
     totalProjects: number;
     liveProjects: number;
+    newProjects24h: number;
     webrobotsProjects: number;
     ksLiveProjects: number;
     kicktraqProjects: number;
@@ -213,24 +214,144 @@ function sourceLabel(source: string) {
   return labels[source] ?? source;
 }
 
-function DiagnosticsSection({ diagnostics, cn, lang }: { diagnostics: DiagnosticsReport; cn: boolean; lang: string }) {
+function fmtRelative(ts: number | null | undefined, cn: boolean) {
+  if (!ts) return cn ? '暂无' : 'never';
+  const diff = Math.floor(Date.now() / 1000) - ts;
+  if (diff < 0) {
+    const ahead = -diff;
+    if (ahead < 60) return cn ? `${ahead} 秒后` : `in ${ahead}s`;
+    if (ahead < 3600) return cn ? `${Math.round(ahead / 60)} 分钟后` : `in ${Math.round(ahead / 60)}m`;
+    return cn ? `${Math.round(ahead / 3600)} 小时后` : `in ${Math.round(ahead / 3600)}h`;
+  }
+  if (diff < 60) return cn ? '刚刚' : 'just now';
+  if (diff < 3600) return cn ? `${Math.round(diff / 60)} 分钟前` : `${Math.round(diff / 60)}m ago`;
+  if (diff < 86400) return cn ? `${Math.round(diff / 3600)} 小时前` : `${Math.round(diff / 3600)}h ago`;
+  return cn ? `${Math.round(diff / 86400)} 天前` : `${Math.round(diff / 86400)}d ago`;
+}
+
+const CRAWL_STATUS_META: Record<string, { tone: string; dot: string; cn: string; en: string }> = {
+  running: { tone: 'bg-blue-50 text-blue-700 border-blue-200', dot: 'bg-blue-500', cn: '运行中', en: 'Running' },
+  completed: { tone: 'bg-green-50 text-green-700 border-green-200', dot: 'bg-green-500', cn: '正常', en: 'Healthy' },
+  blocked: { tone: 'bg-amber-50 text-amber-700 border-amber-200', dot: 'bg-amber-500', cn: '被拦截', en: 'Blocked' },
+  error: { tone: 'bg-red-50 text-red-700 border-red-200', dot: 'bg-red-500', cn: '出错', en: 'Error' },
+};
+
+function CrawlStatusSection({
+  diagnostics,
+  latestSnapshotAt,
+  staleLiveProjects,
+  liveProjects,
+  cn,
+  lang,
+}: {
+  diagnostics: DiagnosticsReport | null | undefined;
+  latestSnapshotAt: number | null;
+  staleLiveProjects: number;
+  liveProjects: number;
+  cn: boolean;
+  lang: string;
+}) {
+  const states = diagnostics?.crawlerStates ?? [];
+  const fmtTimeLocal = (ts: number | null | undefined) => (ts ? new Date(ts * 1000).toLocaleString(lang === 'cn' ? 'zh-CN' : 'en-US') : (cn ? '暂无' : 'None'));
+  const staleTone = staleLiveProjects === 0 ? 'green' : staleLiveProjects > 100 ? 'red' : 'amber';
+  const staleToneCls = staleTone === 'green' ? 'text-green-700' : staleTone === 'red' ? 'text-red-700' : 'text-amber-700';
+
+  return (
+    <section className="bg-white border border-gray-100 rounded-lg p-5">
+      <div className="flex items-center justify-between gap-3 mb-4">
+        <div className="flex items-center gap-2">
+          <span className="relative flex h-2.5 w-2.5">
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-ks-green opacity-60" />
+            <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-ks-green" />
+          </span>
+          <h2 className="font-semibold text-gray-800">{cn ? '实时爬取状态' : 'Live Crawl Status'}</h2>
+        </div>
+        <span className="text-xs text-gray-400">{cn ? '每 30 秒自动刷新' : 'Auto-refresh 30s'}</span>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4">
+        <div className="rounded-lg border border-gray-100 bg-gray-50 p-3">
+          <p className="text-xs text-gray-500">{cn ? '最新数据打点' : 'Latest snapshot'}</p>
+          <p className="text-base font-bold text-gray-900 mt-1">{fmtRelative(latestSnapshotAt, cn)}</p>
+          <p className="text-[11px] text-gray-400 mt-0.5">{fmtTimeLocal(latestSnapshotAt)}</p>
+        </div>
+        <div className="rounded-lg border border-gray-100 bg-gray-50 p-3">
+          <p className="text-xs text-gray-500">{cn ? '打点滞后的进行中项目' : 'Live projects behind'}</p>
+          <p className={`text-base font-bold mt-1 ${staleToneCls}`}>{fmtNum(staleLiveProjects)}</p>
+          <p className="text-[11px] text-gray-400 mt-0.5">
+            {cn ? `超过 6 小时未更新 / 共 ${fmtNum(liveProjects)} 个进行中` : `>6h without update / ${fmtNum(liveProjects)} live`}
+          </p>
+        </div>
+        <div className="rounded-lg border border-gray-100 bg-gray-50 p-3">
+          <p className="text-xs text-gray-500">{cn ? '抓取任务' : 'Crawl jobs'}</p>
+          <p className="text-base font-bold text-gray-900 mt-1">{states.length}</p>
+          <p className="text-[11px] text-gray-400 mt-0.5">
+            {cn
+              ? `${states.filter(s => s.last_status === 'blocked' || s.last_status === 'error').length} 个异常`
+              : `${states.filter(s => s.last_status === 'blocked' || s.last_status === 'error').length} unhealthy`}
+          </p>
+        </div>
+      </div>
+
+      {states.length > 0 ? (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          {states.map(s => {
+            const meta = CRAWL_STATUS_META[s.last_status ?? ''] ?? { tone: 'bg-gray-50 text-gray-600 border-gray-200', dot: 'bg-gray-400', cn: s.last_status ?? '未知', en: s.last_status ?? 'Unknown' };
+            return (
+              <div key={`${s.source}:${s.job_type}`} className={`rounded-lg border p-3 ${s.last_status === 'blocked' || s.last_status === 'error' ? 'border-amber-200 bg-amber-50/30' : 'border-gray-100 bg-white'}`}>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-gray-800 truncate">{sourceLabel(s.source)}</p>
+                    <p className="text-[11px] text-gray-400 font-mono truncate">{s.job_type}</p>
+                  </div>
+                  <span className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-semibold flex-shrink-0 ${meta.tone}`}>
+                    <span className={`h-1.5 w-1.5 rounded-full ${meta.dot} ${s.last_status === 'running' ? 'animate-pulse' : ''}`} />
+                    {cn ? meta.cn : meta.en}
+                  </span>
+                </div>
+                <div className="mt-2 grid grid-cols-2 gap-2 text-[11px]">
+                  <div>
+                    <span className="text-gray-400">{cn ? '上次完成' : 'Last run'}</span>
+                    <p className="text-gray-700 font-medium">{fmtRelative(s.last_completed_at, cn)}</p>
+                  </div>
+                  <div>
+                    <span className="text-gray-400">{cn ? '下次尝试' : 'Next attempt'}</span>
+                    <p className="text-gray-700 font-medium">{s.next_attempt_at ? fmtRelative(s.next_attempt_at, cn) : '—'}</p>
+                  </div>
+                </div>
+                {s.blocked_streak > 0 && (
+                  <p className="mt-2 text-[11px] font-medium text-amber-700">
+                    {cn ? `连续被拦截 ${s.blocked_streak} 次` : `Blocked ${s.blocked_streak}× in a row`}
+                  </p>
+                )}
+                {s.message && (
+                  <p className="mt-1 text-[11px] text-gray-500 line-clamp-2" title={s.message}>{s.message}</p>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="rounded-lg border border-dashed border-gray-200 px-4 py-8 text-center text-sm text-gray-400">
+          {cn ? '暂无抓取任务状态，下一轮调度后会显示。' : 'No crawler state yet; appears after the next scheduled run.'}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function StorageSection({ diagnostics, cn }: { diagnostics: DiagnosticsReport; cn: boolean }) {
   const dbBytes = (diagnostics.database.fileBytes ?? 0) + (diagnostics.database.walBytes ?? 0) + (diagnostics.database.shmBytes ?? 0);
   const diskFreeBytes = diagnostics.storage.diskFreeBytes;
   const diskFreePct = diagnostics.storage.diskFreePct;
   const diskCritical = diagnostics.storage.isCritical;
   const workerOk = diagnostics.browserWorker.configured;
-  const blockedState = diagnostics.crawlerStates.find(s => s.last_status === 'blocked');
-
-  const fmtTimeLocal = (ts: number | null | undefined) => {
-    if (!ts) return cn ? '暂无' : 'None';
-    return new Date(ts * 1000).toLocaleString(lang === 'cn' ? 'zh-CN' : 'en-US');
-  };
 
   return (
-    <section className={`rounded-lg border p-5 ${diskCritical || !workerOk || blockedState ? 'border-amber-200 bg-amber-50/40' : 'border-gray-100 bg-white'}`}>
+    <section className={`rounded-lg border p-5 ${diskCritical || !workerOk ? 'border-amber-200 bg-amber-50/40' : 'border-gray-100 bg-white'}`}>
       <div className="flex items-center gap-2 mb-4">
         <HardDrive className={`w-4 h-4 ${diskCritical ? 'text-red-500' : 'text-ks-green'}`} />
-        <h2 className="font-semibold text-gray-800">{cn ? '存储与抓取诊断' : 'Storage & Crawler Diagnostics'}</h2>
+        <h2 className="font-semibold text-gray-800">{cn ? '存储与运行环境' : 'Storage & Environment'}</h2>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -240,14 +361,14 @@ function DiagnosticsSection({ diagnostics, cn, lang }: { diagnostics: Diagnostic
             {fmtBytes(diskFreeBytes)}
             {diskFreePct !== null && <span className="text-sm text-gray-500 font-normal ml-2">({diskFreePct}%)</span>}
           </p>
-          <p className="text-xs text-gray-400 mt-1">
+          <p className="text-xs text-gray-400 mt-1 truncate" title={diagnostics.storage.dataDir}>
             {cn ? `数据目录: ${diagnostics.storage.dataDir}` : `Data dir: ${diagnostics.storage.dataDir}`}
           </p>
           {diskCritical && (
             <p className="text-xs text-red-600 mt-2 font-medium">
               {cn
-                ? '⚠ 空间紧张：去 Railway 给 volume 扩容，或在下方点 Prune 清理日志'
-                : '⚠ Critically low — expand the Railway volume or click Prune below to free space.'}
+                ? '⚠ 空间紧张：去 Railway 给 volume 扩容'
+                : '⚠ Critically low — expand the Railway volume.'}
             </p>
           )}
         </div>
@@ -261,7 +382,7 @@ function DiagnosticsSection({ diagnostics, cn, lang }: { diagnostics: Diagnostic
         </div>
 
         <div className={`rounded-lg p-4 border ${workerOk ? 'border-gray-100 bg-white' : 'border-amber-200 bg-amber-50'}`}>
-          <p className="text-xs text-gray-500">{cn ? 'Browser Worker' : 'Browser Worker'}</p>
+          <p className="text-xs text-gray-500">Browser Worker</p>
           <p className={`text-2xl font-bold mt-1 ${workerOk ? 'text-gray-900' : 'text-amber-700'}`}>
             {workerOk ? (cn ? '已配置' : 'Configured') : (cn ? '未配置' : 'Not configured')}
           </p>
@@ -294,42 +415,6 @@ function DiagnosticsSection({ diagnostics, cn, lang }: { diagnostics: Diagnostic
             ))}
           </div>
         </details>
-      )}
-
-      {diagnostics.crawlerStates.length > 0 && (
-        <div className="mt-4 rounded-lg border border-gray-100 bg-white overflow-hidden">
-          <div className="px-4 py-2 bg-gray-50 text-xs font-semibold text-gray-600">
-            {cn ? '抓取器状态（含 backoff）' : 'Crawler states (with backoff)'}
-          </div>
-          <table className="w-full text-xs">
-            <thead className="text-gray-500">
-              <tr>
-                <th className="text-left px-4 py-2 font-medium">{cn ? '来源 / 任务' : 'Source / Job'}</th>
-                <th className="text-left px-3 py-2 font-medium">{cn ? '状态' : 'Status'}</th>
-                <th className="text-left px-3 py-2 font-medium">{cn ? '上次完成' : 'Last completed'}</th>
-                <th className="text-left px-3 py-2 font-medium">{cn ? '下次重试' : 'Next attempt'}</th>
-                <th className="text-left px-4 py-2 font-medium">{cn ? '消息' : 'Message'}</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-50">
-              {diagnostics.crawlerStates.map(s => {
-                const tone = s.last_status === 'completed' ? 'text-green-700'
-                  : s.last_status === 'blocked' ? 'text-amber-700'
-                  : s.last_status === 'error' ? 'text-red-700'
-                  : 'text-gray-500';
-                return (
-                  <tr key={`${s.source}:${s.job_type}`}>
-                    <td className="px-4 py-2 font-mono text-gray-700">{s.source} / {s.job_type}</td>
-                    <td className={`px-3 py-2 font-semibold ${tone}`}>{s.last_status ?? '—'}</td>
-                    <td className="px-3 py-2 text-gray-600">{fmtTimeLocal(s.last_completed_at)}</td>
-                    <td className="px-3 py-2 text-gray-600">{s.next_attempt_at ? fmtTimeLocal(s.next_attempt_at) : '—'}</td>
-                    <td className="px-4 py-2 text-gray-500 max-w-md truncate" title={s.message ?? ''}>{s.message ?? '—'}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
       )}
     </section>
   );
@@ -531,19 +616,13 @@ export default function DataQualityPage() {
     );
   }
 
-  const coverage = report.totals.totalProjects
-    ? Math.round((report.snapshots.projectsWithSnapshots / report.totals.totalProjects) * 1000) / 10
-    : 0;
-
-  const staleTone = report.snapshots.staleLiveProjects > 100 ? 'red' : report.snapshots.staleLiveProjects > 0 ? 'amber' : 'green';
-
   return (
     <div className="max-w-6xl mx-auto space-y-6">
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">{cn ? '数据质量' : 'Data Quality'}</h1>
           <p className="text-sm text-gray-500 mt-1">
-            {cn ? '实时采集覆盖率、来源健康度和最近运行记录。' : 'Live crawl coverage, source health, and recent run history.'}
+            {cn ? '入库总量、实时抓取状态与项目数据维护。' : 'Database totals, live crawl status, and project data maintenance.'}
           </p>
         </div>
         <button
@@ -556,39 +635,43 @@ export default function DataQualityPage() {
         </button>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <StatTile
           icon={Database}
-          label={cn ? '项目总数' : 'Total projects'}
+          label={cn ? '项目总入库量' : 'Total projects in DB'}
           value={fmtNum(report.totals.totalProjects)}
-          hint={cn ? `${fmtNum(report.totals.liveProjects)} 个 live 项目` : `${fmtNum(report.totals.liveProjects)} live projects`}
+          hint={cn ? `其中 ${fmtNum(report.totals.liveProjects)} 个进行中` : `${fmtNum(report.totals.liveProjects)} currently live`}
           tone="blue"
         />
         <StatTile
-          icon={Activity}
-          label={cn ? '快照覆盖率' : 'Snapshot coverage'}
-          value={`${coverage}%`}
-          hint={cn ? `${fmtNum(report.snapshots.projectsWithSnapshots)} 个项目有快照` : `${fmtNum(report.snapshots.projectsWithSnapshots)} projects have snapshots`}
+          icon={UploadCloud}
+          label={cn ? '24h 新增入库' : 'New in last 24h'}
+          value={fmtNum(report.totals.newProjects24h)}
+          hint={cn ? '首次入库时间在过去 24 小时内' : 'First seen within the last 24 hours'}
           tone="green"
         />
         <StatTile
-          icon={Clock3}
-          label={cn ? '24h 快照' : '24h snapshots'}
-          value={fmtNum(report.snapshots.snapshots24h)}
-          hint={cn ? `最近: ${fmtTime(report.snapshots.latestSnapshotAt, lang)}` : `Latest: ${fmtTime(report.snapshots.latestSnapshotAt, lang)}`}
-          tone="gray"
-        />
-        <StatTile
-          icon={AlertTriangle}
-          label={cn ? '过期 live 项目' : 'Stale live projects'}
-          value={fmtNum(report.snapshots.staleLiveProjects)}
-          hint={cn ? '6 小时内没有新快照' : 'No new snapshot in 6 hours'}
-          tone={staleTone}
+          icon={RadioTower}
+          label={cn ? '实时追踪中' : 'Tracking now'}
+          value={fmtNum(report.tracking.autoTrackedLive)}
+          hint={cn
+            ? `正在定时打点的进行中项目 · ${fmtNum(report.tracking.dueProjects)} 个待抓`
+            : `Live projects on the snapshot schedule · ${fmtNum(report.tracking.dueProjects)} due`}
+          tone="amber"
         />
       </div>
 
+      <CrawlStatusSection
+        diagnostics={report.diagnostics}
+        latestSnapshotAt={report.snapshots.latestSnapshotAt}
+        staleLiveProjects={report.snapshots.staleLiveProjects}
+        liveProjects={report.totals.liveProjects}
+        cn={cn}
+        lang={lang}
+      />
+
       {report.diagnostics && (
-        <DiagnosticsSection diagnostics={report.diagnostics} cn={cn} lang={lang} />
+        <StorageSection diagnostics={report.diagnostics} cn={cn} />
       )}
 
       <section className="bg-white border border-gray-100 rounded-lg p-5">
@@ -622,30 +705,54 @@ export default function DataQualityPage() {
       </section>
 
       <section className="bg-white border border-gray-100 rounded-lg overflow-hidden">
-        <div className="px-5 py-4 border-b border-gray-100 flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
-          <div>
-            <div className="flex items-center gap-2">
-              <Database className="w-4 h-4 text-ks-green" />
-              <h2 className="font-semibold text-gray-800">{cn ? '项目数据工作台' : 'Project Data Workbench'}</h2>
-            </div>
-            <p className="text-xs text-gray-400 mt-1">
-              {cn ? '所有写库调试都集中在这里执行；前台项目页只展示数据库结果。' : 'All write-side data operations live here; project pages only display database results.'}
-            </p>
+        <div className="px-5 py-4 border-b border-gray-100">
+          <div className="flex items-center gap-2">
+            <Database className="w-4 h-4 text-ks-green" />
+            <h2 className="font-semibold text-gray-800">{cn ? '项目数据工作台' : 'Project Data Workbench'}</h2>
           </div>
+          <p className="text-xs text-gray-400 mt-1">
+            {cn ? '集中执行写库维护：补抓基础字段、导入曲线、删除脏数据。前台页面只读展示。' : 'Central place for write-side maintenance: backfill fields, import curves, delete bad rows. Front-end pages stay read-only.'}
+          </p>
+        </div>
+
+        <div className="px-5 py-4 border-b border-gray-100 space-y-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs font-medium text-gray-400 mr-1">{cn ? '快捷视图' : 'Views'}</span>
+            {[
+              ['all', cn ? '全部' : 'All'],
+              ['missing_collaborators', cn ? '缺合作者' : 'Missing collaborators'],
+              ['missing_rewards', cn ? '缺奖励档位' : 'Missing rewards'],
+              ['missing_snapshots', cn ? '缺快照' : 'Missing snapshots'],
+              ['webrobots_only', cn ? '仅 WebRobots' : 'WebRobots only'],
+              ['kicktraq_available', cn ? '可导入 Kicktraq' : 'Kicktraq ready'],
+              ['recent_errors', cn ? '最近失败' : 'Recent errors'],
+            ].map(([key, label]) => (
+              <button
+                key={key}
+                onClick={() => applyWorkbenchFilter(key)}
+                className={`rounded-full px-3 py-1.5 text-xs font-semibold transition-colors ${
+                  workbenchFilter === key ? 'bg-ks-green text-white' : 'bg-gray-50 text-gray-600 hover:bg-gray-100'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
           <form
-            className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-[minmax(220px,1fr)_140px_120px_120px_auto]"
+            className="flex flex-wrap items-center gap-2"
             onSubmit={e => {
               e.preventDefault();
               loadWorkbench(workbenchFilter, workbenchQuery);
             }}
           >
-            <div className="relative">
+            <div className="relative min-w-[200px] flex-1">
               <Search className="absolute left-3 top-2.5 h-4 w-4 text-gray-400" />
               <input
                 value={workbenchQuery}
                 onChange={e => setWorkbenchQuery(e.target.value)}
-                placeholder={cn ? '搜索项目 / slug' : 'Search project / slug'}
-                className="w-full rounded-lg border border-gray-200 pl-9 pr-3 py-2 text-sm outline-none focus:border-ks-green sm:w-64"
+                placeholder={cn ? '搜索项目名 / slug' : 'Search project / slug'}
+                className="w-full rounded-lg border border-gray-200 pl-9 pr-3 py-2 text-sm outline-none focus:border-ks-green"
               />
             </div>
             <select
@@ -664,15 +771,15 @@ export default function DataQualityPage() {
               value={workbenchMinPledged}
               onChange={e => setWorkbenchMinPledged(e.target.value)}
               inputMode="numeric"
-              placeholder={cn ? '最低金额' : 'Min USD'}
-              className="rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:border-ks-green"
+              placeholder={cn ? '最低 $' : 'Min $'}
+              className="w-24 rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:border-ks-green"
             />
             <input
               value={workbenchMaxPledged}
               onChange={e => setWorkbenchMaxPledged(e.target.value)}
               inputMode="numeric"
-              placeholder={cn ? '最高金额' : 'Max USD'}
-              className="rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:border-ks-green"
+              placeholder={cn ? '最高 $' : 'Max $'}
+              className="w-24 rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:border-ks-green"
             />
             <button
               type="submit"
@@ -682,35 +789,14 @@ export default function DataQualityPage() {
               <RefreshCw className={`h-4 w-4 ${workbenchLoading ? 'animate-spin' : ''}`} />
               {cn ? '筛选' : 'Filter'}
             </button>
-          </form>
-        </div>
-
-        <div className="px-5 py-3 border-b border-gray-100 flex flex-wrap gap-2">
-          {[
-            ['missing_collaborators', cn ? '缺合作者' : 'Missing collaborators'],
-            ['missing_rewards', cn ? '缺奖励档位' : 'Missing rewards'],
-            ['missing_snapshots', cn ? '缺快照' : 'Missing snapshots'],
-            ['webrobots_only', cn ? '仅 WebRobots' : 'WebRobots only'],
-            ['kicktraq_available', cn ? '可导入 Kicktraq' : 'Kicktraq ready'],
-            ['recent_errors', cn ? '最近失败' : 'Recent errors'],
-            ['all', cn ? '全部' : 'All'],
-          ].map(([key, label]) => (
             <button
-              key={key}
-              onClick={() => applyWorkbenchFilter(key)}
-              className={`rounded-full px-3 py-1.5 text-xs font-semibold transition-colors ${
-                workbenchFilter === key ? 'bg-ks-green text-white' : 'bg-gray-50 text-gray-600 hover:bg-gray-100'
-              }`}
+              type="button"
+              onClick={toggleVisibleSelection}
+              className="ml-auto rounded-lg border border-gray-200 px-3 py-2 text-xs font-semibold text-gray-600 hover:bg-gray-50"
             >
-              {label}
+              {allVisibleSelected ? (cn ? '取消选择本页' : 'Clear page') : (cn ? '选择本页' : 'Select page')}
             </button>
-          ))}
-          <button
-            onClick={toggleVisibleSelection}
-            className="rounded-full px-3 py-1.5 text-xs font-semibold text-gray-600 bg-gray-50 hover:bg-gray-100"
-          >
-            {allVisibleSelected ? (cn ? '取消本页' : 'Clear page') : (cn ? '选择本页' : 'Select page')}
-          </button>
+          </form>
         </div>
 
         {selectedProjectIds.length > 0 && (

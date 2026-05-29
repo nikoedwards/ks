@@ -2209,6 +2209,7 @@ function computeDataQualityReport() {
     SELECT
       COUNT(*) as total_projects,
       SUM(CASE WHEN state = 'live' THEN 1 ELSE 0 END) as live_projects,
+      SUM(CASE WHEN first_seen_at >= @dayAgo THEN 1 ELSE 0 END) as new_projects_24h,
       SUM(CASE WHEN data_source LIKE '%webrobots%' THEN 1 ELSE 0 END) as webrobots_projects,
       SUM(CASE WHEN data_source LIKE '%ks_live%' THEN 1 ELSE 0 END) as ks_live_projects,
       SUM(CASE WHEN data_source LIKE '%kicktraq%' THEN 1 ELSE 0 END) as kicktraq_projects,
@@ -2216,7 +2217,7 @@ function computeDataQualityReport() {
       SUM(CASE WHEN creator_slug IS NULL OR creator_slug = '' OR slug IS NULL OR slug = '' THEN 1 ELSE 0 END) as missing_slug,
       SUM(CASE WHEN launched_at IS NULL THEN 1 ELSE 0 END) as missing_launch_date
     FROM projects
-  `).get() as Record<string, number | null>;
+  `).get({ dayAgo }) as Record<string, number | null>;
 
   const snapshots = db.prepare(`
     SELECT
@@ -2348,6 +2349,7 @@ function computeDataQualityReport() {
     totals: {
       totalProjects: Number(totals.total_projects ?? 0),
       liveProjects: Number(totals.live_projects ?? 0),
+      newProjects24h: Number(totals.new_projects_24h ?? 0),
       webrobotsProjects: Number(totals.webrobots_projects ?? 0),
       ksLiveProjects: Number(totals.ks_live_projects ?? 0),
       kicktraqProjects: Number(totals.kicktraq_projects ?? 0),
