@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getLandingData, getStats, getStateDistribution, getProjectCount, getLiveIntel } from '@/lib/db';
+import { getLandingData, getStats, getStateDistribution, getProjectCount, getLiveSummary } from '@/lib/db';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -16,7 +16,7 @@ export async function GET(req: NextRequest) {
     const stats = await getStats(filter);
     const stateDistribution = await getStateDistribution(filter);
     const landing = getLandingData();
-    const live = getLiveIntel(1);
+    const live = getLiveSummary();
     return NextResponse.json({ stats, stateDistribution, landing, liveSummary: live.summary });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });

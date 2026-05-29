@@ -1,7 +1,7 @@
 import cron from 'node-cron';
 import { runSync, getLatestDatasetUrl } from './lib/sync';
 import { getSyncState } from './lib/syncState';
-import { getLastSync } from './lib/db';
+import { getLastSync, prewarmAnalyticsCaches } from './lib/db';
 import { initTracker } from './lib/tracker';
 
 async function checkWebrobotsDataset(reason: string) {
@@ -25,6 +25,17 @@ export async function register() {
     // Start background tracker immediately on server boot.
     initTracker();
     console.log('[Kicksonar] Background tracker initialized');
+
+    // Warm the heavy analytics caches a few seconds after boot so the first
+    // leaderboard / homepage / live-intel visit is fast instead of cold.
+    setTimeout(() => {
+      try {
+        prewarmAnalyticsCaches();
+        console.log('[Kicksonar] Analytics caches pre-warmed');
+      } catch (e) {
+        console.error('[Kicksonar] Cache pre-warm failed:', e);
+      }
+    }, 5_000);
 
     // Check for a new webrobots dataset every day. Actual imports only run when
     // the latest dataset URL differs from the last completed sync.

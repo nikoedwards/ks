@@ -12,8 +12,86 @@ declare global {
   var __ksDb: Database | undefined;
 }
 
-let dataQualityReportCache: { expiresAt: number; value: any } | null = null;
 const dataWorkbenchCache = new Map<string, { expiresAt: number; value: any }>();
+
+/**
+ * Stale-while-revalidate cache for expensive read-only analytics queries.
+ *
+ * Why: the leaderboard / live-intel / stats queries replay heavy CTEs that
+ * aggregate the full project_snapshots table (and scan ~213K projects) on every
+ * request, so each page load blocked for several seconds. The underlying data
+ * only changes every ~15 min (tracker cycle), so we can safely serve a cached
+ * result and refresh it in the background:
+ *   - fresh (age <= freshMs)  → return cached value instantly
+ *   - stale (age >  freshMs)  → return the stale value instantly AND kick off a
+ *                                background recompute (so the NEXT caller is fresh)
+ *   - cold (no value yet)     → compute synchronously (only the very first hit)
+ *
+ * Accuracy is preserved: worst-case staleness is ~freshMs, far below the data's
+ * real refresh interval. Call invalidateAnalyticsCaches() after a sync writes
+ * new data to drop staleness to zero immediately.
+ */
+interface SwrEntry { value: unknown; computedAt: number; refreshing: boolean; }
+const swrStore = new Map<string, SwrEntry>();
+const SWR_MAX_ENTRIES = 300;
+
+function swrCached<T>(key: string, freshMs: number, compute: () => T): T {
+  const now = Date.now();
+  const entry = swrStore.get(key);
+  if (entry) {
+    const age = now - entry.computedAt;
+    if (age <= freshMs) return entry.value as T;
+    if (!entry.refreshing) {
+      entry.refreshing = true;
+      // Defer so the current response flushes before the (blocking) recompute.
+      setTimeout(() => {
+        try {
+          const v = compute();
+          entry.value = v;
+          entry.computedAt = Date.now();
+        } catch {
+          // Keep serving the previous value on transient failures.
+        } finally {
+          entry.refreshing = false;
+        }
+      }, 0);
+    }
+    return entry.value as T;
+  }
+  const value = compute();
+  swrStore.set(key, { value, computedAt: now, refreshing: false });
+  if (swrStore.size > SWR_MAX_ENTRIES) {
+    const oldestKey = swrStore.keys().next().value;
+    if (oldestKey !== undefined) swrStore.delete(oldestKey);
+  }
+  return value;
+}
+
+/**
+ * Mark all cached analytics results stale (call after a sync writes new data).
+ * We deliberately keep the old values instead of dropping them, so the next
+ * reader still gets an instant response while a background refresh recomputes
+ * fresh data — no visitor ever blocks just because a sync finished.
+ */
+export function invalidateAnalyticsCaches() {
+  for (const entry of swrStore.values()) entry.computedAt = 0;
+}
+
+/**
+ * Warm the hottest, stable-key caches so the first visit after a server boot or
+ * a sync is fast too. Runs the cached wrappers, which compute-if-cold and
+ * refresh-if-stale, all off the request path. Safe to call repeatedly.
+ */
+export function prewarmAnalyticsCaches() {
+  try { void getProjectCount(); } catch { /* ignore */ }
+  try { void getStats(); } catch { /* ignore */ }
+  try { void getStateDistribution(); } catch { /* ignore */ }
+  try { getLandingData(); } catch { /* ignore */ }
+  try { getLiveSummary(); } catch { /* ignore */ }
+  try { getLiveIntel(12); } catch { /* ignore */ }
+  try { getLeaderboardCategoryOptions(); } catch { /* ignore */ }
+  try { getLeaderboard({ limit: 100 }); } catch { /* ignore */ }
+}
 
 function ensureRuntimeMigrations(db: Database) {
   try { db.exec('ALTER TABLE users ADD COLUMN email_verified INTEGER DEFAULT 1'); } catch { /* already exists */ }
@@ -470,6 +548,10 @@ function dateWhere(alias = '') {
 }
 
 export async function getStats(filter: { dateFrom?: number; dateTo?: number } = {}): Promise<DashboardStats> {
+  return swrCached(`stats:${filter.dateFrom ?? ''}:${filter.dateTo ?? ''}`, 60_000, () => computeStats(filter));
+}
+
+function computeStats(filter: { dateFrom?: number; dateTo?: number } = {}): DashboardStats {
   const w = dateWhere();
   if (filter.dateFrom) { w.clauses.push(`${w.launched} >= @dateFrom`); w.params.dateFrom = filter.dateFrom; }
   if (filter.dateTo) { w.clauses.push(`${w.launched} <= @dateTo`); w.params.dateTo = filter.dateTo; }
@@ -493,13 +575,15 @@ export async function getStats(filter: { dateFrom?: number; dateTo?: number } = 
 }
 
 export async function getStateDistribution(filter: { dateFrom?: number; dateTo?: number } = {}): Promise<{ state: string; count: number }[]> {
-  const w = dateWhere();
-  if (filter.dateFrom) { w.clauses.push(`${w.launched} >= @dateFrom`); w.params.dateFrom = filter.dateFrom; }
-  if (filter.dateTo) { w.clauses.push(`${w.launched} <= @dateTo`); w.params.dateTo = filter.dateTo; }
-  const where = w.clauses.length ? `WHERE ${w.clauses.join(' AND ')}` : '';
-  return getDB().prepare(
-    `SELECT state, COUNT(*) as count FROM projects ${where} GROUP BY state ORDER BY count DESC`
-  ).all(w.params) as { state: string; count: number }[];
+  return swrCached(`stateDist:${filter.dateFrom ?? ''}:${filter.dateTo ?? ''}`, 60_000, () => {
+    const w = dateWhere();
+    if (filter.dateFrom) { w.clauses.push(`${w.launched} >= @dateFrom`); w.params.dateFrom = filter.dateFrom; }
+    if (filter.dateTo) { w.clauses.push(`${w.launched} <= @dateTo`); w.params.dateTo = filter.dateTo; }
+    const where = w.clauses.length ? `WHERE ${w.clauses.join(' AND ')}` : '';
+    return getDB().prepare(
+      `SELECT state, COUNT(*) as count FROM projects ${where} GROUP BY state ORDER BY count DESC`
+    ).all(w.params) as { state: string; count: number }[];
+  });
 }
 
 export interface ProjectFilter {
@@ -863,6 +947,11 @@ function leaderboardBaseSql(where: string) {
 }
 
 export function getLeaderboard(filter: LeaderboardFilter = {}) {
+  const key = `leaderboard:${filter.dateFrom ?? ''}:${filter.dateTo ?? ''}:${filter.categoryParent ?? ''}:${filter.categoryName ?? ''}:${filter.limit ?? 25}`;
+  return swrCached(key, 120_000, () => computeLeaderboard(filter));
+}
+
+function computeLeaderboard(filter: LeaderboardFilter = {}) {
   const limit = Math.max(1, Math.min(filter.limit ?? 25, 100));
   const { where, params } = leaderboardWhere(filter);
   const base = leaderboardBaseSql(where);
@@ -1000,6 +1089,10 @@ export function getLeaderboard(filter: LeaderboardFilter = {}) {
 }
 
 export function getLeaderboardCategoryOptions(filter: { dateFrom?: number; dateTo?: number } = {}) {
+  return swrCached(`leaderboardCategories:${filter.dateFrom ?? ''}:${filter.dateTo ?? ''}`, 300_000, () => computeLeaderboardCategoryOptions(filter));
+}
+
+function computeLeaderboardCategoryOptions(filter: { dateFrom?: number; dateTo?: number } = {}) {
   const clauses = ['category_parent IS NOT NULL'];
   const params: Record<string, unknown> = {};
   if (filter.dateFrom) { clauses.push('launched_at >= @dateFrom'); params.dateFrom = filter.dateFrom; }
@@ -1135,6 +1228,13 @@ export async function updateSyncLog(
 ): Promise<void> {
   const sets = Object.keys(data).map(k => `${k} = @${k}`).join(', ');
   getDB().prepare(`UPDATE sync_logs SET ${sets} WHERE id = @id`).run({ ...data, id });
+  // A finished sync may have written new projects/snapshots — mark cached
+  // analytics stale and re-warm in the background so the next page load
+  // reflects fresh data without blocking.
+  if (data.status === 'completed') {
+    invalidateAnalyticsCaches();
+    setTimeout(() => { try { prewarmAnalyticsCaches(); } catch { /* ignore */ } }, 100);
+  }
 }
 
 export interface CrawlRunUpdate {
@@ -2054,11 +2154,17 @@ export async function getSyncHistory() {
 }
 
 export async function getProjectCount(): Promise<number> {
-  const row = getDB().prepare('SELECT COUNT(*) as c FROM projects').get() as { c: number };
-  return row?.c ?? 0;
+  return swrCached('projectCount', 60_000, () => {
+    const row = getDB().prepare('SELECT COUNT(*) as c FROM projects').get() as { c: number };
+    return row?.c ?? 0;
+  });
 }
 
 export function getLandingData() {
+  return swrCached('landingData', 120_000, computeLandingData);
+}
+
+function computeLandingData() {
   const db = getDB();
   const yearStart = Math.floor(new Date('2026-01-01T00:00:00').getTime() / 1000);
   const yearEnd = Math.floor(new Date('2026-12-31T23:59:59').getTime() / 1000);
@@ -2090,11 +2196,10 @@ export function getLandingData() {
 }
 
 export function getDataQualityReport() {
-  const cacheNow = Date.now();
-  if (dataQualityReportCache && dataQualityReportCache.expiresAt > cacheNow) {
-    return dataQualityReportCache.value;
-  }
+  return swrCached('dataQualityReport', 20_000, computeDataQualityReport);
+}
 
+function computeDataQualityReport() {
   const db = getDB();
   const now = Math.floor(Date.now() / 1000);
   const sixHoursAgo = now - 6 * 3600;
@@ -2271,7 +2376,6 @@ export function getDataQualityReport() {
     recentKsLiveProjects,
     diagnostics,
   };
-  dataQualityReportCache = { expiresAt: cacheNow + 20_000, value: report };
   return report;
 }
 
@@ -2488,7 +2592,7 @@ export function deleteProjectsDeep(projectIds: string[]): number {
     db.prepare(`DELETE FROM crawler_errors WHERE project_id IN (${placeholders})`).run(...ids);
     db.prepare(`DELETE FROM kicktraq_import_debug WHERE project_id IN (${placeholders})`).run(...ids);
     const result = db.prepare(`DELETE FROM projects WHERE id IN (${placeholders})`).run(...ids);
-    dataQualityReportCache = null;
+    invalidateAnalyticsCaches();
     dataWorkbenchCache.clear();
     return Number(result.changes ?? 0);
   });
@@ -2522,7 +2626,7 @@ export async function getMeta(): Promise<{
   };
 }
 
-export function getLiveIntel(limit = 12, filter: { categoryParent?: string } = {}) {
+function liveIntelBase(limit: number, filter: { categoryParent?: string }) {
   const db = getDB();
   const now = Math.floor(Date.now() / 1000);
   const cutoff24h = now - 24 * 3600;
@@ -2600,6 +2704,38 @@ export function getLiveIntel(limit = 12, filter: { categoryParent?: string } = {
            funded_pct, projected_usd
     FROM live_rows
   `;
+  return { db, now, baseCte, selectProject, params };
+}
+
+const liveSummarySql = `
+  SELECT
+    COUNT(*) as live_projects,
+    SUM(pledged_delta_24h) as pledged_delta_24h,
+    SUM(backers_delta_24h) as backers_delta_24h,
+    SUM(CASE WHEN launched_at >= @cutoff24h THEN 1 ELSE 0 END) as launched_24h,
+    SUM(CASE WHEN deadline BETWEEN @now AND @now + 86400 THEN 1 ELSE 0 END) as ending_24h,
+    SUM(CASE WHEN funded_pct >= 100 THEN 1 ELSE 0 END) as overfunded_projects
+  FROM live_rows
+`;
+
+/**
+ * Lightweight live summary for the homepage stats ticker. Runs the live CTE
+ * once (instead of the 9 passes in getLiveIntel), cached for 30s.
+ */
+export function getLiveSummary() {
+  return swrCached('liveSummary', 30_000, () => {
+    const { db, now, baseCte, params } = liveIntelBase(1, {});
+    const summary = db.prepare(`${baseCte} ${liveSummarySql}`).get(params);
+    return { generatedAt: now, summary };
+  });
+}
+
+export function getLiveIntel(limit = 12, filter: { categoryParent?: string } = {}) {
+  return swrCached(`liveIntel:${limit}:${filter.categoryParent ?? ''}`, 30_000, () => computeLiveIntel(limit, filter));
+}
+
+function computeLiveIntel(limit = 12, filter: { categoryParent?: string } = {}) {
+  const { db, now, baseCte, selectProject, params } = liveIntelBase(limit, filter);
 
   const fastestFunding = db.prepare(`
     ${baseCte}
@@ -2663,17 +2799,7 @@ export function getLiveIntel(limit = 12, filter: { categoryParent?: string } = {
     ORDER BY category ASC
   `).all(params);
 
-  const summary = db.prepare(`
-    ${baseCte}
-    SELECT
-      COUNT(*) as live_projects,
-      SUM(pledged_delta_24h) as pledged_delta_24h,
-      SUM(backers_delta_24h) as backers_delta_24h,
-      SUM(CASE WHEN launched_at >= @cutoff24h THEN 1 ELSE 0 END) as launched_24h,
-      SUM(CASE WHEN deadline BETWEEN @now AND @now + 86400 THEN 1 ELSE 0 END) as ending_24h,
-      SUM(CASE WHEN funded_pct >= 100 THEN 1 ELSE 0 END) as overfunded_projects
-    FROM live_rows
-  `).get(params);
+  const summary = db.prepare(`${baseCte} ${liveSummarySql}`).get(params);
 
   return {
     generatedAt: now,

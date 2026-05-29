@@ -274,7 +274,7 @@ export default function LandingPage() {
 
   useEffect(() => {
     loadStats();
-    const poll = window.setInterval(loadStats, 5000);
+    const poll = window.setInterval(loadStats, 30000);
     const tick = window.setInterval(() => setClock(Date.now()), 1000);
     return () => {
       window.clearInterval(poll);
