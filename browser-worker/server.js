@@ -185,6 +185,50 @@ if (USE_NEW_HEADLESS) CHROMIUM_LAUNCH_ARGS.push('--headless=new');
 
 const LAUNCH_MAX_ATTEMPTS = Math.max(1, Math.min(Number(process.env.BROWSER_LAUNCH_MAX_ATTEMPTS || 3), 5));
 
+// `spawn E2BIG` means argv + envp exceeded the kernel's ARG_MAX when launching
+// chromium. Playwright passes the *entire* process environment to the browser
+// child by default; on Railway that env block can be very large (injected
+// service vars, build metadata, etc.). We curate a minimal env containing only
+// what chromium / Playwright actually need, which keeps us well under ARG_MAX
+// and eliminates E2BIG. Disable via BROWSER_CURATE_LAUNCH_ENV=0 if it ever
+// breaks something.
+const CURATE_LAUNCH_ENV = !/^(0|false|no)$/i.test(process.env.BROWSER_CURATE_LAUNCH_ENV || '1');
+const LAUNCH_ENV_ALLOW = new Set([
+  'PATH', 'HOME', 'USER', 'LANG', 'LC_ALL', 'TZ', 'TMPDIR', 'TMP', 'TEMP',
+  'DISPLAY', 'XAUTHORITY', 'LD_LIBRARY_PATH', 'FONTCONFIG_PATH', 'FONTCONFIG_FILE',
+  'PLAYWRIGHT_BROWSERS_PATH', 'NODE_ENV',
+]);
+
+function curatedLaunchEnv() {
+  const env = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value === undefined) continue;
+    if (LAUNCH_ENV_ALLOW.has(key) || /^(PLAYWRIGHT_|CHROMIUM_|GOOGLE_)/.test(key)) {
+      env[key] = value;
+    }
+  }
+  return env;
+}
+
+// Errors that mean the container is in an unrecoverable resource state — once
+// these start, every subsequent chromium spawn fails the same way. The only
+// real recovery is a fresh container, so we self-heal by exiting and letting
+// Railway restart us. (Observed in prod: EAGAIN, then E2BIG, wedged for hours.)
+function isUnrecoverableSpawnError(err) {
+  const msg = err instanceof Error ? err.message : String(err || '');
+  return /\bspawn\b/.test(msg) && /\b(E2BIG|EAGAIN|ENOMEM|EMFILE|ENFILE)\b/.test(msg);
+}
+
+const EXIT_ON_LAUNCH_FAILURE = !/^(0|false|no)$/i.test(process.env.BROWSER_EXIT_ON_LAUNCH_FAILURE || '1');
+let exitScheduled = false;
+function scheduleSelfHealExit(reason) {
+  if (exitScheduled) return;
+  exitScheduled = true;
+  console.error(`[browser-worker] self-heal: unrecoverable launch state (${reason}); exiting for a clean restart.`);
+  // Delay briefly so the in-flight HTTP 500 response can flush to the caller.
+  setTimeout(() => process.exit(1), 1500);
+}
+
 async function attemptLaunch(label = 'launch') {
   const proxy = getProxyOptions();
   const startedAt = Date.now();
@@ -196,6 +240,7 @@ async function attemptLaunch(label = 'launch') {
       // xvfb in Docker, which we don't ship).
       headless: !USE_HEADED,
       ...(proxy ? { proxy } : {}),
+      ...(CURATE_LAUNCH_ENV ? { env: curatedLaunchEnv() } : {}),
       args: CHROMIUM_LAUNCH_ARGS,
     });
     const outcome = {
@@ -235,6 +280,11 @@ async function launchWithRetries(maxAttempts = LAUNCH_MAX_ATTEMPTS) {
         await new Promise(resolve => setTimeout(resolve, backoff));
       }
     }
+  }
+  // All attempts failed. If this is a resource-exhaustion spawn error, the
+  // container is wedged — exit so the platform restarts a clean one.
+  if (EXIT_ON_LAUNCH_FAILURE && isUnrecoverableSpawnError(lastErr)) {
+    scheduleSelfHealExit(lastErr instanceof Error ? lastErr.message.split('\n')[0] : 'spawn error');
   }
   throw lastErr;
 }
@@ -1795,6 +1845,20 @@ function workerEnvSummary() {
       launchMaxAttempts: LAUNCH_MAX_ATTEMPTS,
       tokenConfigured: Boolean(TOKEN),
       playwrightBrowsersPath: process.env.PLAYWRIGHT_BROWSERS_PATH || null,
+      recycleAfterRequests: BROWSER_RECYCLE_AFTER_REQUESTS,
+      requestsSinceLaunch,
+      curateLaunchEnv: CURATE_LAUNCH_ENV,
+      exitOnLaunchFailure: EXIT_ON_LAUNCH_FAILURE,
+    },
+    launchEnv: {
+      // Helps confirm the E2BIG fix: how much smaller the curated env is vs the
+      // full process env (E2BIG is driven by total argv+envp byte size).
+      fullVarCount: Object.keys(process.env).length,
+      fullApproxBytes: Object.entries(process.env).reduce((n, [k, v]) => n + k.length + String(v ?? '').length + 2, 0),
+      curatedVarCount: CURATE_LAUNCH_ENV ? Object.keys(curatedLaunchEnv()).length : null,
+      curatedApproxBytes: CURATE_LAUNCH_ENV
+        ? Object.entries(curatedLaunchEnv()).reduce((n, [k, v]) => n + k.length + String(v ?? '').length + 2, 0)
+        : null,
     },
     lastLaunchError,
     launchHistory: launchHistory.slice(-10),
