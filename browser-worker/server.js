@@ -1933,6 +1933,7 @@ async function runDiagnostics({ skipLaunch = false, fetchUrl = null } = {}) {
     launchTest,
     fetchTest,
     stealth: stealthDiagnostics(),
+    warmup: warmupState,
     storageState: await storageStateInfo(),
     env: workerEnvSummary(),
   };
@@ -2009,6 +2010,7 @@ async function handle(req, res) {
       activeFetches,
       queuedFetches: fetchWaiters.length,
       maxConcurrency: MAX_CONCURRENCY,
+      warmup: warmupState,
       lastLaunchError,
     });
     return;
@@ -2133,8 +2135,58 @@ const server = http.createServer((req, res) => {
   });
 });
 
+// Startup self-warm: clear Cloudflare's challenge once at boot so cf_clearance
+// is persisted into storageState before real traffic arrives. This runs
+// IN-PROCESS (not through Railway's edge proxy), so it isn't subject to the
+// ~100s edge connection timeout that makes a *cold* external /fetch fail with
+// HTTP 000. After warm-up, external callers hit the fast (~6s) warm path and
+// stay comfortably under the edge limit. Re-runs on every boot, including the
+// self-heal restarts. Disable with BROWSER_WARMUP_ON_START=0.
+const WARMUP_ON_START = !/^(0|false|no)$/i.test(process.env.BROWSER_WARMUP_ON_START || '1');
+const WARMUP_URL = (process.env.BROWSER_WARMUP_URL
+  || 'https://www.kickstarter.com/discover/advanced?sort=newest&page=1&format=json&state=live').trim();
+
+let warmupState = { attempted: false, ok: false, attempts: 0, lastError: null, lastAt: null, elapsedMs: null };
+
+async function warmUpChallenge() {
+  if (!WARMUP_ON_START) return;
+  const maxAttempts = Math.max(1, Math.min(Number(process.env.BROWSER_WARMUP_MAX_ATTEMPTS || 3), 5));
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    warmupState.attempted = true;
+    warmupState.attempts = attempt;
+    warmupState.lastAt = new Date().toISOString();
+    const startedAt = Date.now();
+    let slotHeld = false;
+    try {
+      await acquireFetchSlot();
+      slotHeld = true;
+      const result = await fetchWithBrowser({ url: WARMUP_URL, expect: 'json', timeoutMs: 170_000, settleMs: 1500 });
+      warmupState.elapsedMs = Date.now() - startedAt;
+      if (result?.ok) {
+        warmupState.ok = true;
+        warmupState.lastError = null;
+        console.log(`[browser-worker] warm-up OK in ${warmupState.elapsedMs}ms (attempt ${attempt}); cf_clearance primed.`);
+        return;
+      }
+      warmupState.lastError = result?.error ? String(result.error).slice(0, 200) : `status=${result?.status ?? 'unknown'}`;
+      console.warn(`[browser-worker] warm-up attempt ${attempt} did not clear (${warmupState.lastError}).`);
+    } catch (err) {
+      warmupState.elapsedMs = Date.now() - startedAt;
+      warmupState.lastError = err instanceof Error ? err.message.slice(0, 200) : String(err);
+      console.warn(`[browser-worker] warm-up attempt ${attempt} threw: ${warmupState.lastError}`);
+      if (isUnrecoverableSpawnError(err)) return; // self-heal exit already scheduled
+    } finally {
+      if (slotHeld) releaseFetchSlot();
+    }
+    if (attempt < maxAttempts) await new Promise(r => setTimeout(r, 3000));
+  }
+}
+
 server.listen(PORT, () => {
   console.log(`[browser-worker] listening on ${PORT}`);
+  // Kick off warm-up after the server is accepting connections so /health stays
+  // responsive during the (potentially slow) first cold challenge.
+  setTimeout(() => { warmUpChallenge().catch(() => {}); }, 500);
 });
 
 process.on('SIGTERM', async () => {
