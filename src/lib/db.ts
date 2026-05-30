@@ -575,18 +575,41 @@ export interface AwardWithWinner extends AwardDef {
   project_backers: number | null;
 }
 
+// Effective pledged/backers must match the projects list and leaderboard: prefer
+// the freshest live snapshot, fall back to the static projects columns. Reading
+// p.usd_pledged alone (the old behaviour) showed a stale monthly value while the
+// list/leaderboard showed the live number — the exact mismatch users reported.
+const LATEST_SNAPSHOT_CTE = `
+  latest_snap_effective AS (
+    SELECT ps.project_id, ps.pledged_usd, ps.backers_count
+    FROM project_snapshots ps
+    JOIN (
+      SELECT project_id, MAX(id) as id
+      FROM project_snapshots
+      WHERE state NOT IN ('unknown', 'historical')
+        AND NOT (COALESCE(pledged_usd, 0) = 0 AND COALESCE(backers_count, 0) = 0)
+      GROUP BY project_id
+    ) x ON x.id = ps.id
+  )
+`;
+const EFFECTIVE_PLEDGED = `CASE WHEN COALESCE(l.pledged_usd, 0) > 0 THEN l.pledged_usd ELSE COALESCE(p.usd_pledged, 0) END`;
+const EFFECTIVE_BACKERS = `CASE WHEN COALESCE(l.backers_count, 0) > 0 THEN l.backers_count ELSE COALESCE(p.backers_count, 0) END`;
+
 export function getAwardsWithWinners(year: number): AwardWithWinner[] {
   return getDB().prepare(`
+    WITH ${LATEST_SNAPSHOT_CTE}
     SELECT
       a.*, @year AS year,
       w.project_id, w.citation_cn, w.citation_en,
       p.name AS project_name, p.blurb AS project_blurb,
       p.image_url AS project_image_url, p.image_thumb_url AS project_thumb_url,
       p.category_parent AS project_category_parent, p.state AS project_state,
-      p.usd_pledged AS project_pledged_usd, p.backers_count AS project_backers
+      ${EFFECTIVE_PLEDGED} AS project_pledged_usd,
+      ${EFFECTIVE_BACKERS} AS project_backers
     FROM awards a
     LEFT JOIN award_winners w ON w.award_key = a.award_key AND w.year = @year
     LEFT JOIN projects p ON p.id = w.project_id
+    LEFT JOIN latest_snap_effective l ON l.project_id = w.project_id
     WHERE a.enabled = 1
     ORDER BY a.sort_order ASC
   `).all({ year }) as AwardWithWinner[];
@@ -618,11 +641,14 @@ export function searchProjectsForAward(query: string, limit = 12) {
   const q = query.trim();
   if (!q) return [] as Array<Record<string, unknown>>;
   return getDB().prepare(`
-    SELECT id, name, image_thumb_url, image_url, state, category_parent, country,
-           COALESCE(usd_pledged, 0) AS pledged_usd, COALESCE(backers_count, 0) AS backers_count
-    FROM projects
-    WHERE name LIKE @q OR id = @exact
-    ORDER BY COALESCE(usd_pledged, 0) DESC
+    WITH ${LATEST_SNAPSHOT_CTE}
+    SELECT p.id, p.name, p.image_thumb_url, p.image_url, p.state, p.category_parent, p.country,
+           ${EFFECTIVE_PLEDGED} AS pledged_usd,
+           ${EFFECTIVE_BACKERS} AS backers_count
+    FROM projects p
+    LEFT JOIN latest_snap_effective l ON l.project_id = p.id
+    WHERE p.name LIKE @q OR p.id = @exact
+    ORDER BY pledged_usd DESC
     LIMIT @limit
   `).all({ q: `%${q}%`, exact: q, limit: Math.min(limit, 25) }) as Array<Record<string, unknown>>;
 }

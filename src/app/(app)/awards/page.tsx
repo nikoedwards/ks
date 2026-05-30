@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { ArrowUpRight, Sparkles, Trophy } from 'lucide-react';
+import { ArrowLeft, ArrowUpRight, Sparkles, Trophy } from 'lucide-react';
 import { useLanguage } from '@/hooks/useLanguage';
 
 interface AwardWinner {
@@ -59,6 +59,14 @@ export default function AwardsPage() {
 
   return (
     <div className="mx-auto max-w-5xl space-y-8 pb-12">
+      <Link
+        href="/leaderboard"
+        className="inline-flex items-center gap-1.5 text-sm font-medium text-gray-500 transition-colors hover:text-ks-green"
+      >
+        <ArrowLeft className="h-4 w-4" />
+        {cn ? '返回排行榜' : 'Back to leaderboard'}
+      </Link>
+
       {/* Hero */}
       <div className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-gray-900 via-gray-900 to-emerald-950 px-8 py-10 text-white">
         <div className="absolute -right-16 -top-16 h-56 w-56 rounded-full bg-ks-green/20 blur-3xl" />
