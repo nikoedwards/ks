@@ -512,6 +512,205 @@ async function fetchViaBrowserProxy(url: string, projectId?: string, options: { 
   }
 }
 
+// ─── New rich worker endpoints (/project, /core) ──────────────────────────────
+// The browser worker exposes /project (rich: core stats + per-tier rewards +
+// creator via in-page GraphQL) and /core (batch core stats). They live on the
+// same service as /fetch, so derive the base URL from KICKSTARTER_BROWSER_FETCH_URL
+// (strip the trailing /fetch) unless KICKSTARTER_BROWSER_WORKER_URL is set.
+export function getWorkerBaseUrl(): string {
+  const explicit = getOptionalEnv('KICKSTARTER_BROWSER_WORKER_URL');
+  if (explicit) return explicit.replace(/\/+$/, '');
+  const fetchUrl = getOptionalEnv('KICKSTARTER_BROWSER_FETCH_URL');
+  if (!fetchUrl) return '';
+  return fetchUrl.replace(/\/fetch\/?$/i, '').replace(/\/+$/, '');
+}
+
+interface WorkerReward {
+  id?: string;
+  title?: string | null;
+  description?: string | null;
+  amount?: number | null;
+  currency?: string | null;
+  backers_count?: number | null;
+  limit?: number | null;
+  remaining?: number | null;
+  available?: boolean | null;
+  estimated_delivery?: string | null;
+  items?: { name: string | null; quantity: number | null }[];
+}
+
+interface WorkerProjectBody {
+  url?: string;
+  creator_segment?: string | null;
+  name?: string | null;
+  blurb?: string | null;
+  image?: string | null;
+  state?: string | null;
+  currency?: string | null;
+  backers_count?: number | null;
+  pledged?: number | null;
+  goal?: number | null;
+  percent_funded?: number | null;
+  deadline_at?: number | null;
+  launched_at?: number | null;
+  category?: string | null;
+  parent_category?: string | null;
+  location?: string | null;
+  comments_count?: number | null;
+  rewards?: WorkerReward[];
+  creator?: {
+    slug?: string | null;
+    profileUrl?: string | null;
+    name?: string | null;
+    biography?: string | null;
+    launched_count?: number | null;
+    backings_count?: number | null;
+  } | null;
+}
+
+// Map the worker /project body into the KSProject shape so the existing
+// scrapeAndStore persistence (snapshot, metadata, rewards, collaborators) works
+// unchanged.
+function mapWorkerProjectToKS(body: WorkerProjectBody, pageUrl: string): KSProject {
+  const slug = extractProjectSlug(pageUrl) ?? undefined;
+  const rewards: KSReward[] = Array.isArray(body.rewards)
+    ? body.rewards.map((r, i) => ({
+        id: r.id ?? `${r.amount ?? 0}-${i}`,
+        title: r.title ?? '',
+        description: r.description ?? '',
+        minimum: r.amount ?? undefined,
+        amount: r.amount ?? undefined,
+        backers_count: Number(r.backers_count ?? 0) || 0,
+        limit: r.limit ?? null,
+        remaining: r.remaining ?? null,
+        is_limited: r.limit != null ? 1 : 0,
+      }))
+    : [];
+  const creator = body.creator
+    ? {
+        name: body.creator.name ?? undefined,
+        slug: body.creator.slug ?? body.creator_segment ?? undefined,
+        urls: { web: { user: body.creator.profileUrl ?? undefined } },
+      }
+    : undefined;
+  return {
+    id: 0,
+    name: body.name ?? '',
+    blurb: body.blurb ?? undefined,
+    state: typeof body.state === 'string' ? body.state.toLowerCase() : undefined,
+    slug,
+    currency: body.currency ?? undefined,
+    pledged: body.pledged ?? undefined,
+    goal: body.goal ?? undefined,
+    backers_count: body.backers_count ?? undefined,
+    comments_count: body.comments_count ?? undefined,
+    launched_at: typeof body.launched_at === 'number' ? body.launched_at : undefined,
+    deadline: typeof body.deadline_at === 'number' ? body.deadline_at : undefined,
+    rewards,
+    creator,
+    photo: body.image ? { full: body.image } : undefined,
+  } as KSProject;
+}
+
+// Fetch rich project data (core + rewards + creator) via the worker /project
+// endpoint. Returns a KSProject or null on failure / Cloudflare block.
+export async function fetchProjectViaWorker(pageUrl: string, projectId?: string): Promise<KSProject | null> {
+  const base = getWorkerBaseUrl();
+  if (!base) return null;
+  const token = getOptionalEnv('BROWSER_WORKER_TOKEN');
+  try {
+    const res = await fetch(`${base}/project`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ url: pageUrl }),
+      signal: AbortSignal.timeout(Math.max(60_000, Math.min(Number(getOptionalEnv('KICKSTARTER_BROWSER_TIMEOUT_MS') || 180_000), 300_000))),
+      cache: 'no-store',
+    });
+    const text = await res.text();
+    if (!res.ok) {
+      recordCrawlerError({
+        source: 'ks_project', job_type: 'worker_project', project_id: projectId ?? null, url: pageUrl,
+        status_code: res.status, message: `Worker /project HTTP ${res.status}: ${text.slice(0, 500)}`,
+      });
+      return null;
+    }
+    const data = JSON.parse(text) as { ok?: boolean; status?: number; body?: WorkerProjectBody; error?: string };
+    if (!data.ok || !data.body) {
+      recordCrawlerError({
+        source: 'ks_project', job_type: 'worker_project', project_id: projectId ?? null, url: pageUrl,
+        status_code: data.status ?? res.status,
+        message: `Worker /project not ok. status=${data.status ?? 'unknown'} error=${data.error ?? ''}`,
+      });
+      return null;
+    }
+    return mapWorkerProjectToKS(data.body, pageUrl);
+  } catch (err) {
+    recordCrawlerError({
+      source: 'ks_project', job_type: 'worker_project', project_id: projectId ?? null, url: pageUrl,
+      message: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  }
+}
+
+export interface WorkerCoreResult {
+  url: string;
+  ok: boolean;
+  state?: string | null;
+  backers_count?: number | null;
+  pledged?: number | null;
+  goal?: number | null;
+  comments_count?: number | null;
+  error?: string;
+}
+
+// Batch-fetch core live stats for many project URLs in one warm worker session.
+export async function fetchCoreBatchViaWorker(pageUrls: string[]): Promise<WorkerCoreResult[]> {
+  const base = getWorkerBaseUrl();
+  if (!base || !pageUrls.length) return [];
+  const token = getOptionalEnv('BROWSER_WORKER_TOKEN');
+  try {
+    const res = await fetch(`${base}/core`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ urls: pageUrls }),
+      signal: AbortSignal.timeout(Math.max(60_000, Math.min(Number(getOptionalEnv('KICKSTARTER_BROWSER_TIMEOUT_MS') || 180_000), 300_000))),
+      cache: 'no-store',
+    });
+    const text = await res.text();
+    if (!res.ok) {
+      recordCrawlerError({
+        source: 'ks_project', job_type: 'worker_core', project_id: null, url: pageUrls[0],
+        status_code: res.status, message: `Worker /core HTTP ${res.status}: ${text.slice(0, 500)}`,
+      });
+      return [];
+    }
+    const data = JSON.parse(text) as { ok?: boolean; results?: WorkerCoreResult[]; error?: string };
+    if (!data.ok || !Array.isArray(data.results)) {
+      recordCrawlerError({
+        source: 'ks_project', job_type: 'worker_core', project_id: null, url: pageUrls[0],
+        message: `Worker /core not ok. error=${data.error ?? ''}`,
+      });
+      return [];
+    }
+    return data.results;
+  } catch (err) {
+    recordCrawlerError({
+      source: 'ks_project', job_type: 'worker_core', project_id: null, url: pageUrls[0],
+      message: err instanceof Error ? err.message : String(err),
+    });
+    return [];
+  }
+}
+
 async function fetchHtmlViaBrowserProxy(url: string, projectId?: string): Promise<string | null> {
   const proxyUrl = getOptionalEnv('KICKSTARTER_BROWSER_FETCH_URL');
   if (!proxyUrl) return null;
@@ -586,6 +785,22 @@ export async function scrapeKSJson(
   const timeoutMs = options.directTimeoutMs ?? Number(getOptionalEnv('KICKSTARTER_DIRECT_TIMEOUT_MS') || 45_000);
   const attempts = Math.max(1, Math.min(options.directAttempts ?? Number(getOptionalEnv('KICKSTARTER_DIRECT_ATTEMPTS') || 2), 4));
   let lastError: unknown = null;
+
+  // KS-direct primary: the browser worker's /project endpoint is the most
+  // reliable + richest source (clears Cloudflare, returns core + per-tier
+  // rewards + creator in one call). Prefer it over the increasingly-blocked
+  // direct .json / HTML paths. Skip for basicOnly (discover enrich) since
+  // /project is heavy. Falls through to the legacy chain if it fails.
+  if (
+    process.env.KS_DIRECT_PRIMARY === '1' &&
+    !options.basicOnly &&
+    options.allowBrowserFallback !== false &&
+    pageUrl.includes('kickstarter.com/projects/')
+  ) {
+    const rich = await fetchProjectViaWorker(pageUrl, projectId);
+    if (rich) return rich;
+    // else fall through to the legacy direct/browser/html chain below.
+  }
 
   for (let attempt = 1; attempt <= attempts; attempt++) {
   try {
@@ -795,6 +1010,9 @@ async function scrapeBasicFallback(projectId: string, jsonUrl: string, opts: Scr
 function shouldSkipKsDirectScrape(opts: ScrapeOptions): boolean {
   // Manual user-triggered refreshes always try KS direct first.
   if (opts.manual) return false;
+  // KS-direct primary mode: never short-circuit to Kicktraq; the worker
+  // /project path (in scrapeKSJson) is the intended source.
+  if (process.env.KS_DIRECT_PRIMARY === '1') return false;
   // Default ON: per-project tracker scrapes go straight to the Kicktraq summary
   // and never touch the browser worker. There is a SINGLE browser worker and
   // letting the tracker fire a KS-direct browser fetch for every due project
