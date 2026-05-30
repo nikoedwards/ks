@@ -53,6 +53,8 @@ export default function Sidebar() {
     fetch('/api/nav').then(r => r.json()).then(d => setNavConfig(d.items ?? [])).catch(() => setNavConfig([]));
   }, [user]);
 
+  const isAdmin = user?.role === 'admin';
+
   const nav = (navConfig.length ? navConfig : [
     { nav_key: 'dashboard' },
     { nav_key: 'projects' },
@@ -67,7 +69,12 @@ export default function Sidebar() {
   ]).map(item => {
     const entry = navMap[item.nav_key as keyof typeof navMap];
     return entry ? { ...entry, key: item.nav_key } : null;
-  }).filter(Boolean);
+  }).filter((item): item is NonNullable<typeof item> =>
+    // Never render admin-only items unless the user is a confirmed admin.
+    // During auth load `user` is null, so they stay hidden (no flash of
+    // admin nav for regular visitors).
+    !!item && (!item.adminOnly || isAdmin),
+  );
 
   return (
     <>
