@@ -1753,9 +1753,16 @@ export function upsertBatch(db: Database, rows: Record<string, unknown>[]): void
     ON CONFLICT(id) DO UPDATE SET
       name = excluded.name,
       blurb = excluded.blurb,
-      goal = excluded.goal,
-      pledged = excluded.pledged,
-      usd_pledged = excluded.usd_pledged,
+      -- goal rarely changes; never let a discovery row that lacks a goal (e.g.
+      -- Kicktraq active scan writes goal=0 for non-USD) wipe a known goal.
+      goal = CASE WHEN COALESCE(excluded.goal, 0) > 0 THEN excluded.goal ELSE projects.goal END,
+      -- Pledged is cumulative/monotonic, so keep the highest known figure. This
+      -- stops a stale or lower-currency-only discovery row (Kicktraq's $6.25M for
+      -- BB-777) from clobbering the authoritative Kickstarter total ($7.0M).
+      pledged = CASE WHEN COALESCE(excluded.pledged, 0) > 0
+                  THEN MAX(COALESCE(projects.pledged, 0), excluded.pledged)
+                  ELSE projects.pledged END,
+      usd_pledged = MAX(COALESCE(projects.usd_pledged, 0), COALESCE(excluded.usd_pledged, 0)),
       state = excluded.state,
       country = COALESCE(excluded.country, projects.country),
       country_name = COALESCE(excluded.country_name, projects.country_name),
@@ -1763,7 +1770,7 @@ export function upsertBatch(db: Database, rows: Record<string, unknown>[]): void
       category_id = COALESCE(excluded.category_id, projects.category_id),
       category_name = COALESCE(excluded.category_name, projects.category_name),
       category_parent = COALESCE(excluded.category_parent, projects.category_parent),
-      backers_count = excluded.backers_count,
+      backers_count = MAX(COALESCE(projects.backers_count, 0), COALESCE(excluded.backers_count, 0)),
       staff_pick = excluded.staff_pick,
       created_at = COALESCE(excluded.created_at, projects.created_at),
       launched_at = COALESCE(excluded.launched_at, projects.launched_at),
