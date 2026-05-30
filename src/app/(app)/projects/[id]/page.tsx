@@ -1385,7 +1385,7 @@ export default function ProjectDetailPage() {
                   const sRate = s.goal > 0 ? (s.usd_pledged / s.goal) * 100 : 0;
                   const similarImage = s.image_thumb_url || s.image_url;
                   return (
-                    <button key={s.id} onClick={() => router.push(`/projects/${s.id}`)}
+                    <button key={s.id} onClick={() => window.open(`/projects/${s.id}`, '_blank', 'noopener,noreferrer')}
                       className="bg-white rounded-xl border border-gray-100 shadow-sm p-4 text-left hover:shadow-md hover:border-ks-green/30 transition-all">
                       <div className="flex items-start gap-3">
                         {similarImage ? (

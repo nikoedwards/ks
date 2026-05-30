@@ -144,7 +144,7 @@ function ProjectCard({ project, rank, metric, subMetric, accent = 'green' }: {
   }[accent];
 
   return (
-    <Link href={`/projects/${project.id}`} className="group block bg-white border border-gray-100 rounded-lg overflow-hidden hover:border-gray-200 hover:shadow-sm transition-all">
+    <Link href={`/projects/${project.id}`} target="_blank" rel="noopener noreferrer" className="group block bg-white border border-gray-100 rounded-lg overflow-hidden hover:border-gray-200 hover:shadow-sm transition-all">
       <div className="flex gap-3 p-3">
         <div className="relative w-24 h-16 rounded-md overflow-hidden shrink-0">
           <Thumb project={project} />
@@ -290,7 +290,7 @@ export default function LiveIntelPage() {
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
             {featured.map((project, i) => (
-              <Link key={project.id} href={`/projects/${project.id}`} className="group bg-white border border-gray-100 rounded-lg overflow-hidden hover:shadow-sm transition-all">
+              <Link key={project.id} href={`/projects/${project.id}`} target="_blank" rel="noopener noreferrer" className="group bg-white border border-gray-100 rounded-lg overflow-hidden hover:shadow-sm transition-all">
                 <div className="aspect-[16/9] bg-gray-100 overflow-hidden">
                   <Thumb project={project} />
                 </div>

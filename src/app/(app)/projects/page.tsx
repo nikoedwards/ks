@@ -92,6 +92,22 @@ function calcDays(p: Project): number | null {
   return Math.round(Math.abs(end - p.launched_at) / 86400);
 }
 
+// Countdown to a campaign's deadline ("还有几天就下线"). Ended/non-live projects
+// show the closing date instead.
+function closingInfo(p: Project, lang: 'cn' | 'en'): { text: string; urgent: boolean; ended: boolean } | null {
+  if (!p.deadline) return null;
+  const secsLeft = p.deadline - Math.floor(Date.now() / 1000);
+  if (p.state !== 'live' || secsLeft <= 0) {
+    return { text: lang === 'cn' ? `已结束 · ${fmtDate(p.deadline)}` : `Ended · ${fmtDate(p.deadline)}`, urgent: false, ended: true };
+  }
+  const days = Math.floor(secsLeft / 86400);
+  if (days >= 1) {
+    return { text: lang === 'cn' ? `还有 ${days} 天` : `${days}d left`, urgent: days <= 3, ended: false };
+  }
+  const hours = Math.max(1, Math.floor(secsLeft / 3600));
+  return { text: lang === 'cn' ? `还有 ${hours} 小时` : `${hours}h left`, urgent: true, ended: false };
+}
+
 function exportCsv(rows: Project[], filename = 'kicksonar-export.csv') {
   const headers = ['#', 'ID', 'Name', 'State', 'Category', 'Goal (USD)', 'Pledged (USD)', 'Funded %', 'Backers', 'Days', 'Country', 'Launched', 'URL'];
   const csvRows = rows.map((p, i) => {
@@ -152,6 +168,7 @@ const VIEW_COLUMNS = [
   { id: 'funded', labelCn: '完成率', labelEn: 'Funded' },
   { id: 'backers', labelCn: '支持者', labelEn: 'Backers' },
   { id: 'days', labelCn: '天数', labelEn: 'Days' },
+  { id: 'deadline', labelCn: '下线时间', labelEn: 'Closing' },
   { id: 'country', labelCn: '国家', labelEn: 'Country' },
   { id: 'launch', labelCn: '发起时间', labelEn: 'Launch' },
   { id: 'actions', labelCn: '操作', labelEn: 'Actions' },
@@ -190,7 +207,11 @@ export default function ProjectsPage() {
       if (saved) {
         const parsed = JSON.parse(saved) as ViewColumnId[];
         const allowed = parsed.filter(id => VIEW_COLUMNS.some(c => c.id === id));
-        if (allowed.length) setVisibleCols(allowed);
+        if (allowed.length) {
+          // Surface newly-added columns for users with an older saved layout.
+          if (!allowed.includes('deadline')) allowed.push('deadline');
+          setVisibleCols(allowed);
+        }
       }
     } catch { /* ignore */ }
   }, []);
@@ -590,6 +611,7 @@ export default function ProjectsPage() {
                   {showCol('funded') && <col className="w-24" />}
                   {showCol('backers') && <col className="w-24" />}
                   {showCol('days') && <col className="w-24" />}
+                  {showCol('deadline') && <col className="w-32" />}
                   {showCol('country') && <col className="w-20" />}
                   {showCol('launch') && <col className="w-32" />}
                   {showCol('actions') && <col className="w-20" />}
@@ -617,6 +639,7 @@ export default function ProjectsPage() {
                     {showCol('funded') && <SortableTh col={colSortKey['funding_rate']} right>{tr.colFunded}</SortableTh>}
                     {showCol('backers') && <SortableTh col={colSortKey['backers']} right>{tr.colBackers}</SortableTh>}
                     {showCol('days') && <th className="px-4 py-3 text-right whitespace-nowrap align-middle">{tr.colDays}</th>}
+                    {showCol('deadline') && <th className="px-4 py-3 whitespace-nowrap align-middle">{lang === 'cn' ? '下线时间' : 'Closing'}</th>}
                     {showCol('country') && <th className="px-4 py-3 whitespace-nowrap align-middle">{tr.colCountry}</th>}
                     {showCol('launch') && <SortableTh col={colSortKey['launched']}>{tr.colLaunch}</SortableTh>}
                     {showCol('actions') && <th className="px-4 py-3 whitespace-nowrap align-middle"></th>}
@@ -646,7 +669,7 @@ export default function ProjectsPage() {
                         </td>
                         {showCol('thumbnail') && (
                           <td className="px-4 py-3">
-                            <Link href={`/projects/${p.id}`} className="block h-10 w-16 overflow-hidden rounded-md bg-gray-100">
+                            <Link href={`/projects/${p.id}`} target="_blank" rel="noopener noreferrer" className="block h-10 w-16 overflow-hidden rounded-md bg-gray-100">
                               {p.image_thumb_url || p.image_url ? (
                                 <ImagePreview src={p.image_thumb_url || p.image_url} className="block h-full w-full">
                                   <img src={p.image_thumb_url || p.image_url || ''} alt="" className="h-full w-full object-cover" />
@@ -658,7 +681,7 @@ export default function ProjectsPage() {
                           </td>
                         )}
                         <td className="px-4 py-3">
-                          <Link href={`/projects/${p.id}`} className="group block">
+                          <Link href={`/projects/${p.id}`} target="_blank" rel="noopener noreferrer" className="group block">
                             <div className="font-medium text-gray-900 max-w-xs truncate group-hover:text-ks-green transition-colors">{p.name}</div>
                             <div className="text-xs text-gray-400 max-w-xs truncate mt-0.5">{p.blurb}</div>
                           </Link>
@@ -726,6 +749,18 @@ export default function ProjectsPage() {
                               {days}{p.state === 'live' ? ' ↑' : ''}
                             </span>
                           ) : '—'}
+                        </td>}
+                        {showCol('deadline') && <td className="px-4 py-3 whitespace-nowrap">
+                          {(() => {
+                            const closing = closingInfo(p, lang);
+                            if (!closing) return <span className="text-xs text-gray-300">—</span>;
+                            if (closing.ended) return <span className="text-xs text-gray-400">{closing.text}</span>;
+                            return (
+                              <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold ${closing.urgent ? 'bg-amber-50 text-amber-600' : 'bg-blue-50 text-blue-600'}`}>
+                                {closing.text}
+                              </span>
+                            );
+                          })()}
                         </td>}
                         {showCol('country') && <td className="px-4 py-3 text-gray-500 text-xs">{p.country}</td>}
                         {showCol('launch') && <td className="px-4 py-3 text-gray-400 whitespace-nowrap text-xs">{fmtDate(p.launched_at)}</td>}

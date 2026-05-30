@@ -132,7 +132,7 @@ export default function FavoritesPage() {
                   <Fragment key={p.id}>
                   <tr className="hover:bg-gray-50/80">
                     <td className="px-5 py-3">
-                      <Link href={`/projects/${p.id}`} className="block h-12 w-20 overflow-hidden rounded-md bg-gray-100">
+                      <Link href={`/projects/${p.id}`} target="_blank" rel="noopener noreferrer" className="block h-12 w-20 overflow-hidden rounded-md bg-gray-100">
                         {p.image_thumb_url || p.image_url ? (
                           <ImagePreview src={p.image_thumb_url || p.image_url} className="block h-full w-full">
                             <img src={p.image_thumb_url || p.image_url || ''} alt="" className="h-full w-full object-cover" />
@@ -143,7 +143,7 @@ export default function FavoritesPage() {
                       </Link>
                     </td>
                     <td className="px-5 py-3">
-                      <Link href={`/projects/${p.id}`} className="font-medium text-gray-900 hover:text-ks-green transition-colors line-clamp-1">
+                      <Link href={`/projects/${p.id}`} target="_blank" rel="noopener noreferrer" className="font-medium text-gray-900 hover:text-ks-green transition-colors line-clamp-1">
                         {p.name}
                       </Link>
                       {p.blurb && <p className="text-xs text-gray-400 mt-0.5 line-clamp-1">{p.blurb}</p>}
