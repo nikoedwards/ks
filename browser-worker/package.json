@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node server.js"
+    "start": "xvfb-run -a --server-args=\"-screen 0 1920x1080x24 -ac\" node server.js"
   },
   "dependencies": {
     "playwright": "1.60.0",

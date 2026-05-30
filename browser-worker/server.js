@@ -171,6 +171,13 @@ const HEADLESS_MODE = (process.env.BROWSER_HEADLESS_MODE || 'new').toLowerCase()
 const USE_HEADED = HEADLESS_MODE === 'false' || HEADLESS_MODE === '0' || HEADLESS_MODE === 'no';
 const USE_NEW_HEADLESS = !USE_HEADED && HEADLESS_MODE !== 'old';
 
+// Use a real browser channel (e.g. "chrome") instead of the bundled Chromium.
+// Real Chrome has a cleaner TLS/JA3 fingerprint, which (together with headful
+// + Xvfb) clears Cloudflare far more reliably on datacenter IPs. Empty string
+// = use the bundled Chromium. Requires the channel binary to be installed in
+// the image (the Dockerfile installs google-chrome-stable).
+const CHROME_CHANNEL = (process.env.BROWSER_CHROME_CHANNEL || '').trim();
+
 const CHROMIUM_LAUNCH_ARGS = [
   '--disable-blink-features=AutomationControlled',
   '--disable-dev-shm-usage',
@@ -234,11 +241,12 @@ async function attemptLaunch(label = 'launch') {
   const startedAt = Date.now();
   try {
     const browser = await chromium.launch({
-      // With --headless=new in CHROMIUM_LAUNCH_ARGS, Playwright still routes
-      // through its headless code paths but the browser binary behaves like
-      // headed Chrome. Pass `headless: false` for true headed mode (needs
-      // xvfb in Docker, which we don't ship).
+      // Headful real Chrome under Xvfb is the default (BROWSER_HEADLESS_MODE=false
+      // + BROWSER_CHROME_CHANNEL=chrome, set in the Dockerfile). For headless
+      // modes, --headless=new in CHROMIUM_LAUNCH_ARGS keeps the modern binary
+      // behavior. Xvfb (via `xvfb-run` in npm start) gives headful a display.
       headless: !USE_HEADED,
+      ...(CHROME_CHANNEL ? { channel: CHROME_CHANNEL } : {}),
       ...(proxy ? { proxy } : {}),
       ...(CURATE_LAUNCH_ENV ? { env: curatedLaunchEnv() } : {}),
       args: CHROMIUM_LAUNCH_ARGS,
@@ -1840,6 +1848,9 @@ function workerEnvSummary() {
       debugScreenshots: DEBUG_SCREENSHOTS,
       blockHeavyResources: BLOCK_HEAVY_RESOURCES,
       ignoreHTTPSErrors: IGNORE_HTTPS_ERRORS,
+      headed: USE_HEADED,
+      headlessMode: HEADLESS_MODE,
+      chromeChannel: CHROME_CHANNEL || null,
       challengeWaitMs: CHALLENGE_WAIT_MS,
       oxylabsUserAgentType: OXYLABS_USER_AGENT_TYPE || null,
       launchMaxAttempts: LAUNCH_MAX_ATTEMPTS,
