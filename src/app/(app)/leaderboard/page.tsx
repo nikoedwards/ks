@@ -577,8 +577,8 @@ export default function LeaderboardPage() {
     ctx.fillStyle = '#0f2f20';
     ctx.font = '700 24px Arial, sans-serif';
     const note = isCnShare
-      ? '注：金额已统一换算为美元，包含全球 Kickstarter 公开项目；带「进行中」标签的项目仍在筹款。'
-      : 'Note: Amounts normalized to USD for public Kickstarter projects; items tagged “LIVE” are still funding.';
+      ? '注：金额已统一换算为美元，包含全球 Kickstarter 公开项目。'
+      : 'Note: Amounts normalized to USD for public Kickstarter projects.';
     ctx.fillText(note, 64, noteY);
     return canvas.toDataURL('image/png');
   };
