@@ -165,9 +165,20 @@ function reconcileProjectStates(db: Database) {
       UPDATE project_snapshots SET state = 'failed'     WHERE state = 'unsuccessful';
     `);
 
-    if (reclassified > 0) {
+    // 4) A project past its deadline cannot be 'live' — Kickstarter flips it to
+    //    successful/failed at the deadline. Legacy rows kept 'live' (stale feeds,
+    //    a tracker that never reached them), producing the "已结束 + 进行中"
+    //    contradiction. Settle the interim state from our latest numbers; a
+    //    post-deadline scrape later overwrites it with KS's authoritative result.
+    const endedFixed = db.prepare(`
+      UPDATE projects
+      SET state = CASE WHEN goal > 0 AND COALESCE(usd_pledged, 0) >= goal THEN 'successful' ELSE 'failed' END
+      WHERE state = 'live' AND deadline IS NOT NULL AND deadline < @now
+    `).run({ now }).changes;
+
+    if (reclassified > 0 || endedFixed > 0) {
       invalidateAnalyticsCaches();
-      console.log(`[db] reconciled ${reclassified} project state(s) to canonical values`);
+      console.log(`[db] reconciled ${reclassified} non-canonical + ${endedFixed} ended-but-live project state(s)`);
     }
   } catch (e) {
     console.error('[db] reconcileProjectStates failed:', e);
@@ -1099,7 +1110,13 @@ export async function getProjects(filter: ProjectFilter = {}) {
 
   const rows = db.prepare(
     `SELECT p.id, p.name, p.blurb,
-            CASE WHEN s.state IN ('live','successful','failed','canceled','suspended') THEN s.state ELSE p.state END as state,
+            CASE
+              WHEN p.deadline IS NOT NULL AND p.deadline < unixepoch()
+                   AND COALESCE(NULLIF(s.state, ''), p.state) = 'live'
+                THEN CASE WHEN p.goal > 0 AND COALESCE(p.usd_pledged, 0) >= p.goal THEN 'successful' ELSE 'failed' END
+              WHEN s.state IN ('live','successful','failed','canceled','suspended') THEN s.state
+              ELSE p.state
+            END as state,
             p.country, p.country_name, p.currency,
             p.category_parent, p.category_name, p.goal,
             p.pledged, p.usd_pledged,
@@ -3297,6 +3314,7 @@ function liveIntelBase(limit: number, filter: { categoryParent?: string }) {
       LEFT JOIN prior24_snap p24 ON p24.project_id = p.id
       LEFT JOIN prior6_snap p6 ON p6.project_id = p.id
       WHERE COALESCE(ls.state, p.state) = 'live'
+        AND (p.deadline IS NULL OR p.deadline > @now)
         ${categoryClause}
     )
   `;
@@ -3753,13 +3771,17 @@ export function getDueProjects(limit = 25): { project_id: string; priority: numb
 }
 
 /**
- * Step 1 of ended-project handling: make sure every project whose deadline has
- * passed but is still flagged `live` gets ONE more fetch *after* the deadline,
- * so we capture the authoritative final pledged/backers/state from Kickstarter
- * (campaigns often surge in the final hours — settling on a pre-deadline
- * snapshot would lose that). We do this by bumping next_fetch to now for any
- * such project that hasn't been fetched since its deadline. A normal scrape
- * then settles the state to KS's real `successful`/`failed`.
+ * Step 1 of ended-project handling: make sure every tracked project whose
+ * deadline has passed gets ONE more fetch *after* the deadline, so we capture
+ * the authoritative final pledged/backers/state from Kickstarter (campaigns
+ * often surge in the final hours — settling on a pre-deadline snapshot would
+ * lose that). We do this by bumping next_fetch to now for any such project that
+ * hasn't been fetched since its deadline. A normal scrape then settles the
+ * state to KS's real `successful`/`failed`.
+ *
+ * Keyed on the deadline (not on state='live'): we now flip a project out of
+ * `live` the moment its deadline passes, so keying on state would skip the very
+ * projects that still need their final post-deadline data.
  *
  * Returns the number of projects queued for a final fetch.
  */
@@ -3774,8 +3796,7 @@ export function scheduleFinalFetchForEndedProjects(): number {
         SELECT t.project_id
         FROM tracking_settings t
         JOIN projects p ON p.id = t.project_id
-        WHERE p.state = 'live'
-          AND p.deadline IS NOT NULL
+        WHERE p.deadline IS NOT NULL
           AND p.deadline < @now
           AND (t.last_fetched IS NULL OR t.last_fetched <= p.deadline)
       )
@@ -3790,11 +3811,14 @@ export function scheduleFinalFetchForEndedProjects(): number {
  * campaign `successful` (pledged >= goal) or `failed` once it ends; we mirror
  * that so the UI badge is correct and the project leaves the live pool.
  *
- * The long grace window (default 72h) guarantees the Step-1 final fetch had
- * ample chances first, so we only fall back to this heuristic for genuinely
- * unreachable projects — never robbing a fetchable project of its final data.
+ * Runs with no grace by default: a project past its deadline is never `live`,
+ * matching the ingest guard and the boot migration. The Step-1 final fetch is
+ * queued first each cycle and is keyed on the deadline (not on state), so a
+ * project flipped here still gets its authoritative post-deadline scrape later —
+ * we are not robbing fetchable projects of their final data. Set
+ * ENDED_RECONCILE_GRACE_HOURS to delay the heuristic if ever needed.
  */
-export function markEndedLiveProjects(graceSeconds = Number(process.env.ENDED_RECONCILE_GRACE_HOURS ?? 72) * 3600): number {
+export function markEndedLiveProjects(graceSeconds = Number(process.env.ENDED_RECONCILE_GRACE_HOURS ?? 0) * 3600): number {
   const cutoff = Math.floor(Date.now() / 1000) - Math.max(0, graceSeconds);
   const res = getDB().prepare(`
     UPDATE projects

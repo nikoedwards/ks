@@ -54,5 +54,15 @@ export function resolveProjectState(opts: {
   pledged?: number | null;
   now?: number;
 }): ProjectState {
-  return normalizeState(opts.raw) ?? inferState(opts);
+  const norm = normalizeState(opts.raw);
+  const now = opts.now ?? Math.floor(Date.now() / 1000);
+  // A "live" label is only valid while the deadline is still ahead. Stale feeds
+  // (monthly webrobots dumps, cached discover pages) routinely carry `live` for
+  // campaigns that have already ended — trust the clock over the label so we
+  // never store a project as live past its deadline. inferState then settles it
+  // to successful/failed; a post-deadline scrape later confirms KS's truth.
+  if (norm === 'live' && opts.deadline && opts.deadline <= now) {
+    return inferState({ deadline: opts.deadline, goal: opts.goal, pledged: opts.pledged, now });
+  }
+  return norm ?? inferState(opts);
 }
