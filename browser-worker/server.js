@@ -1916,7 +1916,7 @@ const GQL_PROJECT_QUERY = `query($slug: String!) {
         backersCount limit remainingQuantity available
         amount { amount currency symbol }
         estimatedDeliveryOn
-        items { nodes { name quantity } }
+        items { edges { quantity node { name } } }
       }
     }
   }
@@ -1948,8 +1948,8 @@ function mapGqlRewards(nodes) {
       remaining: n?.remainingQuantity ?? null,
       available: typeof n?.available === 'boolean' ? n.available : null,
       estimated_delivery: n?.estimatedDeliveryOn ?? null,
-      items: Array.isArray(n?.items?.nodes)
-        ? n.items.nodes.map((it) => ({ name: it?.name ?? null, quantity: it?.quantity ?? null })).filter((x) => x.name)
+      items: Array.isArray(n?.items?.edges)
+        ? n.items.edges.map((e) => ({ name: e?.node?.name ?? null, quantity: e?.quantity ?? null })).filter((x) => x.name)
         : [],
     };
   });
