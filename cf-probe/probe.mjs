@@ -154,6 +154,18 @@ async function probeProject(page, projectUrl) {
     }
     page.off('response', onResp);
     out.rewards = bodies.reduce((m, b) => Math.max(m, countRewardsFromGraph(b)), 0);
+    // DOM fallback: if no GraphQL rewards captured, count visible reward cards.
+    if (out.rewards === 0) {
+      const domCount = await page
+        .evaluate(() => {
+          const text = document.body?.innerText || '';
+          if (!/available rewards|reward/i.test(text)) return 0;
+          const nodes = document.querySelectorAll('[data-reward-id], [id^="reward-"], [class*="reward" i] [class*="pledge" i]');
+          return nodes.length;
+        })
+        .catch(() => 0);
+      out.rewards = domCount;
+    }
 
     // Creator: navigate the creator tab and wait for it to actually render.
     if (await clearAt(page, `${projectUrl}/creator`)) {
@@ -263,17 +275,22 @@ async function runAll() {
     .filter(Boolean);
   let discoverCleared = null;
   if (projects.length === 0) {
-    let b = null;
-    try {
-      b = await chromium.launch(STRATEGIES['chrome-headful'].launch);
-      const ctx = await b.newContext({ locale: 'en-US', timezoneId: 'America/Los_Angeles', viewport: { width: 1440, height: 1000 } });
-      const pg = await ctx.newPage();
-      discoverCleared = await clearAt(pg, 'https://www.kickstarter.com/');
-      if (discoverCleared) projects = await discoverProjects(pg, COUNT);
-    } catch (err) {
-      console.error('[discover] error:', err instanceof Error ? err.message : err);
-    } finally {
-      await b?.close().catch(() => {});
+    // Try headful first; if it can't launch/clear, fall back to headless so we
+    // still get a real project list to test both strategies against.
+    for (const key of ['chrome-headful', 'chromium-headless']) {
+      let b = null;
+      try {
+        b = await chromium.launch(STRATEGIES[key].launch);
+        const ctx = await b.newContext({ locale: 'en-US', timezoneId: 'America/Los_Angeles', viewport: { width: 1440, height: 1000 } });
+        const pg = await ctx.newPage();
+        discoverCleared = await clearAt(pg, 'https://www.kickstarter.com/');
+        if (discoverCleared) projects = await discoverProjects(pg, COUNT);
+      } catch (err) {
+        console.error(`[discover:${key}] error:`, err instanceof Error ? err.message : err);
+      } finally {
+        await b?.close().catch(() => {});
+      }
+      if (projects.length > 0) break;
     }
   }
   if (projects.length === 0) projects = FALLBACK_PROJECTS;
