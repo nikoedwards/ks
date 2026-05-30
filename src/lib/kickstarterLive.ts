@@ -439,6 +439,24 @@ export async function runKickstarterLiveSync(options: LiveSyncOptions = {}): Pro
 
 async function runLiveSyncOrchestrator(options: LiveSyncOptions = {}): Promise<LiveSyncResult> {
   const state = options.state ?? 'live';
+
+  // KS-direct primary mode: discovery uses the Kickstarter discover API (via the
+  // browser worker), with Kicktraq removed from the discovery path entirely.
+  if (process.env.KS_DIRECT_PRIMARY === '1') {
+    try {
+      return await runDirectKickstarterDiscover(options);
+    } catch (err) {
+      return {
+        discovered: 0,
+        insertedOrUpdated: 0,
+        snapshots: 0,
+        pages: 0,
+        stoppedReason: 'error',
+        message: `ks-direct discover threw: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+  }
+
   const kicktraq = await runKicktraqActiveSync({
     maxPages: options.maxPages ?? 5,
     since: options.since,

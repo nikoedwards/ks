@@ -36,6 +36,13 @@ const TRACKING_BATCH_SIZE = Number(process.env.TRACKER_BATCH_SIZE ?? 120);
 const TRACKING_CONCURRENCY = Math.max(1, Number(process.env.TRACKER_CONCURRENCY ?? 10));
 const AUTO_TRACK_BATCH_SIZE = Number(process.env.AUTO_TRACK_BATCH_SIZE ?? 250);
 
+// KS-direct primary: per-project refresh goes through the single-lane browser
+// worker /project endpoint (rich: rewards + creator), so cap concurrency low —
+// extra concurrency just queues at the worker. Also drives Kicktraq removal
+// from discovery. Toggle with KS_DIRECT_PRIMARY=1.
+const KS_DIRECT_PRIMARY = process.env.KS_DIRECT_PRIMARY === '1';
+const KS_DIRECT_CONCURRENCY = Math.max(1, Number(process.env.KS_DIRECT_CONCURRENCY ?? 2));
+
 export function initTracker() {
   if (started || typeof window !== 'undefined') return;
   if (process.env.NEXT_PHASE === 'phase-production-build') return;
@@ -181,7 +188,13 @@ async function scrapeOneDue(due: DueProject) {
     return;
   }
 
-  const result = await scrapeAndStore(project_id, jsonUrl, { track_rewards: 0, track_comments, track_text_diff });
+  // In KS-direct primary mode the worker /project response carries reward tiers,
+  // so enable reward persistence; otherwise keep the legacy lightweight path.
+  const result = await scrapeAndStore(project_id, jsonUrl, {
+    track_rewards: KS_DIRECT_PRIMARY ? 1 : 0,
+    track_comments,
+    track_text_diff,
+  });
   if (!result.ok) {
     const backoff = recordScrapeFailure(project_id);
     const minutes = Math.round((backoff.next_fetch - Math.floor(Date.now() / 1000)) / 60);
@@ -206,8 +219,8 @@ async function scrapeDueProjects() {
     const due = getDueProjects(TRACKING_BATCH_SIZE) as DueProject[];
     if (!due.length) return;
 
-    const concurrency = Math.min(TRACKING_CONCURRENCY, due.length);
-    console.log(`[tracker] scraping ${due.length} due project(s) with concurrency ${concurrency}`);
+    const concurrency = Math.min(KS_DIRECT_PRIMARY ? KS_DIRECT_CONCURRENCY : TRACKING_CONCURRENCY, due.length);
+    console.log(`[tracker] scraping ${due.length} due project(s) with concurrency ${concurrency}${KS_DIRECT_PRIMARY ? ' (ks-direct)' : ''}`);
 
     // Bounded worker pool: each worker pulls the next index until the batch is
     // drained. Replaces the old strictly-serial loop (20 per 5 min) so the
@@ -259,7 +272,9 @@ function startDiscoveryJobs(now: number) {
     });
   }
 
-  if (isDiscoveryDue('kicktraq_active', 'discover', lastKicktraqSync, KICKTRAQ_SYNC_INTERVAL, now)) {
+  // KS-direct primary mode: Kicktraq is relegated to manual historical OCR only,
+  // so skip it as a discovery source. KS live discovery (above) is the source.
+  if (!KS_DIRECT_PRIMARY && isDiscoveryDue('kicktraq_active', 'discover', lastKicktraqSync, KICKTRAQ_SYNC_INTERVAL, now)) {
     lastKicktraqSync = now;
     console.log('[tracker] Starting Kicktraq active sync...');
     runKicktraqActiveSync({
