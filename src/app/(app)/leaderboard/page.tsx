@@ -12,6 +12,7 @@ import {
   DollarSign,
   Filter,
   Image as ImageIcon,
+  Send,
   Share2,
   Trophy,
   Users,
@@ -214,6 +215,14 @@ export default function LeaderboardPage() {
   const [shareLang, setShareLang] = useState<'cn' | 'en'>(cn ? 'cn' : 'en');
   const [shareGenerating, setShareGenerating] = useState(false);
   const [copied, setCopied] = useState(false);
+  // Whether the device can open the native share sheet (mobile WeChat / 小红书 /
+  // IG / X picker). Detected client-side to avoid SSR hydration mismatch.
+  const [nativeShareReady, setNativeShareReady] = useState(false);
+  const [shareHint, setShareHint] = useState<string | null>(null);
+
+  useEffect(() => {
+    setNativeShareReady(typeof navigator !== 'undefined' && typeof navigator.share === 'function');
+  }, []);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -588,6 +597,7 @@ export default function LeaderboardPage() {
     setShareOpen(true);
     setShareImages([]);
     setShareIndex(0);
+    setShareHint(null);
     const isCnShare = langOverride === 'cn';
     const totalRows = projects.slice(0, count);
     const names = await translateTitles(totalRows, langOverride);
@@ -615,6 +625,119 @@ export default function LeaderboardPage() {
         a.remove();
       }, i * 350);
     });
+  };
+
+  const currentShareFileName = () =>
+    `kicksonar-leaderboard-${activeYear}-${metric}-${shareIndex * 20 + 1}-${shareIndex * 20 + 20}.png`;
+
+  // Localized caption that travels with the image when a platform accepts text.
+  const shareCaption = () => {
+    const cnShare = shareLang === 'cn';
+    const cat = categoryParent ? `${categoryParent}${categoryName ? ` · ${categoryName}` : ''} ` : '';
+    return cnShare
+      ? `Kicksonar ${activeYear} ${cat}Kickstarter TOP${shareCount} 榜单（金额已统一换算为美元）`
+      : `Kicksonar ${activeYear} ${cat}Kickstarter Top ${shareCount} — pledged normalized to USD.`;
+  };
+
+  const dataUrlToFile = async (dataUrl: string, filename: string): Promise<File | null> => {
+    try {
+      const blob = await (await fetch(dataUrl)).blob();
+      return new File([blob], filename, { type: 'image/png' });
+    } catch {
+      return null;
+    }
+  };
+
+  const downloadCurrentShareImage = () => {
+    const img = shareImages[shareIndex];
+    if (!img) return;
+    const a = document.createElement('a');
+    a.href = img;
+    a.download = currentShareFileName();
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  };
+
+  const copyCurrentImageToClipboard = async (): Promise<boolean> => {
+    const img = shareImages[shareIndex];
+    if (!img || typeof ClipboardItem === 'undefined' || !navigator.clipboard?.write) return false;
+    try {
+      const blob = await (await fetch(img)).blob();
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  // Try the native share sheet with the actual image file. On mobile this is the
+  // one-tap "open the app and pick a recipient" flow (WeChat / 小红书 / IG / X / FB).
+  const tryNativeImageShare = async (): Promise<'shared' | 'aborted' | 'unsupported'> => {
+    const img = shareImages[shareIndex];
+    if (!img || typeof navigator.share !== 'function') return 'unsupported';
+    const file = await dataUrlToFile(img, currentShareFileName());
+    const payload: ShareData = { title: 'Kicksonar', text: shareCaption() };
+    if (file && navigator.canShare?.({ files: [file] })) payload.files = [file];
+    else return 'unsupported';
+    try {
+      await navigator.share(payload);
+      return 'shared';
+    } catch (err) {
+      return (err as Error)?.name === 'AbortError' ? 'aborted' : 'unsupported';
+    }
+  };
+
+  type SharePlatform = { id: string; label: string; color: string; web?: 'x' | 'facebook' | 'weibo' };
+  const CN_PLATFORMS: SharePlatform[] = [
+    { id: 'wechat', label: '微信', color: '#07C160' },
+    { id: 'xiaohongshu', label: '小红书', color: '#FF2442' },
+    { id: 'weibo', label: '微博', color: '#E6162D', web: 'weibo' },
+  ];
+  const EN_PLATFORMS: SharePlatform[] = [
+    { id: 'x', label: 'X', color: '#000000', web: 'x' },
+    { id: 'facebook', label: 'Facebook', color: '#1877F2', web: 'facebook' },
+    { id: 'instagram', label: 'Instagram', color: '#E4405F' },
+  ];
+
+  const shareToPlatform = async (platform: SharePlatform) => {
+    setShareHint(null);
+    const cnShare = shareLang === 'cn';
+    // 1) Prefer the native sheet so the chosen app opens directly (mobile).
+    const result = await tryNativeImageShare();
+    if (result === 'shared' || result === 'aborted') return;
+
+    // 2) Desktop / unsupported fallback. Platforms with a web share endpoint open
+    //    a prefilled compose window; the image is downloaded so it can be attached.
+    const url = encodeURIComponent(shareUrl());
+    const text = encodeURIComponent(shareCaption());
+    if (platform.web === 'x') {
+      window.open(`https://twitter.com/intent/tweet?text=${text}&url=${url}`, '_blank', 'noopener');
+      downloadCurrentShareImage();
+      setShareHint(cnShare ? '已打开 X 发文窗口，并下载了图片，请在发文时附上图片。' : 'Opened X — the image was downloaded, attach it to your post.');
+      return;
+    }
+    if (platform.web === 'facebook') {
+      window.open(`https://www.facebook.com/sharer/sharer.php?u=${url}`, '_blank', 'noopener');
+      downloadCurrentShareImage();
+      setShareHint(cnShare ? '已打开 Facebook 分享窗口，并下载了图片，请在发帖时上传图片。' : 'Opened Facebook — the image was downloaded, upload it to your post.');
+      return;
+    }
+    if (platform.web === 'weibo') {
+      window.open(`https://service.weibo.com/share/share.php?url=${url}&title=${text}`, '_blank', 'noopener');
+      downloadCurrentShareImage();
+      setShareHint('已打开微博分享窗口，并下载了图片，请在发布时上传图片。');
+      return;
+    }
+    // 3) WeChat / 小红书 / Instagram have no desktop web image-share: save + copy,
+    //    then guide the user. (On mobile, step 1 already handled them.)
+    const copiedImg = await copyCurrentImageToClipboard();
+    downloadCurrentShareImage();
+    setShareHint(
+      cnShare
+        ? `图片已${copiedImg ? '复制并' : ''}下载，请打开「${platform.label}」上传分享。手机端点任意按钮可直接唤起 App 选择「${platform.label}」。`
+        : `Image ${copiedImg ? 'copied & ' : ''}downloaded — open ${platform.label} and upload it. On mobile, tap any button to open the app picker directly.`,
+    );
   };
 
   return (
@@ -944,6 +1067,41 @@ export default function LeaderboardPage() {
                 </button>
               )}
             </div>
+
+            {/* Social platforms — tap opens the native share sheet on mobile so the
+                chosen app (WeChat / 小红书 / IG / X / FB) launches directly. */}
+            {shareImages[shareIndex] && !shareGenerating && (
+              <div className="mt-4 border-t border-gray-100 pt-4">
+                <p className="mb-2 text-xs font-semibold text-gray-400">
+                  {cn ? '分享到社交平台' : 'Share to social'}
+                </p>
+                <div className="flex flex-wrap items-center gap-2">
+                  {nativeShareReady && (
+                    <button
+                      onClick={tryNativeImageShare}
+                      className="inline-flex items-center gap-1.5 rounded-full bg-gray-900 px-3.5 py-2 text-sm font-semibold text-white hover:bg-gray-700"
+                    >
+                      <Send className="h-4 w-4" />{cn ? '一键分享' : 'Share'}
+                    </button>
+                  )}
+                  {(shareLang === 'cn' ? CN_PLATFORMS : EN_PLATFORMS).map(p => (
+                    <button
+                      key={p.id}
+                      onClick={() => shareToPlatform(p)}
+                      style={{ backgroundColor: p.color }}
+                      className="inline-flex items-center gap-1.5 rounded-full px-3.5 py-2 text-sm font-semibold text-white shadow-sm transition-opacity hover:opacity-90"
+                    >
+                      <Share2 className="h-3.5 w-3.5" />{p.label}
+                    </button>
+                  ))}
+                </div>
+                <p className="mt-2 text-xs text-gray-400">
+                  {shareHint ?? (cn
+                    ? '手机端点一下会唤起系统分享，直接选择 App 与联系人；电脑端会打开网页分享或下载图片。'
+                    : 'On mobile this opens the system share sheet to pick an app & contact; on desktop it opens a web share or downloads the image.')}
+                </p>
+              </div>
+            )}
 
             <div className="mt-4 overflow-hidden rounded-lg border border-gray-100 bg-gray-50">
               {shareGenerating ? (
