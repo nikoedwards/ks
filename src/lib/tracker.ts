@@ -25,15 +25,15 @@ let lastDiagnosticsPrune = 0;
 const LIVE_SYNC_INTERVAL = Number(process.env.LIVE_DISCOVERY_INTERVAL_MS ?? 15 * 60 * 1000);
 const KICKTRAQ_SYNC_INTERVAL = 6 * 60 * 60 * 1000;
 const AUTO_TRACK_INTERVAL = 15 * 60 * 1000;
-const TRACKER_CYCLE_INTERVAL = 5 * 60 * 1000;
+// Drain the due queue more aggressively. Per-project tracker scrapes use the
+// cheap Kicktraq summary path (not the single-lane browser worker), so a bigger
+// batch + higher concurrency on a shorter cycle multiplies throughput without
+// touching the worker. 120 / 3min ≈ 2,400 projects/hour (was 60 / 5min ≈ 720/h),
+// so a ~10k backlog drains in ~4h instead of ~14h. All env-overridable.
+const TRACKER_CYCLE_INTERVAL = Number(process.env.TRACKER_CYCLE_MS ?? 3 * 60 * 1000);
 const DIAGNOSTICS_PRUNE_INTERVAL = 60 * 60 * 1000;
-const TRACKING_BATCH_SIZE = Number(process.env.TRACKER_BATCH_SIZE ?? 60);
-// How many due projects to fetch concurrently within a batch. Direct
-// Kickstarter JSON fetches are independent, so a small pool drains the backlog
-// several times faster than the old strictly-serial loop. Kept modest so we
-// stay polite to Kickstarter and don't pile requests onto the single-concurrency
-// browser-worker fallback.
-const TRACKING_CONCURRENCY = Math.max(1, Number(process.env.TRACKER_CONCURRENCY ?? 6));
+const TRACKING_BATCH_SIZE = Number(process.env.TRACKER_BATCH_SIZE ?? 120);
+const TRACKING_CONCURRENCY = Math.max(1, Number(process.env.TRACKER_CONCURRENCY ?? 10));
 const AUTO_TRACK_BATCH_SIZE = Number(process.env.AUTO_TRACK_BATCH_SIZE ?? 250);
 
 export function initTracker() {

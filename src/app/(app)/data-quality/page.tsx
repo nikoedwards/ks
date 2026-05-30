@@ -688,8 +688,8 @@ function TrackingSection({ report, cn }: { report: QualityReport; cn: boolean })
         {s.overdue > 0 && drainHours !== null && (
           <p className="text-xs text-gray-400 mt-3">
             {cn
-              ? `当前有 ${fmtNum(s.overdue)} 个已到期待抓，按上面的吞吐速度约需 ${drainHours} 小时清空（实际受 browser worker 抓取速度影响，可能更久）。`
-              : `${fmtNum(s.overdue)} overdue now — at the throughput above it takes ~${drainHours}h to clear (real speed depends on the browser worker).`}
+              ? `当前有 ${fmtNum(s.overdue)} 个已到期待抓，按上面的吞吐速度约需 ${drainHours} 小时清空（每条走 Kicktraq 摘要抓取，实际速度可能略有波动）。`
+              : `${fmtNum(s.overdue)} overdue now — at the throughput above it takes ~${drainHours}h to clear (each scrape uses the Kicktraq summary path).`}
           </p>
         )}
       </div>

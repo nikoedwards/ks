@@ -392,9 +392,12 @@ function reconcileMissingLiveFields(db: Database) {
     `).run().changes;
 
     const now = Math.floor(Date.now() / 1000);
+    // Spread the re-fetch over ~6h (ABS(RANDOM()) % 21600s) rather than setting
+    // every incomplete project due immediately, which would spike the backlog
+    // and starve higher-priority fresh scrapes the moment the process restarts.
     const queued = db.prepare(`
       UPDATE tracking_settings
-      SET next_fetch = @now
+      SET next_fetch = @now + (ABS(RANDOM()) % 21600)
       WHERE is_tracking = 1
         AND project_id IN (
           SELECT id FROM projects
@@ -3243,9 +3246,9 @@ function computeDataQualityReport() {
       within6h: Number(scheduleBuckets.within6h ?? 0),
       within24h: Number(scheduleBuckets.within24h ?? 0),
       beyond24h: Number(scheduleBuckets.beyond24h ?? 0),
-      batchSize: Number(process.env.TRACKER_BATCH_SIZE ?? 60),
-      concurrency: Math.max(1, Number(process.env.TRACKER_CONCURRENCY ?? 6)),
-      cycleSeconds: 5 * 60,
+      batchSize: Number(process.env.TRACKER_BATCH_SIZE ?? 120),
+      concurrency: Math.max(1, Number(process.env.TRACKER_CONCURRENCY ?? 10)),
+      cycleSeconds: Number(process.env.TRACKER_CYCLE_MS ?? 3 * 60 * 1000) / 1000,
       upcoming: upcomingFetches.map(r => ({
         id: String(r.id),
         name: (r.name as string) ?? '',
@@ -4005,11 +4008,19 @@ export function markFetched(projectId: string) {
     const firstDay = launchedAt > 0 && now - launchedAt <= 24 * 3600;
     const lastTwoDays = deadline > 0 && deadline - now <= 48 * 3600;
     const hotProject = Number(s?.usd_pledged ?? 0) >= 500_000 || Number(s?.backers_count ?? 0) >= 5_000;
+    // Long tail: tiny campaigns far from their deadline change very slowly, so
+    // re-scrape them every 3 days instead of daily. This cuts a large slice of
+    // the steady due-queue inflow (the bulk of trackable live projects are this
+    // shape) so the scraper can keep the high-value ones fresh.
+    const lowValue = Number(s?.usd_pledged ?? 0) < 5_000 && Number(s?.backers_count ?? 0) < 50;
+    const farFromDeadline = deadline > 0 && deadline - now > 14 * 86400;
     interval = firstDay || lastTwoDays || s?.priority === 2 || score >= 20
       ? 3600
       : hotProject || score >= 8 || (s?.subscriber_count ?? 0) >= 2
         ? 2 * 3600
-        : 24 * 3600;
+        : lowValue && farFromDeadline
+          ? 72 * 3600
+          : 24 * 3600;
   }
   getDB().prepare(
     'UPDATE tracking_settings SET last_fetched = ?, next_fetch = ?, consecutive_failures = 0, last_failure_at = NULL WHERE project_id = ?'
@@ -4125,7 +4136,11 @@ export function markEndedLiveProjects(graceSeconds = Number(process.env.ENDED_RE
 export function autoTrackLiveProjects(limit = 250): { inserted: number; reactivated: number; totalTrackable: number; remaining: number } {
   const db = getDB();
   const now = Math.floor(Date.now() / 1000);
-  const jitterWindow = 2 * 3600;
+  // Spread freshly-enrolled projects' first fetch across a full day instead of a
+  // 2h window, so a large enrollment wave doesn't all come due at once and spike
+  // the "overdue" backlog. High-priority projects still get pulled first by the
+  // priority-ordered due query, so freshness for those isn't hurt.
+  const jitterWindow = 24 * 3600;
 
   const totalRow = db.prepare(`
     SELECT COUNT(*) as c
