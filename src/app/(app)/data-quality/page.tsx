@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { AlertTriangle, CheckCircle2, ChevronLeft, ChevronRight, Database, ExternalLink, HardDrive, Info, PlayCircle, RefreshCw, RadioTower, Search, ShieldCheck, Trash2, UploadCloud, type LucideIcon } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, ChevronLeft, ChevronRight, Database, ExternalLink, HardDrive, Info, RefreshCw, RadioTower, Search, ShieldCheck, Trash2, UploadCloud, type LucideIcon } from 'lucide-react';
 import { useLanguage } from '@/hooks/useLanguage';
 import DataSourceSync from '@/components/DataSourceSync';
 
@@ -112,6 +112,8 @@ interface WorkbenchProject {
   image_url: string | null;
   usd_pledged: number | null;
   backers_count: number | null;
+  goal: number | null;
+  currency: string | null;
   launched_at: number | null;
   deadline: number | null;
   latest_snapshot_at: number | null;
@@ -222,6 +224,30 @@ function projectStateClass(state: string) {
   if (state === 'successful') return 'bg-green-50 text-green-700';
   if (state === 'failed' || state === 'canceled') return 'bg-red-50 text-red-700';
   return 'bg-gray-100 text-gray-600';
+}
+
+function stateLabel(state: string, cn: boolean) {
+  const map: Record<string, [string, string]> = {
+    live: ['进行中', 'Live'],
+    successful: ['成功', 'Successful'],
+    failed: ['失败', 'Failed'],
+    canceled: ['已取消', 'Canceled'],
+    suspended: ['已暂停', 'Suspended'],
+  };
+  const pair = map[state];
+  return pair ? (cn ? pair[0] : pair[1]) : state;
+}
+
+// Deadline countdown matching the project list's "下线时间" column.
+function fmtDeadline(deadline: number | null | undefined, cn: boolean) {
+  if (!deadline) return { text: cn ? '未知' : 'Unknown', tone: 'text-gray-400' };
+  const now = Math.floor(Date.now() / 1000);
+  const diffDays = Math.ceil((deadline - now) / 86400);
+  if (diffDays < 0) return { text: cn ? '已结束' : 'Ended', tone: 'text-gray-400' };
+  if (diffDays === 0) return { text: cn ? '今天结束' : 'Ends today', tone: 'text-red-600 font-semibold' };
+  if (diffDays <= 3) return { text: cn ? `还有 ${diffDays} 天` : `${diffDays}d left`, tone: 'text-red-600 font-semibold' };
+  if (diffDays <= 7) return { text: cn ? `还有 ${diffDays} 天` : `${diffDays}d left`, tone: 'text-amber-600 font-medium' };
+  return { text: cn ? `还有 ${diffDays} 天` : `${diffDays}d left`, tone: 'text-gray-600' };
 }
 
 function sourceLabel(source: string) {
@@ -866,12 +892,9 @@ export default function DataQualityPage() {
     ));
   };
 
-  const runWorkbenchAction = (projectId: string, action: 'kickstarter_sync' | 'kicktraq_import') => {
-    const debugAction = action === 'kickstarter_sync' ? 'official' : 'kicktraq';
-    window.location.href = `/data-quality/debug?projectId=${encodeURIComponent(projectId)}&action=${debugAction}`;
-  };
+  type ScrapeAction = 'kickstarter_basic_sync' | 'kickstarter_sync' | 'kicktraq_import';
 
-  const runWorkbenchRequest = async (projectId: string, action: 'kickstarter_basic_sync') => {
+  const runWorkbenchRequest = async (projectId: string, action: ScrapeAction) => {
     const actionKey = `${action}:${projectId}`;
     setRunningAction(actionKey);
     setActionMessage(null);
@@ -881,14 +904,14 @@ export default function DataQualityPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ projectId, action }),
       });
-      const data = await res.json().catch(() => ({})) as { ok?: boolean; message?: string; error?: string; source?: string };
+      const data = await res.json().catch(() => ({})) as { ok?: boolean; message?: string; error?: string; source?: string; days?: number; writtenSnapshots?: number };
       if (!res.ok || !data.ok) {
         setActionMessage({ kind: 'error', text: data.error ?? data.message ?? 'Action failed.' });
       } else {
-        setActionMessage({
-          kind: 'success',
-          text: `${data.message ?? 'Basic Kickstarter fields updated.'}${data.source ? ` | source=${data.source}` : ''}`,
-        });
+        const okText = action === 'kicktraq_import'
+          ? (cn ? `已从 Kicktraq 导入 ${data.days ?? 0} 天曲线（写入 ${data.writtenSnapshots ?? 0} 条快照）。` : `Imported ${data.days ?? 0} days from Kicktraq (${data.writtenSnapshots ?? 0} snapshots).`)
+          : `${data.message ?? (cn ? '已更新最新数据。' : 'Latest data updated.')}${data.source ? ` | source=${data.source}` : ''}`;
+        setActionMessage({ kind: 'success', text: okText });
         await Promise.all([load(), loadWorkbench(workbenchFilter, workbenchQuery)]);
       }
     } catch {
@@ -898,7 +921,7 @@ export default function DataQualityPage() {
     }
   };
 
-  const runBatchAction = async (action: 'kickstarter_basic_sync' | 'delete_projects') => {
+  const runBatchAction = async (action: ScrapeAction | 'delete_projects') => {
     if (!selectedProjectIds.length) return;
     if (action === 'delete_projects') {
       const ok = window.confirm(cn
@@ -927,7 +950,9 @@ export default function DataQualityPage() {
       } else {
         const text = action === 'delete_projects'
           ? (cn ? `已删除 ${data.deleted ?? 0} 个项目。` : `Deleted ${data.deleted ?? 0} projects.`)
-          : (cn ? `批量基础更新完成：成功 ${data.succeeded ?? 0}，失败 ${data.failed ?? 0}。` : `Batch basic update finished: ${data.succeeded ?? 0} succeeded, ${data.failed ?? 0} failed.`);
+          : (cn
+              ? `批量${action === 'kicktraq_import' ? ' Kicktraq 抓取' : ' Kickstarter 抓取'}完成：成功 ${data.succeeded ?? 0}，失败 ${data.failed ?? 0}。`
+              : `Batch ${action === 'kicktraq_import' ? 'Kicktraq' : 'Kickstarter'} sync finished: ${data.succeeded ?? 0} succeeded, ${data.failed ?? 0} failed.`);
         setActionMessage({ kind: 'success', text });
         await Promise.all([load(), loadWorkbench(workbenchFilter, workbenchQuery)]);
       }
@@ -1043,7 +1068,9 @@ export default function DataQualityPage() {
             <h2 className="font-semibold text-gray-800">{cn ? '项目数据工作台' : 'Project Data Workbench'}</h2>
           </div>
           <p className="text-xs text-gray-400 mt-1">
-            {cn ? '集中执行写库维护：补抓基础字段、导入曲线、删除脏数据。前台页面只读展示。' : 'Central place for write-side maintenance: backfill fields, import curves, delete bad rows. Front-end pages stay read-only.'}
+            {cn
+              ? '与项目列表口径一致。可单条或批量手动重新抓取：从 Kickstarter 拉取最新金额/支持者，或从 Kicktraq 导入历史曲线，并直接写入数据库；也可批量删除脏数据。'
+              : 'Same figures as the project list. Manually re-scrape one or many: pull the latest pledged/backers from Kickstarter, or import the history curve from Kicktraq, written straight to the DB. Bulk delete is available too.'}
           </p>
         </div>
 
@@ -1136,12 +1163,22 @@ export default function DataQualityPage() {
             <span>{cn ? `已选中 ${selectedProjectIds.length} 个项目` : `${selectedProjectIds.length} projects selected`}</span>
             <div className="flex flex-wrap gap-2">
               <button
-                onClick={() => runBatchAction('kickstarter_basic_sync')}
+                onClick={() => runBatchAction('kickstarter_sync')}
                 disabled={!!runningAction}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-white px-3 py-2 text-xs font-bold text-green-700 ring-1 ring-green-200 hover:bg-green-100 disabled:opacity-50"
+                title={cn ? '从 Kickstarter 重新抓取最新金额/支持者并写库' : 'Re-scrape latest figures from Kickstarter'}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-ks-green px-3 py-2 text-xs font-bold text-white hover:bg-ks-green-dark disabled:opacity-50"
               >
-                <RefreshCw className={`h-3.5 w-3.5 ${runningAction === 'bulk:kickstarter_basic_sync' ? 'animate-spin' : ''}`} />
-                {cn ? '批量更新基础' : 'Update basics'}
+                <RefreshCw className={`h-3.5 w-3.5 ${runningAction === 'bulk:kickstarter_sync' ? 'animate-spin' : ''}`} />
+                {cn ? '批量从 Kickstarter 抓取' : 'Scrape Kickstarter'}
+              </button>
+              <button
+                onClick={() => runBatchAction('kicktraq_import')}
+                disabled={!!runningAction}
+                title={cn ? '从 Kicktraq 抓取历史曲线并写库' : 'Import history curve from Kicktraq'}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-white px-3 py-2 text-xs font-bold text-gray-700 ring-1 ring-gray-200 hover:bg-gray-50 disabled:opacity-50"
+              >
+                <UploadCloud className={`h-3.5 w-3.5 ${runningAction === 'bulk:kicktraq_import' ? 'animate-spin' : ''}`} />
+                {cn ? '批量从 Kicktraq 抓取' : 'Scrape Kicktraq'}
               </button>
               <button
                 onClick={() => runBatchAction('delete_projects')}
@@ -1167,91 +1204,98 @@ export default function DataQualityPage() {
           <table className="w-full text-sm">
             <thead className="bg-gray-50 text-xs text-gray-500">
               <tr>
-                <th className="text-left px-5 py-3 font-medium">{cn ? '项目' : 'Project'}</th>
-                <th className="text-right px-3 py-3 font-medium">{cn ? '快照' : 'Snapshots'}</th>
-                <th className="text-right px-3 py-3 font-medium">{cn ? '奖励' : 'Rewards'}</th>
-                <th className="text-right px-3 py-3 font-medium">{cn ? '合作者' : 'Collaborators'}</th>
-                <th className="text-left px-3 py-3 font-medium">{cn ? '最近错误' : 'Last error'}</th>
+                <th className="px-5 py-3 w-8">
+                  <input
+                    type="checkbox"
+                    checked={allVisibleSelected}
+                    onChange={toggleVisibleSelection}
+                    className="h-4 w-4 rounded border-gray-300 text-ks-green focus:ring-ks-green"
+                    aria-label={cn ? '选择本页' : 'Select page'}
+                  />
+                </th>
+                <th className="text-left px-2 py-3 font-medium">{cn ? '项目' : 'Project'}</th>
+                <th className="text-right px-3 py-3 font-medium">{cn ? '筹款' : 'Pledged'}</th>
+                <th className="text-right px-3 py-3 font-medium">{cn ? '支持者' : 'Backers'}</th>
+                <th className="text-right px-3 py-3 font-medium">{cn ? '下线时间' : 'Closing'}</th>
+                <th className="text-left px-3 py-3 font-medium">{cn ? '数据' : 'Data'}</th>
                 <th className="text-right px-5 py-3 font-medium">{cn ? '操作' : 'Actions'}</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-50">
               {(workbench?.rows ?? []).map(project => {
-                const runningBasic = runningAction === `kickstarter_basic_sync:${project.id}`;
-                const runningKs = false;
-                const runningKt = false;
+                const runningKs = runningAction === `kickstarter_sync:${project.id}`;
+                const runningKt = runningAction === `kicktraq_import:${project.id}`;
+                const fundedPct = project.goal && project.goal > 0
+                  ? Math.round((Number(project.usd_pledged ?? 0) / project.goal) * 100)
+                  : null;
+                const closing = fmtDeadline(project.deadline, cn);
                 return (
-                  <tr key={project.id} className="align-top">
+                  <tr key={project.id} className="align-middle hover:bg-gray-50/60">
                     <td className="px-5 py-4">
+                      <input
+                        type="checkbox"
+                        checked={selectedProjectIds.includes(project.id)}
+                        onChange={() => toggleProjectSelection(project.id)}
+                        className="h-4 w-4 rounded border-gray-300 text-ks-green focus:ring-ks-green"
+                      />
+                    </td>
+                    <td className="px-2 py-4">
                       <div className="flex gap-3">
-                        <input
-                          type="checkbox"
-                          checked={selectedProjectIds.includes(project.id)}
-                          onChange={() => toggleProjectSelection(project.id)}
-                          className="mt-4 h-4 w-4 flex-shrink-0 rounded border-gray-300 text-ks-green focus:ring-ks-green"
-                        />
                         <div className="h-12 w-20 flex-shrink-0 overflow-hidden rounded-md bg-gray-100">
                           {(project.image_thumb_url || project.image_url) && (
                             // eslint-disable-next-line @next/next/no-img-element
                             <img src={project.image_thumb_url || project.image_url || ''} alt="" className="h-full w-full object-cover" />
                           )}
                         </div>
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-2">
-                            <a href={`/projects/${project.id}`} target="_blank" rel="noreferrer" className="font-semibold text-gray-900 hover:text-ks-green truncate">
-                              {project.name}
-                            </a>
+                        <div className="min-w-0 max-w-[260px]">
+                          <a href={`/projects/${project.id}`} target="_blank" rel="noreferrer" className="flex items-center gap-1 font-semibold text-gray-900 hover:text-ks-green">
+                            <span className="truncate">{project.name}</span>
                             <ExternalLink className="h-3.5 w-3.5 flex-shrink-0 text-gray-300" />
-                          </div>
-                          <p className="mt-1 text-xs text-gray-400 truncate">{project.creator_slug && project.slug ? `${project.creator_slug}/${project.slug}` : project.id}</p>
-                          <div className="mt-1 flex flex-wrap gap-1.5">
-                            <span className={`rounded-full px-2 py-0.5 text-[11px] ${projectStateClass(project.state)}`}>{project.state}</span>
+                          </a>
+                          <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                            <span className={`rounded-full px-2 py-0.5 text-[11px] ${projectStateClass(project.state)}`}>{stateLabel(project.state, cn)}</span>
                             <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[11px] text-gray-500">{project.data_source || 'unknown'}</span>
                           </div>
                         </div>
                       </div>
                     </td>
                     <td className="px-3 py-4 text-right">
-                      <p className="font-semibold text-gray-900">{fmtNum(project.snapshot_count)}</p>
-                      <p className="text-xs text-gray-400">{fmtTime(project.latest_snapshot_at, lang)}</p>
+                      <p className="font-semibold text-gray-900">{fmtMoney(project.usd_pledged)}</p>
+                      {fundedPct !== null && (
+                        <p className={`text-xs ${fundedPct >= 100 ? 'text-ks-green' : 'text-gray-400'}`}>{fundedPct >= 10000 ? '>10K' : fundedPct.toLocaleString()}%</p>
+                      )}
                     </td>
-                    <td className="px-3 py-4 text-right font-semibold text-gray-900">{fmtNum(project.reward_count)}</td>
-                    <td className="px-3 py-4 text-right font-semibold text-gray-900">{fmtNum(project.collaborator_count)}</td>
-                    <td className="px-3 py-4 max-w-xs">
+                    <td className="px-3 py-4 text-right font-semibold text-gray-900">{fmtNum(project.backers_count)}</td>
+                    <td className={`px-3 py-4 text-right text-xs ${closing.tone}`}>{closing.text}</td>
+                    <td className="px-3 py-4">
                       {project.last_error ? (
-                        <p className="line-clamp-2 text-xs text-red-600" title={project.last_error}>{project.last_error}</p>
+                        <p className="line-clamp-2 max-w-[180px] text-xs text-red-600" title={project.last_error}>{project.last_error}</p>
                       ) : (
-                        <span className="text-xs text-gray-300">-</span>
+                        <p className="text-xs text-gray-400">
+                          {cn ? `${fmtNum(project.snapshot_count)} 快照` : `${fmtNum(project.snapshot_count)} snaps`}
+                          <span className="text-gray-300"> · {fmtTime(project.latest_snapshot_at, lang)}</span>
+                        </p>
                       )}
                     </td>
                     <td className="px-5 py-4">
                       <div className="flex flex-nowrap justify-end gap-1.5">
                         <button
-                          onClick={() => runWorkbenchRequest(project.id, 'kickstarter_basic_sync')}
+                          onClick={() => runWorkbenchRequest(project.id, 'kickstarter_sync')}
                           disabled={!!runningAction}
-                          title={cn ? '补抓金额/支持者等基础字段' : 'Backfill basic fields'}
-                          className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg border border-green-200 bg-green-50 px-2.5 py-1.5 text-xs font-semibold text-green-700 hover:bg-green-100 disabled:opacity-50"
-                        >
-                          <CheckCircle2 className={`h-3.5 w-3.5 flex-shrink-0 ${runningBasic ? 'animate-pulse' : ''}`} />
-                          {cn ? '更新基础' : 'Basic'}
-                        </button>
-                        <button
-                          onClick={() => runWorkbenchAction(project.id, 'kickstarter_sync')}
-                          disabled={!!runningAction}
-                          title={cn ? '官方完整同步（调试页）' : 'Full official sync (debug)'}
+                          title={cn ? '从 Kickstarter 重新抓取最新数据并写入数据库' : 'Re-scrape latest data from Kickstarter and write to DB'}
                           className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg bg-ks-green px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-ks-green-dark disabled:opacity-50"
                         >
-                          <PlayCircle className={`h-3.5 w-3.5 flex-shrink-0 ${runningKs ? 'animate-pulse' : ''}`} />
-                          {cn ? '官方同步' : 'KS Sync'}
+                          <RefreshCw className={`h-3.5 w-3.5 flex-shrink-0 ${runningKs ? 'animate-spin' : ''}`} />
+                          {cn ? '从 Kickstarter 抓取' : 'Kickstarter'}
                         </button>
                         <button
-                          onClick={() => runWorkbenchAction(project.id, 'kicktraq_import')}
+                          onClick={() => runWorkbenchRequest(project.id, 'kicktraq_import')}
                           disabled={!!runningAction}
-                          title={cn ? '从 Kicktraq 导入历史曲线' : 'Import history curve from Kicktraq'}
+                          title={cn ? '从 Kicktraq 抓取历史曲线并写入数据库' : 'Import history curve from Kicktraq and write to DB'}
                           className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-50"
                         >
-                          <UploadCloud className={`h-3.5 w-3.5 flex-shrink-0 ${runningKt ? 'animate-pulse' : ''}`} />
-                          {cn ? '导入曲线' : 'Kicktraq'}
+                          <UploadCloud className={`h-3.5 w-3.5 flex-shrink-0 ${runningKt ? 'animate-spin' : ''}`} />
+                          {cn ? '从 Kicktraq 抓取' : 'Kicktraq'}
                         </button>
                       </div>
                     </td>
@@ -1260,7 +1304,7 @@ export default function DataQualityPage() {
               })}
               {!workbench?.rows?.length && (
                 <tr>
-                  <td colSpan={6} className="px-5 py-10 text-center text-sm text-gray-400">
+                  <td colSpan={7} className="px-5 py-10 text-center text-sm text-gray-400">
                     {workbenchLoading ? (cn ? '加载中...' : 'Loading...') : (cn ? '没有匹配项目。' : 'No matching projects.')}
                   </td>
                 </tr>

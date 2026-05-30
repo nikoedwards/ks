@@ -3208,6 +3208,8 @@ export interface DataWorkbenchProject {
   image_url: string | null;
   usd_pledged: number | null;
   backers_count: number | null;
+  goal: number | null;
+  currency: string | null;
   launched_at: number | null;
   deadline: number | null;
   latest_snapshot_at: number | null;
@@ -3270,19 +3272,30 @@ export function getDataWorkbenchProjects(options: {
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
   const rows = db.prepare(`
-    WITH selected AS (
+    WITH ${LATEST_SNAPSHOT_CTE},
+    selected AS (
       SELECT
         p.id,
         p.name,
-        p.state,
+        -- Display state mirrors the project list: a past-deadline 'live' row is
+        -- resolved to successful/failed so the workbench never shows the
+        -- "已结束 + 进行中" contradiction.
+        CASE
+          WHEN p.deadline IS NOT NULL AND p.deadline < unixepoch() AND p.state = 'live'
+            THEN CASE WHEN p.goal > 0 AND COALESCE(p.usd_pledged, 0) >= p.goal THEN 'successful' ELSE 'failed' END
+          ELSE p.state
+        END as state,
         p.data_source,
         p.source_url,
         p.creator_slug,
         p.slug,
         p.image_thumb_url,
         p.image_url,
-        p.usd_pledged,
-        p.backers_count,
+        -- Same effective pledged/backers as the list & leaderboard.
+        ${EFFECTIVE_PLEDGED} as usd_pledged,
+        ${EFFECTIVE_BACKERS} as backers_count,
+        p.goal,
+        p.currency,
         p.launched_at,
         p.deadline,
         p.ks_live_synced_at,
@@ -3300,6 +3313,7 @@ export function getDataWorkbenchProjects(options: {
           LIMIT 1
         ) as last_error_at
       FROM projects p
+      LEFT JOIN latest_snap_effective l ON l.project_id = p.id
       ${whereSql}
     )
     SELECT
@@ -3314,6 +3328,8 @@ export function getDataWorkbenchProjects(options: {
       s.image_url,
       s.usd_pledged,
       s.backers_count,
+      s.goal,
+      s.currency,
       s.launched_at,
       s.deadline,
       s.latest_snapshot_at,

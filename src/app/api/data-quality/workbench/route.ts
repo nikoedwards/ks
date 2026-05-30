@@ -108,114 +108,124 @@ async function runKickstarterBasicSync(projectId: string, action: string) {
   };
 }
 
+async function runKickstarterFullSync(projectId: string, action: string) {
+  const project = await getProjectById(projectId) as {
+    source_url?: string | null; creator_slug?: string | null; slug?: string | null;
+  } | null;
+  if (!project) return { payload: { ok: false, action, error: 'Project not found' }, status: 404 };
+
+  const jsonUrl = buildProjectJsonUrl(project);
+  if (!jsonUrl) return { payload: { ok: false, action, error: 'No valid Kickstarter URL for this project' }, status: 422 };
+
+  const result = await scrapeAndStore(projectId, jsonUrl, {
+    track_rewards: 0,
+    track_comments: 1,
+    track_text_diff: 1,
+    manual: true,
+    allowKicktraqSummaryFallback: false,
+  });
+  const pageUrl = jsonUrl.replace(/\.json(?:[?#].*)?$/, '');
+  const recentErrors = result.ok ? [] : getRecentCrawlerErrors({ projectId, urls: [jsonUrl, pageUrl], limit: 4 });
+  const recentDetail = recentErrors.map(e => e.message).filter(Boolean).slice(0, 2).join(' | ');
+  return {
+    payload: {
+      ok: result.ok,
+      action,
+      source: result.source,
+      full: result.full,
+      rewardCount: result.rewardCount,
+      collaboratorCount: result.collaboratorCount,
+      message: result.ok ? result.message : (recentDetail || result.message),
+      recentErrors,
+    },
+    status: result.ok ? 200 : 502,
+  };
+}
+
+async function runKicktraqImport(projectId: string, action: string) {
+  const project = await getProjectById(projectId) as {
+    source_url?: string | null; creator_slug?: string | null; slug?: string | null;
+  } | null;
+  if (!project) return { payload: { ok: false, action, error: 'Project not found' }, status: 404 };
+
+  const creatorSlug = project.creator_slug || extractCreatorSlug(project.source_url ?? '');
+  const projectSlug = project.slug || extractProjectSlug(project.source_url ?? '');
+  if (!creatorSlug || !projectSlug) {
+    return { payload: { ok: false, action, error: 'Cannot derive Kicktraq URL for this project.' }, status: 422 };
+  }
+
+  const { days, diagnostics } = await scrapeKicktraqDetailed(creatorSlug, projectSlug);
+  if (!days.length) {
+    if ((diagnostics.zeroRowsRejected ?? 0) > 0) deleteKicktraqSnapshots(projectId);
+    const hasOcr = Boolean(getOptionalEnv('QWEN_API_KEY') || getOptionalEnv('OPENAI_API_KEY') || getOptionalEnv('ANTHROPIC_API_KEY'));
+    return {
+      payload: {
+        ok: false,
+        action,
+        noData: true,
+        message: hasOcr
+          ? `No usable Kicktraq rows parsed. page=${diagnostics.pageStatus ?? '-'}, json=${diagnostics.jsonStatus ?? '-'}, image=${diagnostics.imageStatus ?? '-'}, ocr=${diagnostics.ocrProvider ?? '-'} ${diagnostics.ocrStatus ?? '-'}.`
+          : 'OCR provider key is not available in this Railway service.',
+        diagnostics,
+      },
+      status: 422,
+    };
+  }
+
+  const writtenSnapshots = storeKicktraqDays(projectId, days);
+  return { payload: { ok: true, action, days: days.length, writtenSnapshots, diagnostics }, status: 200 };
+}
+
+const SCRAPE_RUNNERS: Record<string, (projectId: string, action: string) => Promise<{ payload?: Record<string, unknown>; status?: number; response?: NextResponse }>> = {
+  kickstarter_basic_sync: runKickstarterBasicSync,
+  kickstarter_sync: runKickstarterFullSync,
+  kicktraq_import: runKicktraqImport,
+};
+
 export async function POST(req: NextRequest) {
   const admin = requireAdmin(req);
   if (!admin) return NextResponse.json({ ok: false, error: 'Forbidden' }, { status: 403 });
 
   const body = await req.json().catch(() => ({})) as { projectId?: string; projectIds?: string[]; action?: string };
+  const action = body.action ?? '';
   const projectIds = Array.isArray(body.projectIds)
     ? Array.from(new Set(body.projectIds.map(id => String(id).trim()).filter(Boolean))).slice(0, 50)
     : [];
 
-  if (body.action === 'delete_projects') {
-    if (!projectIds.length) return NextResponse.json({ ok: false, error: 'projectIds is required' }, { status: 400 });
-    const deleted = deleteProjectsDeep(projectIds);
-    return NextResponse.json({ ok: true, action: body.action, deleted, requested: projectIds.length });
-  }
-
-  if (body.action === 'kickstarter_basic_sync' && projectIds.length) {
-    const results = [];
-    for (const id of projectIds.slice(0, 25)) {
-      const result = await runKickstarterBasicSync(id, body.action);
-      results.push({
-        projectId: id,
-        status: result.status ?? 500,
-        ...(result.payload ?? { ok: false, error: 'Project sync failed.' }),
-      });
+  // ─── Batch ────────────────────────────────────────────────────────────────
+  if (projectIds.length) {
+    if (action === 'delete_projects') {
+      const deleted = deleteProjectsDeep(projectIds);
+      return NextResponse.json({ ok: true, action, deleted, requested: projectIds.length });
     }
-    const succeeded = results.filter(result => result.ok).length;
+    const runner = SCRAPE_RUNNERS[action];
+    if (!runner) return NextResponse.json({ ok: false, error: 'Unknown action' }, { status: 400 });
+    const results: Array<{ projectId: string; status: number; ok?: boolean; [k: string]: unknown }> = [];
+    for (const id of projectIds.slice(0, 25)) {
+      const r = await runner(id, action).catch(() => ({ payload: { ok: false, error: 'Project sync failed.' }, status: 500 }));
+      const hasResponse = 'response' in r && r.response;
+      const payload: { ok?: boolean; [k: string]: unknown } = hasResponse
+        ? { ok: false, error: 'Project sync failed.' }
+        : (r.payload ?? { ok: false, error: 'Project sync failed.' });
+      results.push({ projectId: id, status: r.status ?? 500, ...payload });
+    }
+    const succeeded = results.filter(r => r.ok).length;
     return NextResponse.json({
       ok: succeeded > 0,
-      action: body.action,
+      action,
       succeeded,
       failed: results.length - succeeded,
       results,
     }, { status: succeeded > 0 ? 200 : 502 });
   }
 
+  // ─── Single project ─────────────────────────────────────────────────────────
   const projectId = body.projectId?.trim();
   if (!projectId) return NextResponse.json({ ok: false, error: 'projectId is required' }, { status: 400 });
 
-  const project = await getProjectById(projectId) as {
-    name?: string | null;
-    source_url?: string | null;
-    creator_slug?: string | null;
-    slug?: string | null;
-  } | null;
-  if (!project) return NextResponse.json({ ok: false, error: 'Project not found' }, { status: 404 });
-
-  if (body.action === 'kickstarter_basic_sync') {
-    const result = await runKickstarterBasicSync(projectId, body.action);
-    if (result.response) return result.response;
-    return NextResponse.json(result.payload, { status: result.status });
-  }
-
-  if (body.action === 'kickstarter_sync') {
-    const jsonUrl = buildProjectJsonUrl(project);
-    if (!jsonUrl) return NextResponse.json({ ok: false, error: 'No valid Kickstarter URL for this project' }, { status: 422 });
-
-    const result = await scrapeAndStore(projectId, jsonUrl, {
-      track_rewards: 0,
-      track_comments: 1,
-      track_text_diff: 1,
-      manual: true,
-      allowKicktraqSummaryFallback: false,
-    });
-    const pageUrl = jsonUrl.replace(/\.json(?:[?#].*)?$/, '');
-    const recentErrors = result.ok ? [] : getRecentCrawlerErrors({ projectId, urls: [jsonUrl, pageUrl], limit: 4 });
-    return NextResponse.json({
-      ok: result.ok,
-      action: body.action,
-      source: result.source,
-      full: result.full,
-      rewardCount: result.rewardCount,
-      collaboratorCount: result.collaboratorCount,
-      message: result.message,
-      recentErrors,
-    }, { status: result.ok ? 200 : 502 });
-  }
-
-  if (body.action === 'kicktraq_import') {
-    const creatorSlug = project.creator_slug || extractCreatorSlug(project.source_url ?? '');
-    const projectSlug = project.slug || extractProjectSlug(project.source_url ?? '');
-    if (!creatorSlug || !projectSlug) {
-      return NextResponse.json({ ok: false, error: 'Cannot derive Kicktraq URL for this project.' }, { status: 422 });
-    }
-
-    const { days, diagnostics } = await scrapeKicktraqDetailed(creatorSlug, projectSlug);
-    if (!days.length) {
-      if ((diagnostics.zeroRowsRejected ?? 0) > 0) deleteKicktraqSnapshots(projectId);
-      const hasOcr = Boolean(getOptionalEnv('QWEN_API_KEY') || getOptionalEnv('OPENAI_API_KEY') || getOptionalEnv('ANTHROPIC_API_KEY'));
-      return NextResponse.json({
-        ok: false,
-        action: body.action,
-        noData: true,
-        message: hasOcr
-          ? `No usable Kicktraq rows parsed. page=${diagnostics.pageStatus ?? '-'}, json=${diagnostics.jsonStatus ?? '-'}, image=${diagnostics.imageStatus ?? '-'}, ocr=${diagnostics.ocrProvider ?? '-'} ${diagnostics.ocrStatus ?? '-'}.`
-          : 'OCR provider key is not available in this Railway service.',
-        diagnostics,
-      }, { status: 422 });
-    }
-
-    const writtenSnapshots = storeKicktraqDays(projectId, days);
-    return NextResponse.json({
-      ok: true,
-      action: body.action,
-      days: days.length,
-      writtenSnapshots,
-      diagnostics,
-    });
-  }
-
-  return NextResponse.json({ ok: false, error: 'Unknown action' }, { status: 400 });
+  const runner = SCRAPE_RUNNERS[action];
+  if (!runner) return NextResponse.json({ ok: false, error: 'Unknown action' }, { status: 400 });
+  const result = await runner(projectId, action);
+  if (result.response) return result.response;
+  return NextResponse.json(result.payload, { status: result.status });
 }
