@@ -555,9 +555,18 @@ export default function LeaderboardPage() {
       ctx.fillStyle = '#0f2f20';
       ctx.font = '500 22px Arial, sans-serif';
       const translatedName = names[i] || project.name;
-      const maxNameLength = (isCnShare ? 22 : 30) - (project.state === 'live' ? (isCnShare ? 4 : 5) : 0);
-      const name = translatedName.length > maxNameLength ? `${translatedName.slice(0, maxNameLength - 1)}...` : translatedName;
-      ctx.fillText(name, nameX + liveDotPad, y);
+      // Truncate by measured width (not a fixed char count) so names fill the
+      // column up to just before the right-aligned Pledged column (x=805).
+      const nameStartX = nameX + liveDotPad;
+      const nameMaxWidth = 690 - nameStartX;
+      let name = translatedName;
+      if (ctx.measureText(name).width > nameMaxWidth) {
+        while (name.length > 1 && ctx.measureText(`${name}…`).width > nameMaxWidth) {
+          name = name.slice(0, -1);
+        }
+        name = `${name.trimEnd()}…`;
+      }
+      ctx.fillText(name, nameStartX, y);
       ctx.textAlign = 'right';
       ctx.fillText(fmtUsd(project.pledged_usd), 805, y);
       ctx.fillText(fmtNum(project.backers_count), 985, y);
