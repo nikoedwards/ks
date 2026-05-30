@@ -4,6 +4,7 @@ import {
   getProjectById,
   getRecentCrawlerErrors,
   markEndedLiveProjects,
+  scheduleFinalFetchForEndedProjects,
   recordCrawlerError,
   recordScrapeFailure,
   upsertTrackingSettings,
@@ -59,9 +60,14 @@ async function runCycle() {
   cycleRunning = true;
   try {
     const now = Date.now();
-    reconcileEndedProjects();
+    // Queue a post-deadline final fetch BEFORE scraping, so the due batch this
+    // cycle captures the authoritative final numbers for just-ended projects.
+    queueFinalFetchForEnded();
     await enrollLiveProjects(now);
     await scrapeDueProjects();
+    // Safety net AFTER scraping: only projects we still couldn't settle (long
+    // past deadline, unreachable) get the deadline-based state correction.
+    reconcileEndedProjects();
     startDiscoveryJobs(now);
     runDiagnosticsPrune(now);
   } finally {
@@ -69,11 +75,22 @@ async function runCycle() {
   }
 }
 
+function queueFinalFetchForEnded() {
+  try {
+    const queued = scheduleFinalFetchForEndedProjects();
+    if (queued > 0) {
+      console.log(`[tracker] queued ${queued} ended project(s) for a final post-deadline fetch`);
+    }
+  } catch (e) {
+    console.error('[tracker] final-fetch queue error:', e);
+  }
+}
+
 function reconcileEndedProjects() {
   try {
     const changed = markEndedLiveProjects();
     if (changed > 0) {
-      console.log(`[tracker] reconciled ${changed} past-deadline project(s) out of 'live' state`);
+      console.log(`[tracker] reconciled ${changed} long-ended project(s) out of 'live' state (final fetch unavailable)`);
     }
   } catch (e) {
     console.error('[tracker] ended-project reconcile error:', e);

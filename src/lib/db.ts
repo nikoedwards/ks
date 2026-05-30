@@ -3223,14 +3223,48 @@ export function getDueProjects(limit = 25): { project_id: string; priority: numb
 }
 
 /**
- * Correct the state of projects that are still flagged `live` but whose
- * Kickstarter deadline has already passed. KS marks a campaign `successful`
- * (pledged >= goal) or `failed` once it ends; we mirror that locally so the UI
- * badge is accurate even when a project drops out of the discover feed and is
- * never re-fetched. Also frees them from the live tracking pool.
- * A small grace window avoids flipping a project in the brief finalize gap.
+ * Step 1 of ended-project handling: make sure every project whose deadline has
+ * passed but is still flagged `live` gets ONE more fetch *after* the deadline,
+ * so we capture the authoritative final pledged/backers/state from Kickstarter
+ * (campaigns often surge in the final hours — settling on a pre-deadline
+ * snapshot would lose that). We do this by bumping next_fetch to now for any
+ * such project that hasn't been fetched since its deadline. A normal scrape
+ * then settles the state to KS's real `successful`/`failed`.
+ *
+ * Returns the number of projects queued for a final fetch.
  */
-export function markEndedLiveProjects(graceSeconds = 3600): number {
+export function scheduleFinalFetchForEndedProjects(): number {
+  const now = Math.floor(Date.now() / 1000);
+  const res = getDB().prepare(`
+    UPDATE tracking_settings
+    SET next_fetch = @now
+    WHERE is_tracking = 1
+      AND (next_fetch IS NULL OR next_fetch > @now)
+      AND project_id IN (
+        SELECT t.project_id
+        FROM tracking_settings t
+        JOIN projects p ON p.id = t.project_id
+        WHERE p.state = 'live'
+          AND p.deadline IS NOT NULL
+          AND p.deadline < @now
+          AND (t.last_fetched IS NULL OR t.last_fetched <= p.deadline)
+      )
+  `).run({ now });
+  return res.changes;
+}
+
+/**
+ * Step 2 (safety net): correct the state of projects that are STILL `live` long
+ * after their deadline — i.e. ones we couldn't fetch a final time (no usable
+ * Kickstarter URL, or persistent Cloudflare/worker failures). KS marks a
+ * campaign `successful` (pledged >= goal) or `failed` once it ends; we mirror
+ * that so the UI badge is correct and the project leaves the live pool.
+ *
+ * The long grace window (default 72h) guarantees the Step-1 final fetch had
+ * ample chances first, so we only fall back to this heuristic for genuinely
+ * unreachable projects — never robbing a fetchable project of its final data.
+ */
+export function markEndedLiveProjects(graceSeconds = Number(process.env.ENDED_RECONCILE_GRACE_HOURS ?? 72) * 3600): number {
   const cutoff = Math.floor(Date.now() / 1000) - Math.max(0, graceSeconds);
   const res = getDB().prepare(`
     UPDATE projects
