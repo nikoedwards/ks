@@ -3,6 +3,7 @@ import {
   getDueProjects,
   getProjectById,
   getRecentCrawlerErrors,
+  markEndedLiveProjects,
   recordCrawlerError,
   recordScrapeFailure,
   upsertTrackingSettings,
@@ -58,12 +59,24 @@ async function runCycle() {
   cycleRunning = true;
   try {
     const now = Date.now();
+    reconcileEndedProjects();
     await enrollLiveProjects(now);
     await scrapeDueProjects();
     startDiscoveryJobs(now);
     runDiagnosticsPrune(now);
   } finally {
     cycleRunning = false;
+  }
+}
+
+function reconcileEndedProjects() {
+  try {
+    const changed = markEndedLiveProjects();
+    if (changed > 0) {
+      console.log(`[tracker] reconciled ${changed} past-deadline project(s) out of 'live' state`);
+    }
+  } catch (e) {
+    console.error('[tracker] ended-project reconcile error:', e);
   }
 }
 

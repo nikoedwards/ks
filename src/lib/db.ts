@@ -3222,6 +3222,27 @@ export function getDueProjects(limit = 25): { project_id: string; priority: numb
   `).all(now, limit) as { project_id: string; priority: number; track_rewards: number; track_comments: number; track_text_diff: number; consecutive_failures: number }[];
 }
 
+/**
+ * Correct the state of projects that are still flagged `live` but whose
+ * Kickstarter deadline has already passed. KS marks a campaign `successful`
+ * (pledged >= goal) or `failed` once it ends; we mirror that locally so the UI
+ * badge is accurate even when a project drops out of the discover feed and is
+ * never re-fetched. Also frees them from the live tracking pool.
+ * A small grace window avoids flipping a project in the brief finalize gap.
+ */
+export function markEndedLiveProjects(graceSeconds = 3600): number {
+  const cutoff = Math.floor(Date.now() / 1000) - Math.max(0, graceSeconds);
+  const res = getDB().prepare(`
+    UPDATE projects
+    SET state = CASE WHEN goal > 0 AND usd_pledged >= goal THEN 'successful' ELSE 'failed' END
+    WHERE state = 'live'
+      AND deadline IS NOT NULL
+      AND deadline < @cutoff
+  `).run({ cutoff });
+  if (res.changes > 0) invalidateAnalyticsCaches();
+  return res.changes;
+}
+
 export function autoTrackLiveProjects(limit = 250): { inserted: number; reactivated: number; totalTrackable: number; remaining: number } {
   const db = getDB();
   const now = Math.floor(Date.now() / 1000);
