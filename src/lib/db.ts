@@ -592,8 +592,13 @@ const LATEST_SNAPSHOT_CTE = `
     ) x ON x.id = ps.id
   )
 `;
-const EFFECTIVE_PLEDGED = `CASE WHEN COALESCE(l.pledged_usd, 0) > 0 THEN l.pledged_usd ELSE COALESCE(p.usd_pledged, 0) END`;
-const EFFECTIVE_BACKERS = `CASE WHEN COALESCE(l.backers_count, 0) > 0 THEN l.backers_count ELSE COALESCE(p.backers_count, 0) END`;
+// Pledged/backers are monotonic, so the highest of (latest snapshot, stored project
+// row) is the freshest, most-complete value — and using the SAME MAX() everywhere
+// (detail, list, leaderboard, awards, live-intel) guarantees every surface shows an
+// identical number. A staler kicktraq snapshot can sit below the authoritative KS
+// scrape (and vice-versa); MAX() picks the right one without per-surface drift.
+const EFFECTIVE_PLEDGED = `MAX(COALESCE(l.pledged_usd, 0), COALESCE(p.usd_pledged, 0))`;
+const EFFECTIVE_BACKERS = `MAX(COALESCE(l.backers_count, 0), COALESCE(p.backers_count, 0))`;
 
 export function getAwardsWithWinners(year: number): AwardWithWinner[] {
   return getDB().prepare(`
@@ -1146,7 +1151,7 @@ export async function getProjects(filter: ProjectFilter = {}) {
             p.country, p.country_name, p.currency,
             p.category_parent, p.category_name, p.goal,
             p.pledged, p.usd_pledged,
-            COALESCE(s.snap_backers, p.backers_count) as backers_count,
+            MAX(COALESCE(s.snap_backers, 0), COALESCE(p.backers_count, 0)) as backers_count,
             p.staff_pick, p.launched_at, p.deadline,
             p.creator_name, p.creator_slug, p.creator_url,
             p.source_url, p.slug,
@@ -1154,7 +1159,8 @@ export async function getProjects(filter: ProjectFilter = {}) {
             p.has_service_agency, p.service_agency_name,
             CASE
               WHEN s.source = 'kicktraq_active' AND COALESCE(p.currency, 'USD') <> 'USD' THEN NULL
-              WHEN s.pledged_usd IS NOT NULL AND (s.pledged_usd > 0 OR p.usd_pledged = 0) THEN s.pledged_usd
+              WHEN s.pledged_usd IS NOT NULL AND (s.pledged_usd > 0 OR p.usd_pledged = 0)
+                THEN MAX(s.pledged_usd, COALESCE(p.usd_pledged, 0))
               ELSE NULL
             END as live_pledged_usd,
             s.snap_backers as live_backers_count,
@@ -1356,22 +1362,24 @@ function leaderboardBaseSql(where: string) {
         p.id, p.name, p.blurb, p.state, p.slug, p.creator_name, p.creator_slug,
         p.category_parent, p.category_name, p.country, p.country_name,
         p.launched_at, p.deadline, p.source_url, p.image_url, p.image_thumb_url,
-        CASE
-          WHEN COALESCE(l.pledged_usd, 0) > 0 THEN l.pledged_usd
-          WHEN COALESCE(p.currency, 'USD') = 'USD'
-            THEN COALESCE(p.usd_pledged, COALESCE(p.pledged, 0))
-          WHEN COALESCE(p.pledged, 0) > 0
-            THEN p.pledged * CASE COALESCE(p.currency, 'USD')
-              WHEN 'JPY' THEN 0.0067 WHEN 'HKD' THEN 0.128 WHEN 'AUD' THEN 0.65
-              WHEN 'CAD' THEN 0.73 WHEN 'GBP' THEN 1.25 WHEN 'EUR' THEN 1.08
-              WHEN 'SEK' THEN 0.093 WHEN 'DKK' THEN 0.145 WHEN 'NOK' THEN 0.093
-              WHEN 'CHF' THEN 1.10 WHEN 'MXN' THEN 0.059 WHEN 'SGD' THEN 0.74
-              WHEN 'NZD' THEN 0.60 ELSE 1
-            END
-          WHEN COALESCE(p.usd_pledged, 0) > 0 THEN p.usd_pledged
-          ELSE 0
-        END as pledged_usd,
-        CASE WHEN COALESCE(l.backers_count, 0) > 0 THEN l.backers_count ELSE COALESCE(p.backers_count, 0) END as backers_count,
+        MAX(
+          COALESCE(l.pledged_usd, 0),
+          CASE
+            WHEN COALESCE(p.currency, 'USD') = 'USD'
+              THEN COALESCE(p.usd_pledged, COALESCE(p.pledged, 0))
+            WHEN COALESCE(p.usd_pledged, 0) > 0 THEN p.usd_pledged
+            WHEN COALESCE(p.pledged, 0) > 0
+              THEN p.pledged * CASE COALESCE(p.currency, 'USD')
+                WHEN 'JPY' THEN 0.0067 WHEN 'HKD' THEN 0.128 WHEN 'AUD' THEN 0.65
+                WHEN 'CAD' THEN 0.73 WHEN 'GBP' THEN 1.25 WHEN 'EUR' THEN 1.08
+                WHEN 'SEK' THEN 0.093 WHEN 'DKK' THEN 0.145 WHEN 'NOK' THEN 0.093
+                WHEN 'CHF' THEN 1.10 WHEN 'MXN' THEN 0.059 WHEN 'SGD' THEN 0.74
+                WHEN 'NZD' THEN 0.60 ELSE 1
+              END
+            ELSE 0
+          END
+        ) as pledged_usd,
+        MAX(COALESCE(l.backers_count, 0), COALESCE(p.backers_count, 0)) as backers_count,
         CASE
           WHEN COALESCE(p.currency, 'USD') <> 'USD' AND COALESCE(p.goal, 0) > 0
             THEN p.goal * CASE COALESCE(p.currency, 'USD')
@@ -1385,11 +1393,11 @@ function leaderboardBaseSql(where: string) {
         END as goal,
         CASE WHEN COALESCE(p.goal, 0) > 0
           THEN ROUND((
-            CASE
-              WHEN COALESCE(l.pledged_usd, 0) > 0 THEN l.pledged_usd
-              WHEN COALESCE(p.usd_pledged, 0) > 0 THEN p.usd_pledged
-              ELSE COALESCE(p.pledged, 0)
-            END
+            MAX(
+              COALESCE(l.pledged_usd, 0),
+              COALESCE(p.usd_pledged, 0),
+              COALESCE(p.pledged, 0)
+            )
           ) / p.goal * 100, 1)
           ELSE 0
         END as funded_pct,
@@ -2765,20 +2773,23 @@ function computeLandingData() {
   const yearEnd = Math.floor(new Date('2026-12-31T23:59:59').getTime() / 1000);
   const monthAgo = Math.floor(Date.now() / 1000) - 30 * 86400;
   const select = `
-    SELECT id, name, blurb, state, category_parent, category_name, country, usd_pledged, backers_count,
-           goal, launched_at, source_url, image_url, image_thumb_url
-    FROM projects
+    WITH ${LATEST_SNAPSHOT_CTE}
+    SELECT p.id, p.name, p.blurb, p.state, p.category_parent, p.category_name, p.country,
+           ${EFFECTIVE_PLEDGED} AS usd_pledged, ${EFFECTIVE_BACKERS} AS backers_count,
+           p.goal, p.launched_at, p.source_url, p.image_url, p.image_thumb_url
+    FROM projects p
+    LEFT JOIN latest_snap_effective l ON l.project_id = p.id
   `;
   const top2026 = db.prepare(`
     ${select}
-    WHERE launched_at BETWEEN @yearStart AND @yearEnd
+    WHERE p.launched_at BETWEEN @yearStart AND @yearEnd
     ORDER BY usd_pledged DESC, backers_count DESC
     LIMIT 3
   `).all({ yearStart, yearEnd });
   const latestMonth = db.prepare(`
     ${select}
-    WHERE launched_at >= @monthAgo
-      AND COALESCE(usd_pledged, 0) > 0
+    WHERE p.launched_at >= @monthAgo
+      AND COALESCE(p.usd_pledged, 0) > 0
     ORDER BY usd_pledged DESC, backers_count DESC
     LIMIT 5
   `).all({ monthAgo });
@@ -3321,8 +3332,8 @@ function liveIntelBase(limit: number, filter: { categoryParent?: string }) {
         p.id, p.name, p.blurb, p.goal, p.state, p.country, p.currency,
         p.category_parent, p.category_name, p.backers_count, p.usd_pledged,
         p.launched_at, p.deadline, p.source_url, p.image_url, p.image_thumb_url,
-        COALESCE(ls.pledged_usd, p.usd_pledged) as pledged_usd,
-        COALESCE(ls.backers_count, p.backers_count) as live_backers_count,
+        MAX(COALESCE(ls.pledged_usd, 0), COALESCE(p.usd_pledged, 0)) as pledged_usd,
+        MAX(COALESCE(ls.backers_count, 0), COALESCE(p.backers_count, 0)) as live_backers_count,
         ls.captured_at as latest_snapshot_at,
         COALESCE(ls.state, p.state) as live_state,
         MAX(0, COALESCE(ls.pledged_usd, p.usd_pledged) - COALESCE(p24.pledged_usd, COALESCE(ls.pledged_usd, p.usd_pledged))) as pledged_delta_24h,
@@ -3465,12 +3476,21 @@ function computeLiveIntel(limit = 12, filter: { categoryParent?: string } = {}) 
 }
 
 export async function getProjectById(id: string) {
+  // Headline pledged/backers must match the list, leaderboard and awards: take the
+  // MAX of the stored project row and its latest valid snapshot so a staler kicktraq
+  // value can never drag the detail page below (or above) the other surfaces.
   return getDB().prepare(
-    `SELECT id, name, blurb, state, country, country_name, currency,
-            category_id, category_parent, category_name, goal, pledged, usd_pledged,
-            backers_count, staff_pick, created_at, launched_at, deadline,
-            creator_name, creator_slug, creator_url, source_url, slug, image_url, image_thumb_url
-     FROM projects WHERE id = ?`
+    `WITH ${LATEST_SNAPSHOT_CTE}
+     SELECT p.id, p.name, p.blurb, p.state, p.country, p.country_name, p.currency,
+            p.category_id, p.category_parent, p.category_name, p.goal, p.pledged,
+            ${EFFECTIVE_PLEDGED} AS usd_pledged,
+            ${EFFECTIVE_BACKERS} AS backers_count,
+            p.staff_pick, p.created_at, p.launched_at, p.deadline,
+            p.creator_name, p.creator_slug, p.creator_url, p.source_url, p.slug,
+            p.image_url, p.image_thumb_url
+     FROM projects p
+     LEFT JOIN latest_snap_effective l ON l.project_id = p.id
+     WHERE p.id = ?`
   ).get(id) ?? null;
 }
 
@@ -3516,7 +3536,10 @@ export function mergeKicktraqIntoProject(canonicalId: string, ktData: {
   db.prepare(`
     UPDATE projects SET
       backers_count = MAX(backers_count, @backers_count),
-      usd_pledged   = CASE WHEN @pledged_usd IS NOT NULL AND @pledged_usd > 0 THEN @pledged_usd ELSE usd_pledged END,
+      usd_pledged   = MAX(
+                        COALESCE(usd_pledged, 0),
+                        CASE WHEN @pledged_usd IS NOT NULL AND @pledged_usd > 0 THEN @pledged_usd ELSE 0 END
+                      ),
       launched_at   = COALESCE(launched_at, @launched_at),
       deadline      = COALESCE(deadline, @deadline),
       category_parent = COALESCE(category_parent, @category_parent),
@@ -4214,16 +4237,19 @@ export function getSimilarProjects(projectId: string, category: string, goalUsd:
   const low = goalUsd * 0.2;
   const high = goalUsd * 5;
   return getDB().prepare(`
-    SELECT id, name, blurb, state, category_parent, category_name, usd_pledged, goal, backers_count,
-           launched_at, source_url, slug, image_url, image_thumb_url,
+    WITH ${LATEST_SNAPSHOT_CTE}
+    SELECT p.id, p.name, p.blurb, p.state, p.category_parent, p.category_name,
+           ${EFFECTIVE_PLEDGED} AS usd_pledged, p.goal, ${EFFECTIVE_BACKERS} AS backers_count,
+           p.launched_at, p.source_url, p.slug, p.image_url, p.image_thumb_url,
            (
-             CASE WHEN category_parent = @category THEN 40 ELSE 0 END +
-             CASE WHEN usd_pledged BETWEEN @low AND @high THEN 30 ELSE 0 END +
-             CASE WHEN ABS(backers_count - @backers) < @backers * 0.5 THEN 20 ELSE 0 END +
-             CASE WHEN state = 'successful' THEN 10 ELSE 0 END
+             CASE WHEN p.category_parent = @category THEN 40 ELSE 0 END +
+             CASE WHEN p.usd_pledged BETWEEN @low AND @high THEN 30 ELSE 0 END +
+             CASE WHEN ABS(p.backers_count - @backers) < @backers * 0.5 THEN 20 ELSE 0 END +
+             CASE WHEN p.state = 'successful' THEN 10 ELSE 0 END
            ) as score
-    FROM projects
-    WHERE id != @id AND goal > 0 AND usd_pledged > 0
+    FROM projects p
+    LEFT JOIN latest_snap_effective l ON l.project_id = p.id
+    WHERE p.id != @id AND p.goal > 0 AND p.usd_pledged > 0
     ORDER BY score DESC, usd_pledged DESC
     LIMIT @limit
   `).all({ id: projectId, category, low, high, backers, limit }) as Record<string, unknown>[];
