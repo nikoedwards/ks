@@ -399,16 +399,49 @@ export default function LeaderboardPage() {
     const shareCategory = categoryNameForShare(categoryName || categoryParent, isCnShare);
     const generatedLabel = isCnShare ? `数据时间：${dataDate}` : `Data as of ${dataDate}`;
 
+    // Header lockup on a white rounded chip: the Kickstarter wordmark is green,
+    // which washed out on the green background. The chip gives both the dark
+    // "Kicksonar x" text and the green logo clean contrast, and the logo is
+    // drawn at its native aspect ratio (no more horizontal stretching).
+    const headerText = 'Kicksonar x';
+    ctx.font = '700 34px Arial, sans-serif';
+    const headerTextW = ctx.measureText(headerText).width;
+    const logoH = 52;
+    const logoRatio = kickstarterLogo && kickstarterLogo.naturalWidth && kickstarterLogo.naturalHeight
+      ? kickstarterLogo.naturalWidth / kickstarterLogo.naturalHeight
+      : 3840 / 561;
+    const logoW = Math.round(logoH * logoRatio);
+    const chipPadX = 28;
+    const chipGap = 16;
+    const chipX = 48;
+    const chipY = 30;
+    const chipH = 88;
+    const chipW = chipPadX * 2 + headerTextW + chipGap + logoW;
+    const centerY = chipY + chipH / 2;
+
+    ctx.save();
+    ctx.shadowColor = 'rgba(9, 53, 31, 0.18)';
+    ctx.shadowBlur = 18;
+    ctx.shadowOffsetY = 6;
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.roundRect(chipX, chipY, chipW, chipH, 22);
+    ctx.fill();
+    ctx.restore();
+
+    const contentX = chipX + chipPadX;
+    ctx.textBaseline = 'middle';
     ctx.fillStyle = '#09351f';
     ctx.font = '700 34px Arial, sans-serif';
-    ctx.fillText('Kicksonar x', 64, 78);
+    ctx.fillText(headerText, contentX, centerY);
     if (kickstarterLogo) {
-      ctx.drawImage(kickstarterLogo, 256, 34, 330, 72);
+      ctx.drawImage(kickstarterLogo, contentX + headerTextW + chipGap, centerY - logoH / 2, logoW, logoH);
     } else {
       ctx.fillStyle = '#05ce78';
-      ctx.font = '900 26px Arial, sans-serif';
-      ctx.fillText('KICKSTARTER', 286, 76);
+      ctx.font = '900 30px Arial, sans-serif';
+      ctx.fillText('KICKSTARTER', contentX + headerTextW + chipGap, centerY);
     }
+    ctx.textBaseline = 'alphabetic';
     ctx.font = '900 82px Arial, sans-serif';
     ctx.fillText(activeYear === 'custom' ? 'CUSTOM' : activeYear === 'lifetime' ? 'LIFETIME' : `${activeYear}`, 64, 190);
     ctx.font = '900 62px Arial, sans-serif';
@@ -464,10 +497,17 @@ export default function LeaderboardPage() {
 
     ctx.fillStyle = '#0f2f20';
     ctx.font = '700 24px Arial, sans-serif';
+    const hasLive = rows.some(r => r.state === 'live');
+    if (hasLive) {
+      const liveNote = isCnShare
+        ? '注：标记（进行中）的项目仍在筹款，金额与支持者数据会持续变化。'
+        : 'Note: "(Live)" projects are still funding — pledged & backers keep changing.';
+      ctx.fillText(liveNote, 64, 1592);
+    }
     const note = isCnShare
       ? '注：金额已统一换算为美元，包含全球 Kickstarter 公开项目。'
       : 'Note: Amounts are normalized to USD for public Kickstarter projects.';
-    ctx.fillText(note, 64, 1620);
+    ctx.fillText(note, 64, 1624);
     setShareImage(canvas.toDataURL('image/png'));
     setShareGenerating(false);
   };
