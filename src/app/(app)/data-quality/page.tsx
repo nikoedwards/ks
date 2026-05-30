@@ -628,7 +628,7 @@ function TrackingSection({ report, cn }: { report: QualityReport; cn: boolean })
         <div className="flex flex-wrap gap-2 text-[11px]">
           <span className="rounded-full bg-blue-50 text-blue-700 px-2.5 py-1">{cn ? '每 1 小时：发布首日 / 临近截止 48h / 高优先' : 'Every 1h: first day / last 48h / high priority'}</span>
           <span className="rounded-full bg-green-50 text-green-700 px-2.5 py-1">{cn ? '每 2 小时：热门（≥$500k 或 ≥5000 支持者）' : 'Every 2h: hot (≥$500k or ≥5000 backers)'}</span>
-          <span className="rounded-full bg-gray-100 text-gray-600 px-2.5 py-1">{cn ? '每 6 小时：普通进行中项目' : 'Every 6h: normal live projects'}</span>
+          <span className="rounded-full bg-gray-100 text-gray-600 px-2.5 py-1">{cn ? '每 24 小时：普通进行中项目' : 'Every 24h: normal live projects'}</span>
           <span className="rounded-full bg-amber-50 text-amber-700 px-2.5 py-1">{cn ? '失败重试：30m → 2h → 6h → 24h' : 'Retry backoff: 30m → 2h → 6h → 24h'}</span>
         </div>
       </div>

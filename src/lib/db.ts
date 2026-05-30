@@ -3744,7 +3744,7 @@ export function markFetched(projectId: string) {
       ? 3600
       : hotProject || score >= 8 || (s?.subscriber_count ?? 0) >= 2
         ? 2 * 3600
-        : 6 * 3600;
+        : 24 * 3600;
   }
   getDB().prepare(
     'UPDATE tracking_settings SET last_fetched = ?, next_fetch = ?, consecutive_failures = 0, last_failure_at = NULL WHERE project_id = ?'
