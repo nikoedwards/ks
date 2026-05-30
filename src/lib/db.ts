@@ -116,6 +116,7 @@ function cleanupFutureSnapshots(db: Database) {
 
 let inflatedGoalsReconciled = false;
 let projectStatesReconciled = false;
+let regressedPledgedReconciled = false;
 
 /**
  * One-time-per-process repair of project states. The crawl pipeline only ever
@@ -233,10 +234,81 @@ function reconcileInflatedGoals(db: Database) {
   }
 }
 
+/**
+ * One-time-per-process repair of pledged/backers that were regressed below their
+ * true value. Pledged & backers are monotonic, but two write paths could lower the
+ * stored project row:
+ *  - kicktraq merges historically overwrote usd_pledged with a staler kicktraq number;
+ *  - kicktraq_summary reports pledged_usd = 0 for ended campaigns, and that 0 became
+ *    the latest snapshot, so the headline MAX(latest_snapshot, project) sat at the
+ *    regressed row value (e.g. BB-777: real $6.69M, displayed $6.27M).
+ * The authoritative peak survives in an earlier snapshot, so we lift each project row
+ * up to the *latest snapshot that actually carried a value* (ignoring the 0 readings),
+ * using MAX so a row is never lowered. This makes the project row the correct single
+ * source of truth that every surface (detail / list / leaderboard / awards) reads.
+ */
+function reconcileRegressedPledged(db: Database) {
+  if (regressedPledgedReconciled) return;
+  regressedPledgedReconciled = true;
+  try {
+    const pledgedFixed = db.prepare(`
+      UPDATE projects
+      SET usd_pledged = MAX(
+        COALESCE(usd_pledged, 0),
+        COALESCE((
+          SELECT ps.pledged_usd
+          FROM project_snapshots ps
+          WHERE ps.project_id = projects.id
+            AND COALESCE(ps.pledged_usd, 0) > 0
+            AND ps.state NOT IN ('unknown', 'historical')
+          ORDER BY ps.id DESC
+          LIMIT 1
+        ), 0)
+      )
+      WHERE EXISTS (
+        SELECT 1 FROM project_snapshots ps
+        WHERE ps.project_id = projects.id
+          AND COALESCE(ps.pledged_usd, 0) > COALESCE(projects.usd_pledged, 0)
+          AND ps.state NOT IN ('unknown', 'historical')
+      )
+    `).run().changes;
+
+    const backersFixed = db.prepare(`
+      UPDATE projects
+      SET backers_count = MAX(
+        COALESCE(backers_count, 0),
+        COALESCE((
+          SELECT ps.backers_count
+          FROM project_snapshots ps
+          WHERE ps.project_id = projects.id
+            AND COALESCE(ps.backers_count, 0) > 0
+            AND ps.state NOT IN ('unknown', 'historical')
+          ORDER BY ps.id DESC
+          LIMIT 1
+        ), 0)
+      )
+      WHERE EXISTS (
+        SELECT 1 FROM project_snapshots ps
+        WHERE ps.project_id = projects.id
+          AND COALESCE(ps.backers_count, 0) > COALESCE(projects.backers_count, 0)
+          AND ps.state NOT IN ('unknown', 'historical')
+      )
+    `).run().changes;
+
+    if (pledgedFixed > 0 || backersFixed > 0) {
+      invalidateAnalyticsCaches();
+      console.log(`[db] reconciled ${pledgedFixed} regressed pledged + ${backersFixed} regressed backer row(s)`);
+    }
+  } catch (e) {
+    console.error('[db] reconcileRegressedPledged failed:', e);
+  }
+}
+
 function ensureRuntimeMigrations(db: Database) {
   cleanupFutureSnapshots(db);
   reconcileInflatedGoals(db);
   reconcileProjectStates(db);
+  reconcileRegressedPledged(db);
   try { db.exec('ALTER TABLE users ADD COLUMN email_verified INTEGER DEFAULT 1'); } catch { /* already exists */ }
   try { db.exec("ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'"); } catch { /* already exists */ }
   try { db.exec('ALTER TABLE projects ADD COLUMN creator_slug TEXT'); } catch { /* already exists */ }
@@ -2302,8 +2374,8 @@ export function updateProjectLiveMetadata(projectId: string, data: {
       launched_at = COALESCE(@launched_at, launched_at),
       deadline = COALESCE(@deadline, deadline),
       goal = CASE WHEN @goal_usd IS NOT NULL THEN @goal_usd ELSE goal END,
-      usd_pledged = CASE WHEN @pledged_usd IS NOT NULL THEN @pledged_usd ELSE usd_pledged END,
-      backers_count = CASE WHEN @backers_count IS NOT NULL THEN @backers_count ELSE backers_count END,
+      usd_pledged = CASE WHEN @pledged_usd IS NOT NULL THEN MAX(COALESCE(usd_pledged, 0), @pledged_usd) ELSE usd_pledged END,
+      backers_count = CASE WHEN @backers_count IS NOT NULL THEN MAX(COALESCE(backers_count, 0), @backers_count) ELSE backers_count END,
       creator_name = COALESCE(@creator_name, creator_name),
       creator_slug = COALESCE(@creator_slug, creator_slug),
       creator_url = COALESCE(@creator_url, creator_url),
