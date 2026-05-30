@@ -155,6 +155,7 @@ interface QualityReport {
     liveTrackable: number;
     autoTrackedLive: number;
     untrackedLive: number;
+    untrackableLive: number;
   };
   schedule: {
     overdue: number;
@@ -554,7 +555,7 @@ function StorageSection({ diagnostics, cn }: { diagnostics: DiagnosticsReport; c
 function TrackingSection({ report, cn }: { report: QualityReport; cn: boolean }) {
   const t = report.tracking;
   const s = report.schedule;
-  const untrackable = Math.max(0, report.totals.liveProjects - t.liveTrackable);
+  const untrackable = t.untrackableLive ?? Math.max(0, report.totals.liveProjects - t.liveTrackable);
 
   const perHour = s.cycleSeconds > 0 ? Math.round((s.batchSize / s.cycleSeconds) * 3600) : 0;
   const drainHours = perHour > 0 ? Math.ceil(s.overdue / perHour) : null;
@@ -612,8 +613,8 @@ function TrackingSection({ report, cn }: { report: QualityReport; cn: boolean })
             </div>
             <p className="text-xs text-gray-400 mt-3 leading-relaxed">
               {cn
-                ? `“已追踪”就是顶部的“实时追踪中”。“待纳入”是可追踪但还没轮到入队的（每 15 分钟批量自动纳入，通常为 0）。“不可追踪”是只有基础数据、没有可用 Kickstarter 链接的项目（多来自 Kicktraq），无法定时抓取——这部分就是进行中总数和追踪数之间差额的主要来源。`
-                : `"Tracking" is the hero "Tracking now" number. "Pending" are trackable but not-yet-enrolled (auto-enrolled every 15 min, usually 0). "Untrackable" projects only have basic data with no usable Kickstarter URL (mostly Kicktraq) and can't be fetched on a schedule — that's the main reason live total exceeds the tracked count.`}
+                ? `“已追踪”就是顶部的“实时追踪中”。“待纳入”是可追踪但还没轮到入队的（每 15 分钟批量自动纳入，通常为 0）。“不可追踪”是缺少可用 Kickstarter 链接/slug 的进行中项目，系统拼不出抓取地址、无法定时打点——这就是进行中总数比追踪数多出来的差额。这类多来自 webrobots 批量数据里 slug 缺失的记录；我们已改用项目 URL 兜底解析，后续 webrobots 同步会逐步把这部分补回、差额会缩小。`
+                : `"Tracking" is the hero "Tracking now" number. "Pending" are trackable but not-yet-enrolled (auto-enrolled every 15 min, usually 0). "Untrackable" are live projects missing a usable Kickstarter URL/slug, so no fetch URL can be built — that's exactly the gap between live total and tracked. These are mostly webrobots rows with a missing slug; the import now falls back to the project URL, so future syncs recover them and the gap shrinks.`}
             </p>
           </div>
         );
@@ -704,7 +705,7 @@ function InfoTip({ text }: { text: string }) {
       <Info className="h-3.5 w-3.5 text-gray-300 hover:text-gray-500 cursor-help" />
       <span
         role="tooltip"
-        className="pointer-events-none absolute left-1/2 top-full z-30 mt-2 w-64 -translate-x-1/2 rounded-lg bg-gray-900 px-3 py-2 text-xs font-normal leading-relaxed text-white opacity-0 shadow-lg transition-opacity duration-150 group-hover:opacity-100"
+        className="pointer-events-none absolute left-1/2 top-full z-30 mt-2 w-72 -translate-x-1/2 whitespace-pre-line rounded-lg bg-gray-900 px-3 py-2 text-xs font-normal leading-relaxed text-white opacity-0 shadow-lg transition-opacity duration-150 group-hover:opacity-100"
       >
         {text}
       </span>
@@ -988,8 +989,8 @@ export default function DataQualityPage() {
           value={fmtNum(report.totals.totalProjects)}
           hint={cn ? `其中 ${fmtNum(report.totals.liveProjects)} 个进行中` : `${fmtNum(report.totals.liveProjects)} currently live`}
           tip={cn
-            ? '数据库里目前收录的所有 Kickstarter 项目总数，包含已结束和进行中的。'
-            : 'Total Kickstarter projects stored in the database, including ended and live ones.'}
+            ? `数据库里目前收录的所有 Kickstarter 项目总数，包含已结束和进行中的。其中“进行中”有 ${fmtNum(report.totals.liveProjects)} 个；这个数会比右侧“实时追踪中”略多，差额是少数缺少可用 Kickstarter 链接/slug、暂时无法抓取的项目（见下方“追踪覆盖与排期”）。`
+            : `Total Kickstarter projects stored in the database, including ended and live ones. Of these, ${fmtNum(report.totals.liveProjects)} are live; this is slightly higher than "Tracking now" — the gap is the few live projects without a usable Kickstarter URL/slug (see "Tracking coverage" below).`}
           tone="blue"
         />
         <StatTile
@@ -1007,11 +1008,11 @@ export default function DataQualityPage() {
           label={cn ? '实时追踪中' : 'Tracking now'}
           value={fmtNum(report.tracking.autoTrackedLive)}
           hint={cn
-            ? `正在定时打点的进行中项目 · ${fmtNum(report.tracking.dueProjects)} 个待抓`
-            : `Live projects on the snapshot schedule · ${fmtNum(report.tracking.dueProjects)} due`}
+            ? `进行中 ${fmtNum(report.totals.liveProjects)} · 可追踪 ${fmtNum(report.tracking.autoTrackedLive)}${report.tracking.untrackableLive > 0 ? ` · ${fmtNum(report.tracking.untrackableLive)} 个缺链接` : ''}`
+            : `${fmtNum(report.totals.liveProjects)} live · ${fmtNum(report.tracking.autoTrackedLive)} trackable${report.tracking.untrackableLive > 0 ? ` · ${fmtNum(report.tracking.untrackableLive)} no link` : ''}`}
           tip={cn
-            ? '正在进行中、且已纳入定时更新名单的项目数量——系统会定期抓取它们最新的金额、支持者等数据。其中“待抓”是这些项目里已经到点、正排队等待本轮抓取的数量（始终 ≤ 追踪中总数）。'
-            : 'Live projects enrolled in the auto-refresh schedule. "Due" is the subset that has reached its scheduled time and is queued for the next fetch (always ≤ tracked).'}
+            ? `正在进行中、且已纳入定时更新名单的项目数量——系统会定期抓取它们最新的金额、支持者等数据。\n\n为什么比“进行中”(${fmtNum(report.totals.liveProjects)}) 少？因为有 ${fmtNum(report.tracking.untrackableLive)} 个进行中项目缺少可用的 Kickstarter 链接/slug，系统拼不出抓取地址，暂时无法定时打点。我们已在 webrobots 入库时改用项目 URL 兜底解析，后续同步会逐步把这部分补回、缺口会缩小。\n\n“待抓”=这些追踪项目里已到点、正排队等待本轮抓取的数量（始终 ≤ 追踪中总数）。`
+            : `Live projects enrolled in the auto-refresh schedule that the system periodically re-fetches.\n\nWhy fewer than "live" (${fmtNum(report.totals.liveProjects)})? ${fmtNum(report.tracking.untrackableLive)} live projects lack a usable Kickstarter URL/slug, so no fetch URL can be built and they can't be scheduled yet. The webrobots import now falls back to the project URL to recover these, so the gap shrinks over time.\n\n"Due" is the subset already past its scheduled time and queued for this round (always ≤ tracked).`}
           tone="amber"
         />
       </div>

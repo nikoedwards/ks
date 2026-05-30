@@ -2423,6 +2423,9 @@ function computeDataQualityReport() {
       liveTrackable: Number(liveTracking.live_trackable ?? 0),
       autoTrackedLive: Number(liveTracking.auto_tracked_live ?? 0),
       untrackedLive: Number(liveTracking.untracked_live ?? 0),
+      // live projects we can't build a Kickstarter fetch URL for (no usable
+      // project URL and no creator/slug), so they can't be put on the schedule.
+      untrackableLive: Math.max(0, Number(totals.live_projects ?? 0) - Number(liveTracking.live_trackable ?? 0)),
     },
     schedule: {
       overdue: Number(scheduleBuckets.overdue ?? 0),

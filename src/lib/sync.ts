@@ -76,6 +76,30 @@ function parseRecord(raw: RawRecord): Record<string, unknown> | null {
     creator_url = creatorJson.urls?.web?.user ?? null;
   } catch { /* ignore */ }
 
+  // webrobots also ships a `urls` column carrying the canonical project URL
+  // (urls.web.project). The dedicated `slug` / `creator.slug` columns are
+  // sometimes empty, which used to leave the project untrackable (no way to
+  // build /projects/<creator>/<slug>.json). Parse the URL as a fallback so we
+  // can recover creator_slug / slug / source_url and keep the project trackable.
+  let urlCreatorSlug: string | null = null;
+  let urlProjectSlug: string | null = null;
+  let urlProjectUrl: string | null = null;
+  try {
+    const urlsJson = JSON.parse(raw.urls || '{}');
+    const webProject: unknown = urlsJson?.web?.project;
+    if (typeof webProject === 'string' && webProject) {
+      const clean = webProject.split(/[?#]/)[0];
+      const match = clean.match(/\/projects\/([^/]+)\/([^/]+)/);
+      if (match) {
+        urlCreatorSlug = decodeURIComponent(match[1]);
+        urlProjectSlug = decodeURIComponent(match[2]);
+        urlProjectUrl = `https://www.kickstarter.com/projects/${urlCreatorSlug}/${urlProjectSlug}`;
+      }
+    }
+  } catch { /* ignore */ }
+
+  creator_slug = creator_slug ?? urlCreatorSlug;
+
   let image_url: string | null = null;
   let image_thumb_url: string | null = null;
   try {
@@ -98,10 +122,12 @@ function parseRecord(raw: RawRecord): Record<string, unknown> | null {
     : (has_valid_rate || currency === 'USD') ? pledged * usd_rate : 0;
   const goal_usd = (has_valid_rate || currency === 'USD') ? goal * usd_rate : 0;
 
-  const projectSlug = raw.slug ?? null;
+  const projectSlug = raw.slug ?? urlProjectSlug;
+  const rawSourceUrlIsKs = typeof raw.source_url === 'string'
+    && raw.source_url.startsWith('https://www.kickstarter.com/projects/');
   const source_url = creator_slug && projectSlug
     ? `https://www.kickstarter.com/projects/${creator_slug}/${projectSlug}`
-    : raw.source_url ?? null;
+    : (rawSourceUrlIsKs ? raw.source_url! : (urlProjectUrl ?? raw.source_url ?? null));
 
   return {
     id: raw.id,
