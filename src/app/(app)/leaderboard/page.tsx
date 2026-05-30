@@ -208,7 +208,9 @@ export default function LeaderboardPage() {
   const [initialized, setInitialized] = useState(false);
   const [yearFallbackApplied, setYearFallbackApplied] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
-  const [shareImage, setShareImage] = useState('');
+  const [shareImages, setShareImages] = useState<string[]>([]);
+  const [shareIndex, setShareIndex] = useState(0);
+  const [shareCount, setShareCount] = useState(20);
   const [shareLang, setShareLang] = useState<'cn' | 'en'>(cn ? 'cn' : 'en');
   const [shareGenerating, setShareGenerating] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -376,18 +378,28 @@ export default function LeaderboardPage() {
     }
   };
 
-  const generateShareImage = async (langOverride = shareLang) => {
-    setShareGenerating(true);
-    setShareOpen(true);
-    setShareImage('');
-    const rows = projects.slice(0, 20);
-    const names = await translateTitles(rows, langOverride);
+  // Renders a single share image for one page of 20 ranks and returns a PNG data URL.
+  const renderSharePart = (
+    rows: LeaderboardProject[],
+    names: string[],
+    startRank: number,
+    part: number,
+    totalParts: number,
+    isCnShare: boolean,
+    kickstarterLogo: HTMLImageElement | null,
+  ): string => {
+    const rowH = 48;
+    const tableX = 54;
+    const tableY = 505;
+    const tableW = 972;
+    const tableInnerTop = 70;
+    const tableHeight = tableInnerTop + 28 + rows.length * rowH + 26;
+
     const canvas = document.createElement('canvas');
     canvas.width = 1080;
-    canvas.height = 1680;
+    canvas.height = Math.max(900, tableY + tableHeight + 110);
     const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-    const kickstarterLogo = await loadCanvasImage('/Kickstarter-Logo3.svg');
+    if (!ctx) return '';
 
     ctx.fillStyle = '#51d88a';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -396,14 +408,10 @@ export default function LeaderboardPage() {
     ctx.arc(950, 80, 170, 0, Math.PI * 2);
     ctx.fill();
 
-    const isCnShare = langOverride === 'cn';
     const shareCategory = categoryNameForShare(categoryName || categoryParent, isCnShare);
     const generatedLabel = isCnShare ? `数据时间：${dataDate}` : `Data as of ${dataDate}`;
 
-    // Header lockup on a white rounded chip: the Kickstarter wordmark is green,
-    // which washed out on the green background. The chip gives both the dark
-    // "Kicksonar x" text and the green logo clean contrast, and the logo is
-    // drawn at its native aspect ratio (no more horizontal stretching).
+    // Header lockup on a white rounded chip for clean contrast; logo at native ratio.
     const headerText = 'Kicksonar x';
     ctx.font = '700 34px Arial, sans-serif';
     const headerTextW = ctx.measureText(headerText).width;
@@ -443,28 +451,28 @@ export default function LeaderboardPage() {
       ctx.fillText('KICKSTARTER', contentX + headerTextW + chipGap, centerY);
     }
     ctx.textBaseline = 'alphabetic';
+    // Extra breathing room below the chip so the big year no longer kisses it.
+    ctx.fillStyle = '#09351f';
     ctx.font = '900 82px Arial, sans-serif';
-    ctx.fillText(activeYear === 'custom' ? 'CUSTOM' : activeYear === 'lifetime' ? 'LIFETIME' : `${activeYear}`, 64, 190);
-    ctx.font = '900 62px Arial, sans-serif';
-    ctx.fillText(isCnShare ? `${shareCategory} TOP100 项目榜单` : `${shareCategory} TOP100`, 64, 285);
+    ctx.fillText(activeYear === 'custom' ? 'CUSTOM' : activeYear === 'lifetime' ? 'LIFETIME' : `${activeYear}`, 64, 218);
+    ctx.font = '900 60px Arial, sans-serif';
+    ctx.fillText(isCnShare ? `${shareCategory} TOP100 项目榜单` : `${shareCategory} TOP100`, 64, 300);
     ctx.fillStyle = '#0f3f29';
-    ctx.fillRect(64, 330, 720, 82);
+    ctx.fillRect(64, 338, 760, 78);
     ctx.fillStyle = '#ffffff';
-    ctx.font = '800 40px Arial, sans-serif';
-    ctx.fillText(metric === 'pledged' ? (isCnShare ? '按众筹总金额排序' : 'Ranked by Pledged Amount') : (isCnShare ? '按支持者数量排序' : 'Ranked by Backers'), 96, 383);
+    ctx.font = '800 38px Arial, sans-serif';
+    const rankByLabel = metric === 'pledged' ? (isCnShare ? '按众筹总金额排序' : 'Ranked by Pledged Amount') : (isCnShare ? '按支持者数量排序' : 'Ranked by Backers');
+    const partLabel = totalParts > 1 ? (isCnShare ? `（第 ${part}/${totalParts} 张 · 第 ${startRank}-${startRank + rows.length - 1} 名）` : ` (Part ${part}/${totalParts} · #${startRank}-${startRank + rows.length - 1})`) : '';
+    ctx.fillText(rankByLabel, 92, 389);
     ctx.fillStyle = '#0f3f29';
     ctx.font = '700 24px Arial, sans-serif';
-    ctx.fillText(generatedLabel, 64, 445);
+    ctx.fillText(`${generatedLabel}${partLabel}`, 64, 448);
 
     ctx.fillStyle = '#f3fff4';
     ctx.strokeStyle = '#baff82';
     ctx.lineWidth = 6;
-    const tableX = 54;
-    const tableY = 500;
-    const tableW = 972;
-    const rowH = 48;
     ctx.beginPath();
-    ctx.roundRect(tableX, tableY, tableW, rowH * 21 + 70, 18);
+    ctx.roundRect(tableX, tableY, tableW, tableHeight, 18);
     ctx.fill();
     ctx.stroke();
 
@@ -472,45 +480,113 @@ export default function LeaderboardPage() {
     ctx.fillRect(tableX + 10, tableY + 14, tableW - 20, 58);
     ctx.fillStyle = '#0f2f20';
     ctx.font = '700 24px Arial, sans-serif';
-    ctx.fillText(isCnShare ? '序号' : '#', 82, tableY + 52);
-    ctx.fillText(isCnShare ? '产品' : 'Project', 175, tableY + 52);
-    ctx.fillText(isCnShare ? '金额' : 'Pledged', 720, tableY + 52);
-    ctx.fillText(isCnShare ? '支持者' : 'Backers', 865, tableY + 52);
+    ctx.fillText(isCnShare ? '序号' : '#', 78, tableY + 52);
+    ctx.fillText(isCnShare ? '产品' : 'Project', 185, tableY + 52);
+    ctx.textAlign = 'right';
+    ctx.fillText(isCnShare ? '金额' : 'Pledged', 805, tableY + 52);
+    ctx.fillText(isCnShare ? '支持者' : 'Backers', 985, tableY + 52);
+    ctx.textAlign = 'left';
 
+    const medals = ['🥇', '🥈', '🥉'];
     rows.forEach((project, i) => {
-      const y = tableY + 98 + i * rowH;
+      const rank = startRank + i;
+      const y = tableY + tableInnerTop + 28 + i * rowH;
       ctx.fillStyle = i % 2 === 0 ? '#ffffff' : '#f5fbf3';
       ctx.fillRect(tableX + 10, y - 30, tableW - 20, rowH);
+
+      // Rank cell: medals for top 3, a distinct green token for 4–10, plain number otherwise.
+      const rankCx = 96;
+      if (rank <= 3) {
+        ctx.textAlign = 'center';
+        ctx.font = '30px "Segoe UI Emoji", "Apple Color Emoji", Arial, sans-serif';
+        ctx.fillText(medals[rank - 1], rankCx, y + 2);
+        ctx.textAlign = 'left';
+      } else if (rank <= 10) {
+        ctx.save();
+        ctx.fillStyle = '#0f3f29';
+        ctx.beginPath();
+        ctx.arc(rankCx, y - 8, 15, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#d9ff92';
+        ctx.font = '700 20px Arial, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(String(rank), rankCx, y - 7);
+        ctx.restore();
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'alphabetic';
+      } else {
+        ctx.fillStyle = '#5a7a68';
+        ctx.font = '500 22px Arial, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(String(rank), rankCx, y);
+        ctx.textAlign = 'left';
+      }
+
+      // Subtle live marker: a small green dot before the name (no extra footnote).
+      const nameX = 185;
+      if (project.state === 'live') {
+        ctx.fillStyle = '#22c55e';
+        ctx.beginPath();
+        ctx.arc(nameX + 5, y - 7, 5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      const liveDotPad = project.state === 'live' ? 20 : 0;
+
       ctx.fillStyle = '#0f2f20';
       ctx.font = '500 22px Arial, sans-serif';
-      ctx.fillText(String(i + 1), 92, y);
       const translatedName = names[i] || project.name;
-      const maxNameLength = isCnShare ? 24 : 32;
-      const statusSuffix = project.state === 'live' ? (isCnShare ? '（进行中）' : ' (Live)') : '';
-      const nameWithStatus = `${translatedName}${statusSuffix}`;
-      const name = nameWithStatus.length > maxNameLength ? `${nameWithStatus.slice(0, maxNameLength - 1)}...` : nameWithStatus;
-      ctx.fillText(name, 175, y);
+      const maxNameLength = isCnShare ? 22 : 30;
+      const name = translatedName.length > maxNameLength ? `${translatedName.slice(0, maxNameLength - 1)}...` : translatedName;
+      ctx.fillText(name, nameX + liveDotPad, y);
       ctx.textAlign = 'right';
       ctx.fillText(fmtUsd(project.pledged_usd), 805, y);
       ctx.fillText(fmtNum(project.backers_count), 985, y);
       ctx.textAlign = 'left';
     });
 
+    const noteY = tableY + tableHeight + 44;
     ctx.fillStyle = '#0f2f20';
     ctx.font = '700 24px Arial, sans-serif';
-    const hasLive = rows.some(r => r.state === 'live');
-    if (hasLive) {
-      const liveNote = isCnShare
-        ? '注：标记（进行中）的项目仍在筹款，金额与支持者数据会持续变化。'
-        : 'Note: "(Live)" projects are still funding — pledged & backers keep changing.';
-      ctx.fillText(liveNote, 64, 1592);
-    }
     const note = isCnShare
-      ? '注：金额已统一换算为美元，包含全球 Kickstarter 公开项目。'
-      : 'Note: Amounts are normalized to USD for public Kickstarter projects.';
-    ctx.fillText(note, 64, 1624);
-    setShareImage(canvas.toDataURL('image/png'));
+      ? '注：金额已统一换算为美元，包含全球 Kickstarter 公开项目；绿点为进行中项目。'
+      : 'Note: Amounts normalized to USD for public Kickstarter projects; green dot = live.';
+    ctx.fillText(note, 64, noteY);
+    return canvas.toDataURL('image/png');
+  };
+
+  const generateShareImage = async (langOverride = shareLang, count = shareCount) => {
+    setShareGenerating(true);
+    setShareOpen(true);
+    setShareImages([]);
+    setShareIndex(0);
+    const isCnShare = langOverride === 'cn';
+    const totalRows = projects.slice(0, count);
+    const names = await translateTitles(totalRows, langOverride);
+    const kickstarterLogo = await loadCanvasImage('/Kickstarter-Logo3.svg');
+    const totalParts = Math.max(1, Math.ceil(totalRows.length / 20));
+    const images: string[] = [];
+    for (let part = 0; part < totalParts; part++) {
+      const start = part * 20;
+      const pageRows = totalRows.slice(start, start + 20);
+      const pageNames = names.slice(start, start + 20);
+      images.push(renderSharePart(pageRows, pageNames, start + 1, part + 1, totalParts, isCnShare, kickstarterLogo));
+    }
+    setShareImages(images);
     setShareGenerating(false);
+  };
+
+  const downloadAllShareImages = () => {
+    shareImages.forEach((img, i) => {
+      setTimeout(() => {
+        const a = document.createElement('a');
+        a.href = img;
+        a.download = `kicksonar-leaderboard-${activeYear}-${metric}-${i * 20 + 1}-${i * 20 + 20}.png`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      }, i * 350);
+    });
   };
 
   return (
@@ -761,20 +837,21 @@ export default function LeaderboardPage() {
 
       {shareOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => setShareOpen(false)}>
-          <div className="max-h-[90vh] w-full max-w-xl overflow-auto rounded-lg bg-white p-5 shadow-xl" onClick={e => e.stopPropagation()}>
+          <div className="max-h-[92vh] w-full max-w-xl overflow-auto rounded-lg bg-white p-5 shadow-xl" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between gap-3">
               <div>
                 <h3 className="font-bold text-gray-900">{cn ? '分享榜单' : 'Share Leaderboard'}</h3>
-                <p className="text-xs text-gray-400">{cn ? '复制链接，或保存生成的榜单图片。' : 'Copy the link or save the generated leaderboard image.'}</p>
+                <p className="text-xs text-gray-400">{cn ? '选择语言与名次数量，保存生成的榜单图片。' : 'Pick language & rank count, then save the generated images.'}</p>
               </div>
               <button onClick={() => setShareOpen(false)} className="text-gray-400 hover:text-gray-700">×</button>
             </div>
-            <div className="mt-4 flex gap-2">
+
+            <div className="mt-4 flex flex-wrap items-center gap-2">
               <div className="flex rounded-lg bg-gray-100 p-1">
                 {(['cn', 'en'] as const).map(l => (
                   <button
                     key={l}
-                    onClick={() => { setShareLang(l); generateShareImage(l); }}
+                    onClick={() => { setShareLang(l); generateShareImage(l, shareCount); }}
                     className={`rounded-md px-3 py-1.5 text-sm font-bold ${shareLang === l ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500'}`}
                   >
                     {l === 'cn' ? '中文' : 'EN'}
@@ -784,18 +861,72 @@ export default function LeaderboardPage() {
               <button onClick={copyShareLink} className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm font-semibold text-gray-600 hover:bg-gray-50">
                 <Copy className="h-4 w-4" />{copied ? (cn ? '已复制' : 'Copied') : (cn ? '复制链接' : 'Copy Link')}
               </button>
-              {shareImage && (
-                <a href={shareImage} download={`kicksonar-leaderboard-${activeYear}-${metric}.png`} className="inline-flex items-center gap-2 rounded-lg bg-ks-green px-3 py-2 text-sm font-semibold text-white hover:bg-ks-green-dark">
-                  <Download className="h-4 w-4" />{cn ? '保存图片' : 'Save Image'}
+            </div>
+
+            {/* Rank count selector — default 20, steps of 20 up to 100 (100 = 5 images). */}
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <span className="text-xs font-semibold text-gray-400">{cn ? '生成名次' : 'Top ranks'}</span>
+              <div className="flex flex-wrap rounded-lg bg-gray-100 p-1">
+                {[20, 40, 60, 80, 100].map(n => (
+                  <button
+                    key={n}
+                    onClick={() => { setShareCount(n); generateShareImage(shareLang, n); }}
+                    disabled={shareGenerating}
+                    className={`rounded-md px-3 py-1.5 text-sm font-bold disabled:opacity-50 ${shareCount === n ? 'bg-white text-ks-green shadow-sm' : 'text-gray-500'}`}
+                  >
+                    TOP {n}
+                  </button>
+                ))}
+              </div>
+              <span className="text-xs text-gray-400">{cn ? `共 ${Math.max(1, Math.ceil(shareCount / 20))} 张` : `${Math.max(1, Math.ceil(shareCount / 20))} image(s)`}</span>
+            </div>
+
+            {/* Multi-image tabs */}
+            {shareImages.length > 1 && (
+              <div className="mt-4 flex flex-wrap gap-1.5">
+                {shareImages.map((_, i) => (
+                  <button
+                    key={i}
+                    onClick={() => setShareIndex(i)}
+                    className={`rounded-md px-2.5 py-1 text-xs font-bold transition-colors ${shareIndex === i ? 'bg-ks-green text-white' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}
+                  >
+                    {i * 20 + 1}–{i * 20 + 20}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* Save actions */}
+            <div className="mt-3 flex flex-wrap gap-2">
+              {shareImages[shareIndex] && (
+                <a
+                  href={shareImages[shareIndex]}
+                  download={`kicksonar-leaderboard-${activeYear}-${metric}-${shareIndex * 20 + 1}-${shareIndex * 20 + 20}.png`}
+                  className="inline-flex items-center gap-2 rounded-lg border border-ks-green px-3 py-2 text-sm font-semibold text-ks-green hover:bg-ks-green-light/40"
+                >
+                  <Download className="h-4 w-4" />{cn ? '保存这张' : 'Save this'}
                 </a>
               )}
+              {shareImages.length > 1 && (
+                <button
+                  onClick={downloadAllShareImages}
+                  className="inline-flex items-center gap-2 rounded-lg bg-ks-green px-3 py-2 text-sm font-semibold text-white hover:bg-ks-green-dark"
+                >
+                  <Download className="h-4 w-4" />{cn ? `保存全部 (${shareImages.length} 张)` : `Save all (${shareImages.length})`}
+                </button>
+              )}
             </div>
+
             <div className="mt-4 overflow-hidden rounded-lg border border-gray-100 bg-gray-50">
-              {shareImage ? (
-                <img src={shareImage} alt="" className="w-full" />
+              {shareGenerating ? (
+                <div className="flex h-80 items-center justify-center text-gray-400">
+                  <ImageIcon className="mr-2 h-5 w-5 animate-pulse" />{cn ? '正在生成...' : 'Generating...'}
+                </div>
+              ) : shareImages[shareIndex] ? (
+                <img src={shareImages[shareIndex]} alt="" className="w-full" />
               ) : (
                 <div className="flex h-80 items-center justify-center text-gray-400">
-                  <ImageIcon className="mr-2 h-5 w-5" />{shareGenerating ? (cn ? '正在生成...' : 'Generating...') : (cn ? '等待生成' : 'Ready')}
+                  <ImageIcon className="mr-2 h-5 w-5" />{cn ? '等待生成' : 'Ready'}
                 </div>
               )}
             </div>
