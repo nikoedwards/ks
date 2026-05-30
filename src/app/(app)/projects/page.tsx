@@ -4,7 +4,6 @@ import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import Link from 'next/link';
 import { Search, ExternalLink, ChevronLeft, ChevronRight, Download, ArrowUp, ArrowDown, ArrowUpDown, Heart, SlidersHorizontal, X } from 'lucide-react';
 import EmptyState from '@/components/EmptyState';
-import DataSource from '@/components/DataSource';
 import ImagePreview from '@/components/ImagePreview';
 import { useLanguage } from '@/hooks/useLanguage';
 import { t } from '@/lib/i18n';
@@ -806,8 +805,6 @@ export default function ProjectsPage() {
           </>
         )}
       </div>
-
-      <DataSource />
     </div>
   );
 }
