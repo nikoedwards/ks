@@ -1935,6 +1935,30 @@ function parseRewardsFromGraphql(bodies) {
   });
 }
 
+// Pull the funding goal from any captured GraphQL project node. The RewardsTab
+// payload carries the project's goal as { amount: { amount, currency } }.
+function parseGoalFromGraphql(bodies) {
+  for (const text of bodies) {
+    let data;
+    try { data = JSON.parse(text); } catch { continue; }
+    const seen = new Set();
+    const queue = [data];
+    for (let i = 0; i < queue.length && i < 6000; i++) {
+      const v = queue[i];
+      if (!v || typeof v !== 'object' || seen.has(v)) continue;
+      seen.add(v);
+      const g = v.goal;
+      if (g != null) {
+        const amount = typeof g === 'object' ? (g.amount?.amount ?? g.amount) : g;
+        const n = Number(amount);
+        if (Number.isFinite(n) && n > 0) return n;
+      }
+      for (const c of Object.values(v)) if (c && typeof c === 'object') queue.push(c);
+    }
+  }
+  return null;
+}
+
 // Wait for the React creator tab to render, then parse name/bio/counts/collabs.
 async function extractCreatorRich(page, creatorSegment) {
   const deadline = Date.now() + 28000;
@@ -1997,6 +2021,7 @@ async function fetchCoreStatsInPage(page, projectUrls) {
             row.state = p.state ?? null;
             row.backers_count = p.backers_count ?? null;
             row.pledged = p.pledged ?? null;
+            row.goal = p.goal ?? null;
             row.comments_count = p.comments_count ?? null;
             row.ok = true;
           }
@@ -2009,7 +2034,7 @@ async function fetchCoreStatsInPage(page, projectUrls) {
             const backers = mn(/data-backers-count="([\d.]+)"/);
             if (pledged != null) row.pledged = pledged;
             if (backers != null && row.backers_count == null) row.backers_count = backers;
-            if (percent != null && pledged != null && percent > 0) {
+            if (row.goal == null && percent != null && pledged != null && percent > 0) {
               const frac = percent > 1 ? percent / 100 : percent;
               row.goal = Math.round(pledged / frac);
             }
@@ -2069,10 +2094,18 @@ async function fetchKsProject(input) {
       .catch(() => ({}));
 
     await clearChallengeWithReload(page, `${pageUrl}/rewards`, clearBudget);
-    const rewardsDeadline = Date.now() + 18000;
-    while (Date.now() < rewardsDeadline && gqlBodies.length === 0) await page.waitForTimeout(1000);
-    await page.waitForTimeout(1500);
+    // The RewardsTab GraphQL query is lazy — it only fires once the rewards
+    // section scrolls into view. Nudge the page and keep scrolling while we
+    // poll, otherwise gqlBodies stays empty (observed: rewards:[]).
+    const rewardsDeadline = Date.now() + 20000;
+    await page.evaluate(() => window.scrollBy(0, 1400)).catch(() => {});
+    while (Date.now() < rewardsDeadline && gqlBodies.length === 0) {
+      await page.evaluate(() => window.scrollBy(0, 1200)).catch(() => {});
+      await page.waitForTimeout(900);
+    }
+    await page.waitForTimeout(1200);
     const rewards = parseRewardsFromGraphql(gqlBodies);
+    const gqlGoal = parseGoalFromGraphql(gqlBodies);
 
     let creator = { slug: creatorSegment, profileUrl: creatorSegment ? `https://www.kickstarter.com/profile/${creatorSegment}` : null };
     if ((await clearChallengeWithReload(page, `${pageUrl}/creator`, clearBudget)).cleared) {
@@ -2089,7 +2122,7 @@ async function fetchKsProject(input) {
       state: core.state ?? null,
       backers_count: core.backers_count ?? null,
       pledged: core.pledged ?? null,
-      goal: core.goal ?? null,
+      goal: core.goal ?? gqlGoal ?? null,
       comments_count: core.comments_count ?? null,
       rewards,
       creator,
