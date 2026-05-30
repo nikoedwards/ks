@@ -253,6 +253,7 @@ function ensureRuntimeMigrations(db: Database) {
   } catch { /* table may not exist yet */ }
   ensureAnnouncementTables(db);
   ensureKicktraqDebugTables(db);
+  ensureAwardTables(db);
   ensurePerformanceIndexes(db);
   const adminEmail = process.env.ADMIN_EMAIL?.trim().toLowerCase();
   if (adminEmail) db.prepare("UPDATE users SET role = 'admin' WHERE lower(email) = ?").run(adminEmail);
@@ -385,6 +386,197 @@ function ensurePushTables(db: Database) {
   seed.run({ segment: 'favorites', template: 'favorites_digest', enabled: 1, frequency: 'daily', config: JSON.stringify(DEFAULT_PUSH_CONFIG.favorites) });
   seed.run({ segment: 'digest', template: 'platform_digest', enabled: 1, frequency: 'daily', config: JSON.stringify(DEFAULT_PUSH_CONFIG.digest) });
   seed.run({ segment: 'new_users', template: 'onboarding_guide', enabled: 1, frequency: 'once', config: JSON.stringify(DEFAULT_PUSH_CONFIG.new_users) });
+}
+
+// ─── Kicksonar Awards (editorial, admin-curated annual awards) ───────────────
+
+export interface AwardDef {
+  award_key: string;
+  name_cn: string;
+  name_en: string;
+  tagline_cn: string;
+  tagline_en: string;
+  philosophy_cn: string;
+  philosophy_en: string;
+  badge_image: string;
+  accent: string;
+  sort_order: number;
+  enabled: number;
+}
+
+export const DEFAULT_AWARDS: AwardDef[] = [
+  {
+    award_key: 'sonar_gold',
+    name_cn: '年度声纳金奖',
+    name_en: 'Sonar Gold',
+    tagline_cn: '年度全场最佳',
+    tagline_en: 'Best of the Best',
+    philosophy_cn: '在万千众筹信号中最清晰、最响亮的那一个——综合实力的年度标杆。',
+    philosophy_en: 'The clearest, loudest signal of the year — our benchmark for all-around excellence.',
+    badge_image: '/awards/sonar-gold.png',
+    accent: '#d4a017',
+    sort_order: 0,
+    enabled: 1,
+  },
+  {
+    award_key: 'wavemaker',
+    name_cn: '年度浪潮奖',
+    name_en: 'Wavemaker',
+    tagline_cn: '年度破圈黑马',
+    tagline_en: 'Breakout of the Year',
+    philosophy_cn: '不只是数字，而是掀起浪潮、破圈引发讨论的现象级项目。',
+    philosophy_en: 'Not just numbers — the project that made waves and broke into the mainstream.',
+    badge_image: '/awards/wavemaker.png',
+    accent: '#0d9488',
+    sort_order: 1,
+    enabled: 1,
+  },
+  {
+    award_key: 'hidden_gem',
+    name_cn: '年度遗珠奖',
+    name_en: 'Hidden Gem',
+    tagline_cn: '编辑私心推荐',
+    tagline_en: "Editor's Pick",
+    philosophy_cn: '雷达边缘也有璀璨信号——编辑私心推荐、被低估的宝藏项目。',
+    philosophy_en: 'Even at the radar’s edge, brilliance shines — an underrated treasure our editors love.',
+    badge_image: '/awards/hidden-gem.png',
+    accent: '#7c3aed',
+    sort_order: 2,
+    enabled: 1,
+  },
+];
+
+function ensureAwardTables(db: Database) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS awards (
+      award_key TEXT PRIMARY KEY,
+      name_cn TEXT NOT NULL,
+      name_en TEXT NOT NULL,
+      tagline_cn TEXT,
+      tagline_en TEXT,
+      philosophy_cn TEXT,
+      philosophy_en TEXT,
+      badge_image TEXT,
+      accent TEXT,
+      sort_order INTEGER DEFAULT 0,
+      enabled INTEGER DEFAULT 1,
+      updated_at INTEGER DEFAULT (unixepoch())
+    );
+    CREATE TABLE IF NOT EXISTS award_winners (
+      award_key TEXT NOT NULL,
+      year INTEGER NOT NULL,
+      project_id TEXT NOT NULL,
+      citation_cn TEXT,
+      citation_en TEXT,
+      updated_at INTEGER DEFAULT (unixepoch()),
+      PRIMARY KEY (award_key, year)
+    );
+  `);
+  const seed = db.prepare(`
+    INSERT OR IGNORE INTO awards
+      (award_key, name_cn, name_en, tagline_cn, tagline_en, philosophy_cn, philosophy_en, badge_image, accent, sort_order, enabled)
+    VALUES
+      (@award_key, @name_cn, @name_en, @tagline_cn, @tagline_en, @philosophy_cn, @philosophy_en, @badge_image, @accent, @sort_order, @enabled)
+  `);
+  for (const a of DEFAULT_AWARDS) seed.run(a as unknown as Record<string, unknown>);
+}
+
+export function listAwards(): AwardDef[] {
+  return getDB().prepare('SELECT * FROM awards ORDER BY sort_order ASC').all() as AwardDef[];
+}
+
+export function getAwardYears(): number[] {
+  const rows = getDB().prepare('SELECT DISTINCT year FROM award_winners ORDER BY year DESC').all() as { year: number }[];
+  return rows.map(r => Number(r.year));
+}
+
+export interface AwardWithWinner extends AwardDef {
+  year: number;
+  project_id: string | null;
+  citation_cn: string | null;
+  citation_en: string | null;
+  project_name: string | null;
+  project_blurb: string | null;
+  project_image_url: string | null;
+  project_thumb_url: string | null;
+  project_category_parent: string | null;
+  project_state: string | null;
+  project_pledged_usd: number | null;
+  project_backers: number | null;
+}
+
+export function getAwardsWithWinners(year: number): AwardWithWinner[] {
+  return getDB().prepare(`
+    SELECT
+      a.*, @year AS year,
+      w.project_id, w.citation_cn, w.citation_en,
+      p.name AS project_name, p.blurb AS project_blurb,
+      p.image_url AS project_image_url, p.image_thumb_url AS project_thumb_url,
+      p.category_parent AS project_category_parent, p.state AS project_state,
+      p.usd_pledged AS project_pledged_usd, p.backers_count AS project_backers
+    FROM awards a
+    LEFT JOIN award_winners w ON w.award_key = a.award_key AND w.year = @year
+    LEFT JOIN projects p ON p.id = w.project_id
+    WHERE a.enabled = 1
+    ORDER BY a.sort_order ASC
+  `).all({ year }) as AwardWithWinner[];
+}
+
+export function setAwardWinner(input: { awardKey: string; year: number; projectId: string; citationCn?: string; citationEn?: string }): void {
+  getDB().prepare(`
+    INSERT INTO award_winners (award_key, year, project_id, citation_cn, citation_en, updated_at)
+    VALUES (@awardKey, @year, @projectId, @citationCn, @citationEn, unixepoch())
+    ON CONFLICT(award_key, year) DO UPDATE SET
+      project_id = excluded.project_id,
+      citation_cn = excluded.citation_cn,
+      citation_en = excluded.citation_en,
+      updated_at = unixepoch()
+  `).run({
+    awardKey: input.awardKey,
+    year: input.year,
+    projectId: input.projectId,
+    citationCn: input.citationCn ?? null,
+    citationEn: input.citationEn ?? null,
+  });
+}
+
+export function clearAwardWinner(awardKey: string, year: number): void {
+  getDB().prepare('DELETE FROM award_winners WHERE award_key = ? AND year = ?').run(awardKey, year);
+}
+
+export function searchProjectsForAward(query: string, limit = 12) {
+  const q = query.trim();
+  if (!q) return [] as Array<Record<string, unknown>>;
+  return getDB().prepare(`
+    SELECT id, name, image_thumb_url, image_url, state, category_parent, country,
+           COALESCE(usd_pledged, 0) AS pledged_usd, COALESCE(backers_count, 0) AS backers_count
+    FROM projects
+    WHERE name LIKE @q OR id = @exact
+    ORDER BY COALESCE(usd_pledged, 0) DESC
+    LIMIT @limit
+  `).all({ q: `%${q}%`, exact: q, limit: Math.min(limit, 25) }) as Array<Record<string, unknown>>;
+}
+
+export function updateAward(input: { awardKey: string; enabled?: number; nameCn?: string; nameEn?: string; taglineCn?: string; taglineEn?: string; philosophyCn?: string; philosophyEn?: string }): void {
+  const existing = getDB().prepare('SELECT * FROM awards WHERE award_key = ?').get(input.awardKey) as AwardDef | undefined;
+  if (!existing) return;
+  getDB().prepare(`
+    UPDATE awards SET
+      enabled = @enabled, name_cn = @nameCn, name_en = @nameEn,
+      tagline_cn = @taglineCn, tagline_en = @taglineEn,
+      philosophy_cn = @philosophyCn, philosophy_en = @philosophyEn,
+      updated_at = unixepoch()
+    WHERE award_key = @awardKey
+  `).run({
+    awardKey: input.awardKey,
+    enabled: input.enabled == null ? existing.enabled : (input.enabled ? 1 : 0),
+    nameCn: input.nameCn ?? existing.name_cn,
+    nameEn: input.nameEn ?? existing.name_en,
+    taglineCn: input.taglineCn ?? existing.tagline_cn,
+    taglineEn: input.taglineEn ?? existing.tagline_en,
+    philosophyCn: input.philosophyCn ?? existing.philosophy_cn,
+    philosophyEn: input.philosophyEn ?? existing.philosophy_en,
+  });
 }
 
 function ensureKicktraqDebugTables(db: Database) {
@@ -2022,6 +2214,7 @@ export const DEFAULT_NAV_ITEMS = [
   'dashboard',
   'projects',
   'leaderboard',
+  'awards',
   'live-intel',
   'analysis',
   'predict',

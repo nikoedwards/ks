@@ -13,6 +13,7 @@ import {
   Filter,
   Image as ImageIcon,
   Share2,
+  Trophy,
   Users,
 } from 'lucide-react';
 import { useLanguage } from '@/hooks/useLanguage';
@@ -520,6 +521,14 @@ export default function LeaderboardPage() {
           <p className="mt-1 text-sm text-gray-500">
             {cn ? '按单年、类目和统一美元金额查看 Kickstarter TOP100 项目。' : 'Rank Kickstarter projects by year, category, normalized USD pledged, and backers.'}
           </p>
+          <Link
+            href="/awards"
+            className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-amber-200 bg-gradient-to-r from-amber-50 to-amber-100/60 px-3 py-1 text-xs font-bold text-amber-700 transition-colors hover:from-amber-100 hover:to-amber-200/70"
+          >
+            <Trophy className="h-3.5 w-3.5" />
+            {cn ? '声纳奖 · 年度颁奖' : 'Kicksonar Awards'}
+            <ArrowUpRight className="h-3.5 w-3.5" />
+          </Link>
         </div>
         <div className="flex flex-wrap gap-2">
           <button onClick={copyShareLink} className="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-600 hover:bg-gray-50">

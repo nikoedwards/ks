@@ -12,6 +12,7 @@ import {
   Github,
   Flame,
   Trophy,
+  Award,
   Sparkles,
   Heart,
   RadioTower,
@@ -37,6 +38,7 @@ export default function Sidebar() {
     dashboard: { href: '/dashboard', label: tr.overview, icon: LayoutDashboard, adminOnly: false },
     projects: { href: '/projects', label: tr.projects, icon: Search, adminOnly: false },
     leaderboard: { href: '/leaderboard', label: lang === 'cn' ? '排行榜' : 'Leaderboard', icon: Trophy, adminOnly: false },
+    awards: { href: '/awards', label: lang === 'cn' ? '声纳奖' : 'Awards', icon: Award, adminOnly: false },
     'live-intel': { href: '/live-intel', label: lang === 'cn' ? 'Live 情报' : 'Live Intel', icon: Flame, adminOnly: false },
     analysis: { href: '/analysis', label: tr.analysis, icon: BarChart2, adminOnly: false },
     predict: { href: '/predict', label: tr.predict, icon: Sparkles, adminOnly: false },
@@ -44,7 +46,7 @@ export default function Sidebar() {
     'data-quality': { href: '/data-quality', label: lang === 'cn' ? '数据质量' : 'Data Quality', icon: RadioTower, adminOnly: true },
     'admin-users': { href: '/admin/users', label: lang === 'cn' ? '用户看板' : 'Users', icon: Users, adminOnly: true },
     'admin-updates': { href: '/admin/updates', label: lang === 'cn' ? '更新推送' : 'Updates', icon: Megaphone, adminOnly: true },
-    'admin-nav': { href: '/admin/nav', label: lang === 'cn' ? '导航配置' : 'Nav Config', icon: SlidersHorizontal, adminOnly: true },
+    'admin-nav': { href: '/admin/nav', label: lang === 'cn' ? '全局配置' : 'Global Config', icon: SlidersHorizontal, adminOnly: true },
   }), [lang, tr]);
 
   useEffect(() => {
@@ -55,6 +57,7 @@ export default function Sidebar() {
     { nav_key: 'dashboard' },
     { nav_key: 'projects' },
     { nav_key: 'leaderboard' },
+    { nav_key: 'awards' },
     { nav_key: 'live-intel' },
     { nav_key: 'analysis' },
     { nav_key: 'predict' },
