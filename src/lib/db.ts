@@ -120,13 +120,14 @@ let inflatedGoalsReconciled = false;
  * One-time-per-process repair of goals inflated ~100x by the old FX-inference bug
  * (see src/lib/money.ts: goalUsd used to be goalLocal * (pledgedUsd / pledgedLocal),
  * and that ratio could balloon to ~100). Two-pronged:
- *  1) In place: USD projects whose goal is large AND carries junk low digits
- *     (goal % 100 != 0 — a real round goal never does) are divided by 100, e.g.
- *     10,000,021 -> 100,000. Genuine round goals (the $100,000,000 joke campaigns,
- *     all multiples of 100) are left untouched.
- *  2) Re-fetch: still-suspicious tracked projects (covers non-USD, whose stored goal
- *     is in local currency and can't be safely divided here) are marked due so the
- *     fixed scraper overwrites the goal with an authoritative value.
+ *  1) In place (conservative): a USD goal is only divided by 100 when doing so lands
+ *     on a clearly round goal — large, with junk low digits (goal % 100 != 0), AND
+ *     goal/100 rounds to a multiple of 1000. That uniquely matches round_goal*~100
+ *     (e.g. 10,000,021 -> 100,000) while never touching a genuinely non-round goal
+ *     such as $3,134,455 (a real $3.1M campaign) or the round $100,000,000 jokes.
+ *  2) Re-fetch (authoritative): every still-suspicious tracked project is marked due
+ *     so the fixed scraper re-reads Kickstarter's real dollar goal (rate=1 for USD).
+ *     This is what actually heals the ambiguous and non-USD cases.
  */
 function reconcileInflatedGoals(db: Database) {
   if (inflatedGoalsReconciled) return;
@@ -138,6 +139,7 @@ function reconcileInflatedGoals(db: Database) {
       WHERE COALESCE(currency, 'USD') = 'USD'
         AND goal >= 200000
         AND CAST(goal AS INTEGER) % 100 <> 0
+        AND CAST(ROUND(goal / 100.0) AS INTEGER) % 1000 = 0
     `).run().changes;
 
     const now = Math.floor(Date.now() / 1000);
