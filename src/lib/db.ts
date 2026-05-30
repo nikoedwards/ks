@@ -115,6 +115,64 @@ function cleanupFutureSnapshots(db: Database) {
 }
 
 let inflatedGoalsReconciled = false;
+let projectStatesReconciled = false;
+
+/**
+ * One-time-per-process repair of project states. The crawl pipeline only ever
+ * stores five canonical lowercase states (live / successful / failed / canceled /
+ * suspended), but legacy rows accumulated uppercase duplicates (LIVE, SUCCESSFUL…)
+ * and stray pre-launch / placeholder labels (started, submitted, unknown, …).
+ * This folds casing + synonyms and infers a real state for the leftovers from the
+ * project's own deadline / goal / pledged numbers, so the chart and the live CTE
+ * stay clean. Snapshot states are folded too (kicktraq 'historical' is left alone
+ * since it is a scoped backfill marker, not a project state).
+ */
+function reconcileProjectStates(db: Database) {
+  if (projectStatesReconciled) return;
+  projectStatesReconciled = true;
+  try {
+    const now = Math.floor(Date.now() / 1000);
+
+    // 1) Fold casing + synonyms on the projects table.
+    db.exec(`
+      UPDATE projects SET state = lower(state)
+        WHERE state IS NOT NULL AND state <> lower(state);
+      UPDATE projects SET state = 'successful' WHERE state IN ('success', 'funded');
+      UPDATE projects SET state = 'canceled'   WHERE state = 'cancelled';
+      UPDATE projects SET state = 'failed'     WHERE state = 'unsuccessful';
+    `);
+
+    // 2) Infer a canonical state for everything that is still non-canonical
+    //    (started, submitted, unknown, historical, draft, purged, '', NULL …)
+    //    from the project's own numbers. goal + usd_pledged are both USD here.
+    const reclassified = db.prepare(`
+      UPDATE projects
+      SET state = CASE
+        WHEN deadline IS NOT NULL AND deadline > @now THEN 'live'
+        WHEN goal > 0 AND COALESCE(usd_pledged, 0) >= goal THEN 'successful'
+        WHEN deadline IS NOT NULL THEN 'failed'
+        ELSE 'live'
+      END
+      WHERE COALESCE(state, '') NOT IN ('live', 'successful', 'failed', 'canceled', 'suspended')
+    `).run({ now }).changes;
+
+    // 3) Fold casing + synonyms on snapshots so the live CTE matching 'live' works.
+    db.exec(`
+      UPDATE project_snapshots SET state = lower(state)
+        WHERE state IS NOT NULL AND state <> lower(state);
+      UPDATE project_snapshots SET state = 'successful' WHERE state IN ('success', 'funded');
+      UPDATE project_snapshots SET state = 'canceled'   WHERE state = 'cancelled';
+      UPDATE project_snapshots SET state = 'failed'     WHERE state = 'unsuccessful';
+    `);
+
+    if (reclassified > 0) {
+      invalidateAnalyticsCaches();
+      console.log(`[db] reconciled ${reclassified} project state(s) to canonical values`);
+    }
+  } catch (e) {
+    console.error('[db] reconcileProjectStates failed:', e);
+  }
+}
 
 /**
  * One-time-per-process repair of goals inflated ~100x by the old FX-inference bug
@@ -167,6 +225,7 @@ function reconcileInflatedGoals(db: Database) {
 function ensureRuntimeMigrations(db: Database) {
   cleanupFutureSnapshots(db);
   reconcileInflatedGoals(db);
+  reconcileProjectStates(db);
   try { db.exec('ALTER TABLE users ADD COLUMN email_verified INTEGER DEFAULT 1'); } catch { /* already exists */ }
   try { db.exec("ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'"); } catch { /* already exists */ }
   try { db.exec('ALTER TABLE projects ADD COLUMN creator_slug TEXT'); } catch { /* already exists */ }
@@ -943,7 +1002,17 @@ export async function getStateDistribution(filter: { dateFrom?: number; dateTo?:
     if (filter.dateTo) { w.clauses.push(`${w.launched} <= @dateTo`); w.params.dateTo = filter.dateTo; }
     const where = w.clauses.length ? `WHERE ${w.clauses.join(' AND ')}` : '';
     return getDB().prepare(
-      `SELECT state, COUNT(*) as count FROM projects ${where} GROUP BY state ORDER BY count DESC`
+      `SELECT
+         CASE lower(COALESCE(state, ''))
+           WHEN 'success' THEN 'successful'
+           WHEN 'funded' THEN 'successful'
+           WHEN 'cancelled' THEN 'canceled'
+           WHEN 'unsuccessful' THEN 'failed'
+           ELSE lower(COALESCE(state, ''))
+         END as state,
+         COUNT(*) as count
+       FROM projects ${where}
+       GROUP BY 1 ORDER BY count DESC`
     ).all(w.params) as { state: string; count: number }[];
   });
 }

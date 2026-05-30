@@ -14,6 +14,7 @@ import {
   upsertBatch,
 } from './db';
 import { sanitizeFxRate } from './money';
+import { resolveProjectState } from './projectState';
 import { updateSyncState } from './syncState';
 
 const DATASETS_PAGE = 'https://webrobots.io/kickstarter-datasets/';
@@ -111,6 +112,8 @@ function parseRecord(raw: RawRecord): Record<string, unknown> | null {
 
   const goal = parseFloat(raw.goal || '0') || 0;
   const pledged = parseFloat(raw.pledged || '0') || 0;
+  const deadlineTs = raw.deadline ? parseInt(raw.deadline) || null : null;
+  const state = resolveProjectState({ raw: raw.state, deadline: deadlineTs, goal, pledged });
   const currency = raw.currency ?? 'USD';
   const isUsd = currency.trim().toUpperCase() === 'USD';
   const usd_rate_raw = raw.static_usd_rate?.trim() || '';
@@ -139,7 +142,7 @@ function parseRecord(raw: RawRecord): Record<string, unknown> | null {
     name: raw.name.slice(0, 500),
     blurb: raw.blurb?.slice(0, 1000) ?? null,
     goal: goal_usd, pledged, usd_pledged,
-    state: raw.state,
+    state,
     country: raw.country ?? null,
     country_name: raw.country_displayable_name ?? null,
     currency: raw.currency ?? null,
@@ -148,7 +151,7 @@ function parseRecord(raw: RawRecord): Record<string, unknown> | null {
     staff_pick: raw.staff_pick === 'True' || raw.staff_pick === 'true' ? 1 : 0,
     created_at: raw.created_at ? parseInt(raw.created_at) || null : null,
     launched_at: raw.launched_at ? parseInt(raw.launched_at) || null : null,
-    deadline: raw.deadline ? parseInt(raw.deadline) || null : null,
+    deadline: deadlineTs,
     creator_name,
     creator_slug,
     creator_url: creator_url ?? (creator_slug ? `https://www.kickstarter.com/profile/${creator_slug}` : null),

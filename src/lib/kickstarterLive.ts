@@ -12,6 +12,7 @@ import {
 import { updateSyncState } from './syncState';
 import { runKicktraqActiveSync } from './kicktraqActive';
 import { resolveUsdAmounts as resolveUsdAmountsShared } from './money';
+import { resolveProjectState } from './projectState';
 
 const DISCOVER_URL = 'https://www.kickstarter.com/discover/advanced';
 
@@ -138,7 +139,7 @@ function normalizeProject(project: KSDiscoverProject, now: number): Record<strin
     goal: goalUsd,
     pledged,
     usd_pledged: pledgedUsd,
-    state: project.state ?? 'unknown',
+    state: resolveProjectState({ raw: project.state, deadline: project.deadline ?? null, goal: goalUsd, pledged: pledgedUsd, now }),
     country: project.country ?? null,
     country_name: project.country_displayable_name ?? null,
     currency: project.currency ?? null,
@@ -187,7 +188,7 @@ async function storeNormalizedProjects(normalized: Record<string, unknown>[], no
       days_to_go: Number(row.deadline ?? 0) > 0 ? Math.max(0, Math.round((Number(row.deadline) - now) / 86400)) : 0,
       comments_count: 0,
       updates_count: 0,
-      state: String(row.state ?? 'unknown'),
+      state: resolveProjectState({ raw: row.state, deadline: Number(row.deadline ?? 0) || null, goal: Number(row.goal ?? 0), pledged: Number(row.usd_pledged ?? 0), now }),
       source: 'ks_live',
     });
     snapshots++;

@@ -14,6 +14,7 @@ import {
   type RewardSnapshot,
 } from './db';
 import { resolveUsdAmounts as resolveUsdAmountsShared } from './money';
+import { resolveProjectState } from './projectState';
 
 export function getOptionalEnv(name: string) {
   const direct = process.env[name]?.trim();
@@ -850,7 +851,13 @@ export async function scrapeAndStore(projectId: string, jsonUrl: string, opts: S
     backers_count?: number;
   } | null;
   const latestSnapshot = getSnapshots(projectId).at(-1);
-  const projectState = p.state ?? existing?.state ?? 'unknown';
+  const projectState = resolveProjectState({
+    raw: p.state ?? existing?.state,
+    deadline: p.deadline ?? existing?.deadline ?? null,
+    goal: goalUsd,
+    pledged: pledgedUsd,
+    now,
+  });
   const isLive = projectState === 'live';
   const rewards = normalizeRewards(p);
   const collaborators = normalizeCollaborators(projectId, p, now);
