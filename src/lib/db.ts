@@ -117,6 +117,17 @@ function cleanupFutureSnapshots(db: Database) {
 let inflatedGoalsReconciled = false;
 let projectStatesReconciled = false;
 let regressedPledgedReconciled = false;
+let unconvertedPledgedReconciled = false;
+
+// Static currency→USD rate as a SQL CASE, for in-place repair of amounts that were
+// stored as raw local currency. Mirrors STATIC_USD_RATES in money.ts.
+function fxRateCase(currencyCol: string): string {
+  return `CASE upper(COALESCE(${currencyCol}, 'USD'))
+    WHEN 'USD' THEN 1 WHEN 'GBP' THEN 1.25 WHEN 'EUR' THEN 1.08 WHEN 'CAD' THEN 0.73
+    WHEN 'AUD' THEN 0.65 WHEN 'JPY' THEN 0.0067 WHEN 'HKD' THEN 0.128 WHEN 'SGD' THEN 0.74
+    WHEN 'SEK' THEN 0.093 WHEN 'NOK' THEN 0.093 WHEN 'DKK' THEN 0.145 WHEN 'CHF' THEN 1.10
+    WHEN 'NZD' THEN 0.60 WHEN 'MXN' THEN 0.059 WHEN 'PLN' THEN 0.25 ELSE 1 END`;
+}
 
 /**
  * One-time-per-process repair of project states. The crawl pipeline only ever
@@ -304,10 +315,58 @@ function reconcileRegressedPledged(db: Database) {
   }
 }
 
+/**
+ * One-time-per-process repair of pledged amounts that were stored as raw LOCAL
+ * currency instead of USD. The old money.ts fell back to the local amount when a
+ * feed row carried no converted/explicit USD pledged, so e.g. a ¥15.6M JPY campaign
+ * was saved as $15,630,106 instead of ~$105K (≈149x off). We detect any non-USD row
+ * whose usd_pledged is wildly above the expected local*rate (>3x — only the egregious
+ * low-rate currencies trip this) and recompute it, fixing both the project row and
+ * its snapshots so the read-side MAX(snapshot, project) cannot re-inflate from a
+ * stale raw-local snapshot. The go-forward money.ts fix prevents new occurrences.
+ */
+function reconcileUnconvertedPledged(db: Database) {
+  if (unconvertedPledgedReconciled) return;
+  unconvertedPledgedReconciled = true;
+  try {
+    const r = fxRateCase('currency');
+    const projFixed = db.prepare(`
+      UPDATE projects
+      SET usd_pledged = ROUND(pledged * (${r}))
+      WHERE upper(COALESCE(currency, 'USD')) <> 'USD'
+        AND COALESCE(pledged, 0) > 0
+        AND COALESCE(usd_pledged, 0) > pledged * (${r}) * 3
+    `).run().changes;
+
+    const rp = fxRateCase('p.currency');
+    const snapFixed = db.prepare(`
+      UPDATE project_snapshots
+      SET pledged_usd = ROUND(pledged_usd * (
+        SELECT (${rp}) FROM projects p WHERE p.id = project_snapshots.project_id
+      ))
+      WHERE EXISTS (
+        SELECT 1 FROM projects p
+        WHERE p.id = project_snapshots.project_id
+          AND upper(COALESCE(p.currency, 'USD')) <> 'USD'
+          AND COALESCE(p.pledged, 0) > 0
+          AND project_snapshots.pledged_usd > p.pledged * (${rp}) * 3
+      )
+    `).run().changes;
+
+    if (projFixed > 0 || snapFixed > 0) {
+      invalidateAnalyticsCaches();
+      console.log(`[db] converted ${projFixed} raw-local project pledged + ${snapFixed} snapshot value(s) to USD`);
+    }
+  } catch (e) {
+    console.error('[db] reconcileUnconvertedPledged failed:', e);
+  }
+}
+
 function ensureRuntimeMigrations(db: Database) {
   cleanupFutureSnapshots(db);
   reconcileInflatedGoals(db);
   reconcileProjectStates(db);
+  reconcileUnconvertedPledged(db);
   reconcileRegressedPledged(db);
   try { db.exec('ALTER TABLE users ADD COLUMN email_verified INTEGER DEFAULT 1'); } catch { /* already exists */ }
   try { db.exec("ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'"); } catch { /* already exists */ }

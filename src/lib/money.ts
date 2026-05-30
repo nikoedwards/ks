@@ -23,6 +23,21 @@
 export const MIN_FX_RATE = 0.0005;
 export const MAX_FX_RATE = 10;
 
+// Static currency→USD fallback rates for every currency Kickstarter supports. Used
+// when a payload carries neither an FX rate nor a trustworthy converted-USD figure,
+// so we always apply a real conversion instead of storing the local amount as USD
+// (the bug that made a ¥15.6M JPY campaign show as $15.63M instead of ~$105K).
+export const STATIC_USD_RATES: Record<string, number> = {
+  USD: 1, GBP: 1.25, EUR: 1.08, CAD: 0.73, AUD: 0.65, JPY: 0.0067,
+  HKD: 0.128, SGD: 0.74, SEK: 0.093, NOK: 0.093, DKK: 0.145, CHF: 1.10,
+  NZD: 0.60, MXN: 0.059, PLN: 0.25,
+};
+
+export function staticUsdRateFor(currency: string | null | undefined): number | null {
+  const c = (currency ?? '').trim().toUpperCase();
+  return STATIC_USD_RATES[c] ?? null;
+}
+
 export function sanitizeFxRate(rate: number | null | undefined): number | null {
   if (rate == null || !Number.isFinite(rate) || rate <= 0) return null;
   if (rate < MIN_FX_RATE || rate > MAX_FX_RATE) return null;
@@ -50,36 +65,49 @@ function pos(value: number | undefined | null): number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0;
 }
 
+/** Trust a provided USD figure only when it lands in the right ballpark of
+ *  localAmount*rate; otherwise it is a raw-local artifact and we recompute it. */
+function reconcileUsdFigure(candidate: number, localAmount: number, rate: number): number {
+  const expected = localAmount * rate;
+  if (expected <= 0) return candidate > 0 ? candidate : 0;
+  if (candidate <= 0) return expected;
+  const ratio = candidate / expected;
+  return ratio >= 0.5 && ratio <= 2 ? candidate : expected;
+}
+
 export function resolveUsdAmounts(input: UsdAmountInput): UsdAmounts {
   const pledgedLocal = pos(input.pledgedLocal);
   const goalLocal = pos(input.goalLocal);
   const convertedPledged = pos(input.convertedPledged);
   const convertedGoal = pos(input.convertedGoal);
   const explicitUsd = pos(input.explicitUsdPledged);
-  const isUsd = (input.currency ?? '').trim().toUpperCase() === 'USD';
+  const currency = (input.currency ?? '').trim().toUpperCase();
+  const isUsd = currency === 'USD';
 
-  const pledgedUsd = convertedPledged > 0
-    ? convertedPledged
-    : explicitUsd > 0
-      ? explicitUsd
-      : pledgedLocal;
-
-  // Choose a trustworthy currency→USD rate for the GOAL.
+  // 1) Choose a trustworthy currency→USD rate, preferring authoritative values and
+  //    falling back to a static per-currency rate so a conversion is ALWAYS applied.
   let rate: number;
   if (isUsd) {
     rate = 1;
   } else {
     const authoritative = sanitizeFxRate(input.fxRate) ?? sanitizeFxRate(input.staticUsdRate);
-    const inferred = pledgedLocal > 0 && pledgedUsd > 0
-      ? sanitizeFxRate(pledgedUsd / pledgedLocal)
+    const candidate = convertedPledged > 0 ? convertedPledged : explicitUsd;
+    const inferred = pledgedLocal > 0 && candidate > 0
+      ? sanitizeFxRate(candidate / pledgedLocal)
       : null;
-    rate = authoritative ?? inferred ?? 1;
+    rate = authoritative ?? sanitizeFxRate(staticUsdRateFor(currency)) ?? inferred ?? 1;
   }
 
-  let goalUsd = goalLocal * rate;
+  // 2) Pledged in USD: never store the raw local amount. Prefer a supplied USD figure
+  //    only when it is plausible for pledgedLocal*rate; otherwise convert ourselves.
+  const suppliedUsd = convertedPledged > 0 ? convertedPledged : explicitUsd;
+  const pledgedUsd = isUsd
+    ? (suppliedUsd > 0 ? suppliedUsd : pledgedLocal)
+    : reconcileUsdFigure(suppliedUsd, pledgedLocal, rate);
 
-  // converted_goal_amount is occasionally present. Trust it only when it agrees
-  // with goalLocal*rate (guards against minor-unit/cents payloads that are ~100x off).
+  // 3) Goal in USD. converted_goal_amount is occasionally present; trust it only when
+  //    it agrees with goalLocal*rate (guards minor-unit/cents payloads that are ~100x off).
+  let goalUsd = goalLocal * rate;
   if (convertedGoal > 0) {
     if (goalUsd > 0) {
       const ratio = convertedGoal / goalUsd;

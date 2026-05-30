@@ -13,7 +13,7 @@ import {
   updateSyncLog,
   upsertBatch,
 } from './db';
-import { sanitizeFxRate } from './money';
+import { resolveUsdAmounts } from './money';
 import { resolveProjectState } from './projectState';
 import { updateSyncState } from './syncState';
 
@@ -115,20 +115,18 @@ function parseRecord(raw: RawRecord): Record<string, unknown> | null {
   const deadlineTs = raw.deadline ? parseInt(raw.deadline) || null : null;
   const state = resolveProjectState({ raw: raw.state, deadline: deadlineTs, goal, pledged });
   const currency = raw.currency ?? 'USD';
-  const isUsd = currency.trim().toUpperCase() === 'USD';
   const usd_rate_raw = raw.static_usd_rate?.trim() || '';
-  // Reject out-of-range static rates (a scale/units artifact) so they can never
-  // inflate goal/pledged; USD always converts 1:1.
-  const saneRate = sanitizeFxRate(usd_rate_raw ? parseFloat(usd_rate_raw) : null);
-  const usd_rate = isUsd ? 1 : (saneRate ?? 1);
-  const has_valid_rate = isUsd || saneRate != null;
   const usd_pledged_csv = parseFloat(raw.usd_pledged || '0') || 0;
-  // Only fall back to pledged*rate when the rate is explicitly provided or this is a USD project.
-  // Without a valid rate for non-USD projects, storing pledged*1 would save local currency as USD.
-  const usd_pledged = usd_pledged_csv > 0
-    ? usd_pledged_csv
-    : (has_valid_rate || currency === 'USD') ? pledged * usd_rate : 0;
-  const goal_usd = (has_valid_rate || currency === 'USD') ? goal * usd_rate : 0;
+  // Shared resolver: always applies a real currency→USD rate (authoritative, else a
+  // static per-currency rate) and sanity-checks the CSV's usd_pledged so a raw local
+  // amount can never be stored as USD.
+  const { pledgedUsd: usd_pledged, goalUsd: goal_usd } = resolveUsdAmounts({
+    pledgedLocal: pledged,
+    goalLocal: goal,
+    explicitUsdPledged: usd_pledged_csv,
+    staticUsdRate: usd_rate_raw ? (parseFloat(usd_rate_raw) || undefined) : undefined,
+    currency,
+  });
 
   const projectSlug = raw.slug ?? urlProjectSlug;
   const rawSourceUrlIsKs = typeof raw.source_url === 'string'
