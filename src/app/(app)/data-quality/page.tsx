@@ -253,6 +253,118 @@ const CRAWL_STATUS_META: Record<string, { tone: string; dot: string; cn: string;
   error: { tone: 'bg-red-50 text-red-700 border-red-200', dot: 'bg-red-500', cn: '出错', en: 'Error' },
 };
 
+type WorkerVerdict = 'unconfigured' | 'unreachable' | 'browser_down' | 'ip_blocked' | 'degraded' | 'healthy';
+
+interface WorkerLiveStatus {
+  configured: boolean;
+  reachable: boolean;
+  verdict: WorkerVerdict;
+  message?: string;
+  browserConnected?: boolean | null;
+  browserVersion?: string | null;
+  proxyConfigured?: boolean;
+  proxyServer?: string | null;
+  warmupOk?: boolean | null;
+  warmupAttempts?: number | null;
+  warmupLastError?: string | null;
+  warmupLastAt?: string | null;
+  memoryRssMb?: number | null;
+  uptimeSec?: number | null;
+  checkedAt: number;
+}
+
+const WORKER_VERDICT_META: Record<WorkerVerdict, { tone: string; dot: string; cn: string; en: string }> = {
+  healthy: { tone: 'border-green-200 bg-green-50 text-green-800', dot: 'bg-green-500', cn: '正常', en: 'Healthy' },
+  ip_blocked: { tone: 'border-red-200 bg-red-50 text-red-800', dot: 'bg-red-500', cn: 'IP 被 Cloudflare 拦截', en: 'IP blocked by Cloudflare' },
+  browser_down: { tone: 'border-red-200 bg-red-50 text-red-800', dot: 'bg-red-500', cn: '浏览器未启动', en: 'Browser down' },
+  unreachable: { tone: 'border-red-200 bg-red-50 text-red-800', dot: 'bg-red-500', cn: 'Worker 不可达', en: 'Worker unreachable' },
+  unconfigured: { tone: 'border-gray-200 bg-gray-50 text-gray-600', dot: 'bg-gray-400', cn: '未配置 Worker', en: 'Worker not configured' },
+  degraded: { tone: 'border-amber-200 bg-amber-50 text-amber-800', dot: 'bg-amber-500', cn: '状态未知', en: 'Degraded' },
+};
+
+function workerVerdictHint(s: WorkerLiveStatus, cn: boolean): string {
+  switch (s.verdict) {
+    case 'healthy':
+      return cn ? '浏览器已连接，预热访问 Kickstarter 成功，可正常抓取。' : 'Browser connected and Kickstarter warmup succeeded.';
+    case 'ip_blocked':
+      return cn
+        ? '浏览器本身正常，但访问 Kickstarter 被返回 403。多半是机房 IP 被 Cloudflare 拦截——需要给 worker 配住宅代理。'
+        : 'Browser is fine but Kickstarter returns 403 — datacenter IP is blocked by Cloudflare. Configure a residential proxy on the worker.';
+    case 'browser_down':
+      return cn ? 'Worker 在线，但 Chromium 没能启动/连接,抓取无法进行。' : 'Worker is up but Chromium failed to launch/connect.';
+    case 'unreachable':
+      return cn ? '主服务连不上 worker 的 /diag,可能 worker 重启中或挂了。' : 'Main service cannot reach worker /diag; it may be restarting or down.';
+    case 'unconfigured':
+      return cn ? '主服务未配置 worker 地址 (KICKSTARTER_BROWSER_FETCH_URL)。' : 'Main service has no worker URL configured.';
+    default:
+      return cn ? 'Worker 在线,但预热状态未知。' : 'Worker is up but warmup state is unknown.';
+  }
+}
+
+function WorkerHealthBanner({ cn }: { cn: boolean }) {
+  const [status, setStatus] = useState<WorkerLiveStatus | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+    const load = async () => {
+      try {
+        const res = await fetch('/api/data-quality/worker', { cache: 'no-store' });
+        const data = (await res.json()) as WorkerLiveStatus;
+        if (active) setStatus(data);
+      } catch {
+        /* keep last known */
+      } finally {
+        if (active) setLoading(false);
+      }
+    };
+    load();
+    const id = setInterval(load, 30_000);
+    return () => { active = false; clearInterval(id); };
+  }, []);
+
+  if (loading && !status) {
+    return (
+      <div className="mb-4 rounded-lg border border-gray-100 bg-gray-50 px-4 py-3 text-xs text-gray-400">
+        {cn ? '正在检测浏览器 Worker 实时状态…' : 'Checking browser worker live status…'}
+      </div>
+    );
+  }
+  if (!status) return null;
+
+  const meta = WORKER_VERDICT_META[status.verdict] ?? WORKER_VERDICT_META.degraded;
+  const proxyLabel = status.proxyConfigured
+    ? (cn ? '代理 ✓' : 'Proxy ✓')
+    : (cn ? '代理 ✗（直连机房 IP）' : 'Proxy ✗ (datacenter IP)');
+
+  return (
+    <div className={`mb-4 rounded-lg border px-4 py-3 ${meta.tone}`}>
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className={`h-2.5 w-2.5 rounded-full flex-shrink-0 ${meta.dot} ${status.verdict === 'healthy' ? 'animate-pulse' : ''}`} />
+          <span className="font-semibold text-sm">{cn ? '浏览器 Worker：' : 'Browser worker: '}{cn ? meta.cn : meta.en}</span>
+        </div>
+        {status.reachable && (
+          <div className="flex items-center gap-2 flex-shrink-0 text-[11px] font-medium">
+            <span className={`rounded-full px-2 py-0.5 border ${status.proxyConfigured ? 'border-green-200 bg-green-50 text-green-700' : 'border-amber-200 bg-amber-50 text-amber-700'}`}>{proxyLabel}</span>
+            {status.browserConnected != null && (
+              <span className={`rounded-full px-2 py-0.5 border ${status.browserConnected ? 'border-green-200 bg-green-50 text-green-700' : 'border-red-200 bg-red-50 text-red-700'}`}>
+                {status.browserConnected ? (cn ? '浏览器 ✓' : 'Browser ✓') : (cn ? '浏览器 ✗' : 'Browser ✗')}
+              </span>
+            )}
+          </div>
+        )}
+      </div>
+      <p className="mt-1.5 text-xs opacity-90">{workerVerdictHint(status, cn)}</p>
+      {(status.warmupLastError || status.message) && (
+        <p className="mt-1 text-[11px] font-mono opacity-70 line-clamp-2" title={status.warmupLastError ?? status.message ?? ''}>
+          {status.warmupLastError ?? status.message}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function CrawlStatusSection({
   diagnostics,
   latestSnapshotAt,
@@ -285,6 +397,8 @@ function CrawlStatusSection({
         </div>
         <span className="text-xs text-gray-400">{cn ? '每 30 秒自动刷新' : 'Auto-refresh 30s'}</span>
       </div>
+
+      <WorkerHealthBanner cn={cn} />
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4">
         <div className="rounded-lg border border-gray-100 bg-gray-50 p-3">
