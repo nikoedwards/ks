@@ -27,7 +27,15 @@ import { t } from '@/lib/i18n';
 import { useAuth } from '@/contexts/AuthContext';
 import LoginModal from '@/components/LoginModal';
 
-export default function Sidebar() {
+export default function Sidebar({
+  mobileOpen = false,
+  onClose,
+  onNavigate,
+}: {
+  mobileOpen?: boolean;
+  onClose?: () => void;
+  onNavigate?: () => void;
+} = {}) {
   const pathname = usePathname();
   const [lang, setLang] = useLanguage();
   const tr = t[lang].nav;
@@ -79,8 +87,20 @@ export default function Sidebar() {
   return (
     <>
       <LoginModal />
-      <aside className="w-56 bg-[#1a1a1a] text-white flex flex-col shrink-0">
-        <Link href="/" className="px-5 py-5 border-b border-white/10 hover:bg-white/5 transition-colors">
+      {/* Backdrop for the mobile drawer. */}
+      <div
+        onClick={onClose}
+        className={`fixed inset-0 z-40 bg-black/50 transition-opacity lg:hidden ${
+          mobileOpen ? 'opacity-100' : 'pointer-events-none opacity-0'
+        }`}
+        aria-hidden
+      />
+      <aside
+        className={`fixed inset-y-0 left-0 z-50 flex w-64 max-w-[82vw] flex-col overflow-y-auto bg-[#1a1a1a] text-white transition-transform duration-200 ease-out lg:static lg:z-auto lg:w-56 lg:max-w-none lg:shrink-0 lg:translate-x-0 ${
+          mobileOpen ? 'translate-x-0 shadow-2xl' : '-translate-x-full'
+        }`}
+      >
+        <Link href="/" onClick={onNavigate} className="px-5 py-5 border-b border-white/10 hover:bg-white/5 transition-colors">
           <div className="flex items-center gap-2.5">
             <Image src="/logo.svg" alt="Kicksonar" width={28} height={28} className="shrink-0" />
             <div>
@@ -109,7 +129,10 @@ export default function Sidebar() {
                 )}
                 <Link
                   href={href}
-                  onClick={isFav && !user ? (e) => { e.preventDefault(); showLogin(); } : undefined}
+                  onClick={(e) => {
+                    if (isFav && !user) { e.preventDefault(); showLogin(); return; }
+                    onNavigate?.();
+                  }}
                   className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all ${
                     active
                       ? 'bg-ks-green text-white shadow-sm'
@@ -129,6 +152,7 @@ export default function Sidebar() {
         <div className="px-2.5 py-3 border-t border-white/10 space-y-0.5">
           <Link
             href="/about"
+            onClick={onNavigate}
             className={`flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-medium transition-all ${
               pathname === '/about'
                 ? 'bg-ks-green text-white'

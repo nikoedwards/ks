@@ -892,9 +892,9 @@ export default function LeaderboardPage() {
                 const preview = creator.best_project_thumb_url ?? creator.best_project_image_url;
                 const creatorTotal = Number(creator.avg_pledged_usd ?? 0) * Number(creator.project_count ?? 0);
                 return (
-                  <div key={creator.creator_key} className={`grid grid-cols-[44px_88px_1fr_auto] items-center gap-4 px-5 py-4 transition-colors hover:bg-gray-50 ${rank <= 3 ? 'bg-amber-50/30' : ''}`}>
-                  <span className={`flex h-9 min-w-9 items-center justify-center rounded-full px-2 text-sm font-black ${rankClass(rank)}`}>{rank}</span>
-                  <Link href={creator.best_project_id ? `/projects/${creator.best_project_id}` : '/projects'} target="_blank" rel="noopener noreferrer" className="h-16 w-24 overflow-hidden rounded-md bg-gray-100">
+                  <div key={creator.creator_key} className={`grid grid-cols-[32px_60px_1fr_auto] items-center gap-3 px-3 py-4 transition-colors hover:bg-gray-50 sm:grid-cols-[44px_88px_1fr_auto] sm:gap-4 sm:px-5 ${rank <= 3 ? 'bg-amber-50/30' : ''}`}>
+                  <span className={`flex h-8 min-w-8 items-center justify-center rounded-full px-1.5 text-xs font-black sm:h-9 sm:min-w-9 sm:px-2 sm:text-sm ${rankClass(rank)}`}>{rank}</span>
+                  <Link href={creator.best_project_id ? `/projects/${creator.best_project_id}` : '/projects'} target="_blank" rel="noopener noreferrer" className="h-12 w-[60px] overflow-hidden rounded-md bg-gray-100 sm:h-16 sm:w-24">
                     {preview ? (
                       <ImagePreview src={preview} className="block h-full w-full">
                         <img src={preview} alt="" className="h-full w-full object-cover" loading="lazy" referrerPolicy="no-referrer" />
@@ -914,8 +914,8 @@ export default function LeaderboardPage() {
                       <span className="rounded-md bg-amber-50 px-2 py-1 font-semibold text-amber-700">{fmtUsd(creator.avg_pledged_usd)} {cn ? '单次均额' : 'avg'}</span>
                     </span>
                   </span>
-                  <span className="w-32 text-right">
-                    <span className="block text-xl font-black tabular-nums text-gray-900">
+                  <span className="w-20 text-right sm:w-32">
+                    <span className="block text-base font-black tabular-nums text-gray-900 sm:text-xl">
                       {creatorMetric === 'count' ? fmtNum(creator.project_count) : creatorMetric === 'average' ? fmtUsd(creator.avg_pledged_usd) : fmtUsd(creatorTotal)}
                     </span>
                     <span className="text-xs text-gray-400">
@@ -932,9 +932,9 @@ export default function LeaderboardPage() {
             {pageProjects.map((project, index) => {
               const rank = (page - 1) * PAGE_SIZE + index + 1;
               return (
-                <Link key={project.id} href={`/projects/${project.id}`} target="_blank" rel="noopener noreferrer" className={`group grid grid-cols-[44px_88px_1fr_auto] items-center gap-4 px-5 py-4 transition-colors hover:bg-gray-50 ${rank <= 3 ? 'bg-amber-50/30' : ''}`}>
-                  <span className={`flex h-9 min-w-9 items-center justify-center rounded-full px-2 text-sm font-black ${rankClass(rank)}`}>{rank}</span>
-                  <span className="h-16 w-24 overflow-hidden rounded-md bg-gray-100">
+                <Link key={project.id} href={`/projects/${project.id}`} target="_blank" rel="noopener noreferrer" className={`group grid grid-cols-[32px_60px_1fr_auto] items-center gap-3 px-3 py-4 transition-colors hover:bg-gray-50 sm:grid-cols-[44px_88px_1fr_auto] sm:gap-4 sm:px-5 ${rank <= 3 ? 'bg-amber-50/30' : ''}`}>
+                  <span className={`flex h-8 min-w-8 items-center justify-center rounded-full px-1.5 text-xs font-black sm:h-9 sm:min-w-9 sm:px-2 sm:text-sm ${rankClass(rank)}`}>{rank}</span>
+                  <span className="h-12 w-[60px] overflow-hidden rounded-md bg-gray-100 sm:h-16 sm:w-24">
                     <Thumb project={project} />
                   </span>
                   <span className="min-w-0">
@@ -952,8 +952,8 @@ export default function LeaderboardPage() {
                       <span className="py-1 text-gray-400">{Number(project.funded_pct ?? 0).toFixed(0)}% {cn ? '完成' : 'funded'}</span>
                     </span>
                   </span>
-                  <span className="w-28 text-right">
-                    <span className="block text-xl font-black tabular-nums text-gray-900">
+                  <span className="w-20 text-right sm:w-28">
+                    <span className="block text-base font-black tabular-nums text-gray-900 sm:text-xl">
                       {metric === 'pledged' ? fmtUsd(project.pledged_usd) : fmtNum(project.backers_count)}
                       <TrendMark state={project.state} />
                     </span>

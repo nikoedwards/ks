@@ -772,7 +772,7 @@ export default function ProjectDetailPage() {
       </button>
 
       {/* ── Hero header (Social Blade style) ───────────────────────────────── */}
-      <div className="bg-gray-900 rounded-t-2xl px-6 pt-6 pb-0">
+      <div className="bg-gray-900 rounded-t-2xl px-4 pt-5 pb-0 sm:px-6 sm:pt-6">
         {/* Top row */}
         <div className="flex flex-col items-start justify-between gap-4 mb-4 lg:flex-row">
           <div className="flex-1 min-w-0">
@@ -895,7 +895,7 @@ export default function ProjectDetailPage() {
       </div>
 
       {/* ── Tab content ────────────────────────────────────────────────────── */}
-      <div className="bg-gray-50 rounded-b-2xl border-x border-b border-gray-200 p-6 space-y-6">
+      <div className="bg-gray-50 rounded-b-2xl border-x border-b border-gray-200 p-4 sm:p-6 space-y-6">
         {/* ── OVERVIEW ── */}
         {activeTab === 'overview' && (
           <div className="space-y-6">

@@ -232,12 +232,12 @@ export default function AnalysisPage() {
   ];
 
   const tabBar = (
-    <div className="flex gap-1 border-b border-gray-100">
+    <div className="flex gap-1 overflow-x-auto border-b border-gray-100 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
       {tabs.map(({ key, label }) => (
         <button
           key={key}
           onClick={() => setTab(key)}
-          className={`px-5 py-3 text-sm font-semibold transition-all border-b-2 -mb-px ${
+          className={`shrink-0 whitespace-nowrap px-3 py-3 text-sm font-semibold transition-all border-b-2 -mb-px sm:px-5 ${
             tab === key
               ? 'border-ks-green text-ks-green'
               : 'border-transparent text-gray-500 hover:text-gray-700'
@@ -659,8 +659,8 @@ export default function AnalysisPage() {
       {periodBar}
 
       <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
-        <div className="px-5 pt-1">{tabBar}</div>
-        <div className="p-5">
+        <div className="px-3 pt-1 sm:px-5">{tabBar}</div>
+        <div className="p-3 sm:p-5">
           {tab === 'overview' && overviewContent}
           {tab === 'categories' && categoryContent}
           {tab === 'trends'     && trendsContent}
