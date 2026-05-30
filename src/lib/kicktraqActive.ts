@@ -11,8 +11,22 @@ import {
   mergeKicktraqIntoProject,
 } from './db';
 import { updateSyncState } from './syncState';
+import { resolveUsdAmounts } from './money';
 
 const KICKTRAQ_ACTIVE_URL = 'https://www.kicktraq.com/projects/';
+
+// Kicktraq lists amounts in the campaign's native currency. Route them through the
+// shared resolver so a non-USD project never gets stored with goal/usd_pledged = 0
+// (the old `currency === 'USD' ? amount : 0` logic silently dropped every JPY/EUR/…
+// figure, producing the "$0 goal" rows in the project list).
+function ktUsd(project: KicktraqListProject): { pledgedUsd: number; goalUsd: number } {
+  const { pledgedUsd, goalUsd } = resolveUsdAmounts({
+    pledgedLocal: project.pledged,
+    goalLocal: project.goal,
+    currency: project.currency,
+  });
+  return { pledgedUsd, goalUsd };
+}
 
 interface KicktraqListProject {
   id: string;
@@ -199,13 +213,15 @@ function inferProjectState(project: KicktraqListProject, now: number): string {
 }
 
 function toProjectRows(projects: KicktraqListProject[], now: number): Record<string, unknown>[] {
-  return projects.map(project => ({
+  return projects.map(project => {
+    const { pledgedUsd, goalUsd } = ktUsd(project);
+    return {
     id: project.id,
     name: project.name,
     blurb: project.blurb,
-    goal: project.currency === 'USD' ? project.goal : 0,
+    goal: goalUsd,
     pledged: project.pledged,
-    usd_pledged: project.currency === 'USD' ? project.pledged : 0,
+    usd_pledged: pledgedUsd,
     state: inferProjectState(project, now),
     country: null,
     country_name: null,
@@ -228,7 +244,8 @@ function toProjectRows(projects: KicktraqListProject[], now: number): Record<str
     last_seen_at: now,
     webrobots_synced_at: null,
     ks_live_synced_at: null,
-  }));
+  };
+  });
 }
 
 function filterProjects(projects: KicktraqListProject[], options: Required<Pick<KicktraqActiveSyncOptions, 'since' | 'until' | 'onlyCurrentlyLive'>>) {
@@ -255,11 +272,12 @@ async function storeProjects(projects: KicktraqListProject[], now: number) {
 
   for (const project of projects) {
     const canonicalId = getProjectIdBySlug(project.creator_slug, project.slug);
+    const { pledgedUsd } = ktUsd(project);
     if (canonicalId) {
       // Already in DB from webrobots/KS-live — just enrich + add snapshot
       mergeKicktraqIntoProject(canonicalId, {
         backers_count: project.backers_count,
-        pledged_usd: project.currency === 'USD' ? project.pledged : null,
+        pledged_usd: pledgedUsd > 0 ? pledgedUsd : null,
         launched_at: project.launched_at,
         deadline: project.deadline,
         category_parent: project.category_parent,
@@ -268,7 +286,7 @@ async function storeProjects(projects: KicktraqListProject[], now: number) {
       insertSnapshot({
         project_id: canonicalId,
         captured_at: now,
-        pledged_usd: project.currency === 'USD' ? project.pledged : 0,
+        pledged_usd: pledgedUsd,
         backers_count: project.backers_count,
         days_to_go: project.deadline ? Math.max(0, Math.round((project.deadline - now) / 86400)) : 0,
         comments_count: 0,
@@ -291,7 +309,7 @@ async function storeProjects(projects: KicktraqListProject[], now: number) {
     insertSnapshot({
       project_id: project.id,
       captured_at: now,
-      pledged_usd: project.currency === 'USD' ? project.pledged : 0,
+      pledged_usd: ktUsd(project).pledgedUsd,
       backers_count: project.backers_count,
       days_to_go: project.deadline ? Math.max(0, Math.round((project.deadline - now) / 86400)) : 0,
       comments_count: 0,

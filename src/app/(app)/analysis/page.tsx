@@ -52,6 +52,19 @@ interface TimeRow {
   total_backers: number;
 }
 
+interface TimeMonthRow {
+  year: string;
+  month: number;
+  total: number;
+  successful: number;
+  success_rate: number;
+  total_pledged_m: number;
+  total_backers: number;
+}
+
+type TimeDimension = 'pledged' | 'count' | 'success_rate' | 'backers';
+type TimeScope = 'year' | 'month';
+
 interface StatsResponse {
   stats: Record<string, number>;
   stateDistribution: { state: string; count: number }[];
@@ -109,10 +122,14 @@ export default function AnalysisPage() {
   const [trends, setTrends]         = useState<TrendRow[]>([]);
   const [countries, setCountries]   = useState<CountryRow[]>([]);
   const [timeRows, setTimeRows]     = useState<TimeRow[]>([]);
+  const [timeMonthly, setTimeMonthly] = useState<TimeMonthRow[]>([]);
   const [timeCategory, setTimeCategory] = useState('');
   const [timeCountry, setTimeCountry] = useState('');
   const [compareA, setCompareA] = useState('2024');
   const [compareB, setCompareB] = useState('2025');
+  const [timeDimension, setTimeDimension] = useState<TimeDimension>('pledged');
+  const [timeScope, setTimeScope] = useState<TimeScope>('year');
+  const [timeMonth, setTimeMonth] = useState(1);
   const [statsData, setStatsData]   = useState<StatsResponse | null>(null);
   const [loading, setLoading]       = useState(false);
   const [empty, setEmpty]           = useState(false);
@@ -151,6 +168,7 @@ export default function AnalysisPage() {
       setTrends(trendData);
       setCountries(counData);
       setTimeRows(time.data ?? []);
+      setTimeMonthly(time.monthly ?? []);
       if (!stats?.stats && !catData.length && !trendData.length && !counData.length) setEmpty(true);
       setLoading(false);
     }).catch(() => setLoading(false));
@@ -581,69 +599,163 @@ export default function AnalysisPage() {
   const timeYears = timeRows.map(r => r.year).filter(Boolean).sort();
   const aRow = timeRows.find(r => r.year === compareA);
   const bRow = timeRows.find(r => r.year === compareB);
-  const yoy = (a?: number, b?: number) => {
-    if (!a || !Number.isFinite(a)) return 'N/A';
-    const pct = (((b ?? 0) - a) / a) * 100;
-    return `${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%`;
-  };
+
+  // ── Dimension metadata: the user picks ONE dimension to compare across the two
+  //    years, so we keep a single focused curve instead of a wall of charts. The
+  //    `key` works for both the yearly rows and the monthly rows (same columns).
+  const MONTHS_CN = ['1月', '2月', '3月', '4月', '5月', '6月', '7月', '8月', '9月', '10月', '11月', '12月'];
+  const MONTHS_EN = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const monthLabel = (m: number) => (lang === 'cn' ? MONTHS_CN : MONTHS_EN)[m - 1] ?? String(m);
+
+  const DIMS: { id: TimeDimension; label: string; color: string; key: keyof TimeMonthRow; fmt: (v: number) => string }[] = [
+    { id: 'pledged', label: lang === 'cn' ? '融资额' : 'Pledged', color: '#F59E0B', key: 'total_pledged_m', fmt: v => `$${(v ?? 0).toFixed(v >= 100 ? 0 : 1)}M` },
+    { id: 'count', label: lang === 'cn' ? '项目数' : 'Projects', color: '#3B82F6', key: 'total', fmt: v => Math.round(v ?? 0).toLocaleString() },
+    { id: 'success_rate', label: lang === 'cn' ? '成功率' : 'Success rate', color: '#05CE78', key: 'success_rate', fmt: v => `${(v ?? 0).toFixed(1)}%` },
+    { id: 'backers', label: lang === 'cn' ? '支持者' : 'Backers', color: '#6366F1', key: 'total_backers', fmt: v => Math.round(v ?? 0).toLocaleString() },
+  ];
+  const dim = DIMS.find(d => d.id === timeDimension) ?? DIMS[0];
+  const dimKey = dim.key;
+  const pick = (row: TimeRow | TimeMonthRow | undefined) =>
+    row ? Number((row as unknown as Record<string, number>)[dimKey] ?? 0) : 0;
+
+  // 12-month curve: same dimension, one line per year, so a glance reveals where the
+  // YoY gap opens up month by month.
+  const colorA = '#94A3B8';
+  const colorB = dim.color;
+  const monthlyChart = Array.from({ length: 12 }, (_, i) => {
+    const m = i + 1;
+    const a = timeMonthly.find(r => r.year === compareA && r.month === m);
+    const b = timeMonthly.find(r => r.year === compareB && r.month === m);
+    return { month: monthLabel(m), [compareA]: pick(a), [compareB]: pick(b) };
+  });
+
+  // Headline numbers honor the scope (full year vs a single month).
+  const valA = timeScope === 'year' ? pick(aRow) : pick(timeMonthly.find(r => r.year === compareA && r.month === timeMonth));
+  const valB = timeScope === 'year' ? pick(bRow) : pick(timeMonthly.find(r => r.year === compareB && r.month === timeMonth));
+  const deltaPct = valA > 0 ? ((valB - valA) / valA) * 100 : null;
+  const deltaLabel = deltaPct == null ? 'N/A' : `${deltaPct >= 0 ? '+' : ''}${deltaPct.toFixed(1)}%`;
+  const scopeLabel = timeScope === 'year' ? (lang === 'cn' ? '全年' : 'Full year') : monthLabel(timeMonth);
+
+  const segBtn = (active: boolean) =>
+    `rounded-md px-3 py-1.5 text-xs font-semibold transition-all ${active ? 'bg-ks-green text-white shadow-sm' : 'text-gray-500 hover:bg-gray-200'}`;
+
   const timeContent = (
     <div className="space-y-5">
-      <div className="rounded-xl border border-gray-100 bg-white p-4 shadow-sm">
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
+      {/* ── Controls ──────────────────────────────────────────────────────── */}
+      <div className="rounded-xl border border-gray-100 bg-white p-4 shadow-sm space-y-4">
+        {/* Years + scope */}
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+          <div className="flex flex-wrap items-end gap-3">
+            <label className="space-y-1">
+              <span className="block text-xs font-semibold text-gray-400">{lang === 'cn' ? '对比年份 A' : 'Year A'}</span>
+              <select value={compareA} onChange={e => setCompareA(e.target.value)} className="rounded-lg border border-gray-200 px-3 py-2 text-sm">
+                {timeYears.map(y => <option key={y} value={y}>{y}</option>)}
+              </select>
+            </label>
+            <span className="pb-2 text-gray-300">vs</span>
+            <label className="space-y-1">
+              <span className="block text-xs font-semibold text-gray-400">{lang === 'cn' ? '对比年份 B' : 'Year B'}</span>
+              <select value={compareB} onChange={e => setCompareB(e.target.value)} className="rounded-lg border border-gray-200 px-3 py-2 text-sm">
+                {timeYears.map(y => <option key={y} value={y}>{y}</option>)}
+              </select>
+            </label>
+          </div>
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="space-y-1">
+              <span className="block text-xs font-semibold text-gray-400">{lang === 'cn' ? '对比粒度' : 'Granularity'}</span>
+              <div className="flex rounded-lg bg-gray-100 p-1">
+                <button onClick={() => setTimeScope('year')} className={segBtn(timeScope === 'year')}>{lang === 'cn' ? '全年' : 'Full year'}</button>
+                <button onClick={() => setTimeScope('month')} className={segBtn(timeScope === 'month')}>{lang === 'cn' ? '指定月份' : 'By month'}</button>
+              </div>
+            </div>
+            {timeScope === 'month' && (
+              <label className="space-y-1">
+                <span className="block text-xs font-semibold text-gray-400">{lang === 'cn' ? '月份' : 'Month'}</span>
+                <select value={timeMonth} onChange={e => setTimeMonth(Number(e.target.value))} className="rounded-lg border border-gray-200 px-3 py-2 text-sm">
+                  {Array.from({ length: 12 }, (_, i) => i + 1).map(m => <option key={m} value={m}>{monthLabel(m)}</option>)}
+                </select>
+              </label>
+            )}
+          </div>
+        </div>
+
+        {/* Dimension */}
+        <div className="space-y-1">
+          <span className="block text-xs font-semibold text-gray-400">{lang === 'cn' ? '对比维度' : 'Dimension'}</span>
+          <div className="flex flex-wrap gap-2">
+            {DIMS.map(d => (
+              <button
+                key={d.id}
+                onClick={() => setTimeDimension(d.id)}
+                className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition-all ${
+                  timeDimension === d.id ? 'text-white shadow-sm' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                }`}
+                style={timeDimension === d.id ? { backgroundColor: d.color } : undefined}
+              >
+                <span className="h-2 w-2 rounded-full" style={{ backgroundColor: timeDimension === d.id ? '#fff' : d.color }} />
+                {d.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Optional scoping filters */}
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <label className="space-y-1">
-            <span className="text-xs font-semibold text-gray-400">{lang === 'cn' ? '类目' : 'Category'}</span>
+            <span className="block text-xs font-semibold text-gray-400">{lang === 'cn' ? '类目（可选）' : 'Category (optional)'}</span>
             <select value={timeCategory} onChange={e => setTimeCategory(e.target.value)} className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm">
               <option value="">{lang === 'cn' ? '全部类目' : 'All categories'}</option>
               {categories.map(c => <option key={c.category} value={c.category}>{c.category}</option>)}
             </select>
           </label>
           <label className="space-y-1">
-            <span className="text-xs font-semibold text-gray-400">{lang === 'cn' ? '国家' : 'Country'}</span>
+            <span className="block text-xs font-semibold text-gray-400">{lang === 'cn' ? '国家（可选）' : 'Country (optional)'}</span>
             <select value={timeCountry} onChange={e => setTimeCountry(e.target.value)} className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm">
               <option value="">{lang === 'cn' ? '全部国家' : 'All countries'}</option>
               {countries.map(c => <option key={c.country} value={c.country}>{c.country_name || c.country}</option>)}
             </select>
           </label>
-          <label className="space-y-1">
-            <span className="text-xs font-semibold text-gray-400">{lang === 'cn' ? '对比年份 A' : 'Compare A'}</span>
-            <select value={compareA} onChange={e => setCompareA(e.target.value)} className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm">
-              {timeYears.map(y => <option key={y} value={y}>{y}</option>)}
-            </select>
-          </label>
-          <label className="space-y-1">
-            <span className="text-xs font-semibold text-gray-400">{lang === 'cn' ? '对比年份 B' : 'Compare B'}</span>
-            <select value={compareB} onChange={e => setCompareB(e.target.value)} className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm">
-              {timeYears.map(y => <option key={y} value={y}>{y}</option>)}
-            </select>
-          </label>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-        <StatCard title={lang === 'cn' ? '项目数同比' : 'Projects YoY'} value={yoy(aRow?.total, bRow?.total)} sub={`${compareA} -> ${compareB}`} />
-        <StatCard title={lang === 'cn' ? '融资同比' : 'Pledged YoY'} value={yoy(aRow?.total_pledged_m, bRow?.total_pledged_m)} sub={`${compareA} -> ${compareB}`} accent />
-        <StatCard title={lang === 'cn' ? '支持者同比' : 'Backers YoY'} value={yoy(aRow?.total_backers, bRow?.total_backers)} sub={`${compareA} -> ${compareB}`} />
+      {/* ── Headline comparison ───────────────────────────────────────────── */}
+      <div className="rounded-xl border border-gray-100 bg-white p-5 shadow-sm">
+        <div className="mb-4 flex items-center justify-between">
+          <h3 className="text-sm font-semibold text-gray-700">
+            {lang === 'cn' ? `${dim.label} · ${scopeLabel}对比` : `${dim.label} · ${scopeLabel}`}
+          </h3>
+          <span className={`rounded-full px-3 py-1 text-sm font-bold ${
+            deltaPct == null ? 'bg-gray-100 text-gray-400' : deltaPct >= 0 ? 'bg-ks-green-light text-ks-green-dark' : 'bg-red-50 text-red-600'
+          }`}>
+            {deltaPct != null && deltaPct >= 0 ? '↑' : deltaPct != null ? '↓' : ''} {deltaLabel}
+          </span>
+        </div>
+        <div className="grid grid-cols-2 gap-4">
+          <div className="rounded-xl border border-gray-100 bg-gray-50 p-4">
+            <div className="flex items-center gap-2 text-xs font-semibold text-gray-400">
+              <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: colorA }} />{compareA} · {scopeLabel}
+            </div>
+            <p className="mt-1.5 text-2xl font-black text-gray-700">{dim.fmt(valA)}</p>
+          </div>
+          <div className="rounded-xl border p-4" style={{ borderColor: `${colorB}40`, backgroundColor: `${colorB}0d` }}>
+            <div className="flex items-center gap-2 text-xs font-semibold text-gray-400">
+              <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: colorB }} />{compareB} · {scopeLabel}
+            </div>
+            <p className="mt-1.5 text-2xl font-black" style={{ color: colorB }}>{dim.fmt(valB)}</p>
+          </div>
+        </div>
       </div>
 
+      {/* ── 12-month comparison curve ─────────────────────────────────────── */}
       <LineChart
-        data={timeRows}
-        xKey="year"
+        data={monthlyChart}
+        xKey="month"
         lines={[
-          { key: 'total', name: lang === 'cn' ? '项目数' : 'Projects', color: '#3B82F6' },
-          { key: 'successful', name: lang === 'cn' ? '成功项目' : 'Successful', color: '#05CE78' },
+          { key: compareA, name: compareA, color: colorA },
+          { key: compareB, name: compareB, color: colorB },
         ]}
-        title={lang === 'cn' ? '年度项目数量趋势' : 'Yearly Project Trend'}
-        height={320}
-      />
-      <LineChart
-        data={timeRows}
-        xKey="year"
-        lines={[
-          { key: 'total_pledged_m', name: lang === 'cn' ? '融资额' : 'Pledged', color: '#F59E0B' },
-          { key: 'total_backers', name: lang === 'cn' ? '支持者' : 'Backers', color: '#6366F1' },
-        ]}
-        title={lang === 'cn' ? '年度融资与支持者趋势' : 'Yearly Pledged and Backers'}
-        yFormatter={v => Number(v) > 10000 ? Number(v).toLocaleString() : String(v)}
+        title={lang === 'cn' ? `逐月${dim.label}对比（${compareA} vs ${compareB}）` : `Monthly ${dim.label} (${compareA} vs ${compareB})`}
+        yFormatter={dim.fmt}
         height={320}
       />
     </div>

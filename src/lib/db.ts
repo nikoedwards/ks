@@ -118,6 +118,7 @@ let inflatedGoalsReconciled = false;
 let projectStatesReconciled = false;
 let regressedPledgedReconciled = false;
 let unconvertedPledgedReconciled = false;
+let missingLiveFieldsReconciled = false;
 
 // Static currency→USD rate as a SQL CASE, for in-place repair of amounts that were
 // stored as raw local currency. Mirrors STATIC_USD_RATES in money.ts.
@@ -362,12 +363,62 @@ function reconcileUnconvertedPledged(db: Database) {
   }
 }
 
+/**
+ * One-time-per-process repair of records the Kicktraq active-discovery feed wrote
+ * with missing fields. Kicktraq's listing is low-fidelity: a card may lack a parseable
+ * "Funding … of <goal>" line (→ goal stored as 0) or a "Campaign Dates" line (→ null
+ * deadline/launched_at), and the old ingest also zeroed every non-USD amount. The
+ * symptoms are the "$0 goal / — closing / 进行中" rows in the project list.
+ *
+ * Two-pronged, mirroring reconcileInflatedGoals:
+ *  1) Recover non-USD pledged that was stored as 0 even though a local `pledged`
+ *     exists — convert it with the static FX rate (the go-forward kicktraqActive fix
+ *     prevents new ones).
+ *  2) Authoritative re-fetch: queue every tracked LIVE project still missing a goal
+ *     or deadline so the KS-JSON scraper backfills the real values. goal/deadline can
+ *     only be trusted from Kickstarter itself, so this is what actually heals them.
+ */
+function reconcileMissingLiveFields(db: Database) {
+  if (missingLiveFieldsReconciled) return;
+  missingLiveFieldsReconciled = true;
+  try {
+    const r = fxRateCase('currency');
+    const pledgedRecovered = db.prepare(`
+      UPDATE projects
+      SET usd_pledged = ROUND(pledged * (${r}))
+      WHERE upper(COALESCE(currency, 'USD')) <> 'USD'
+        AND COALESCE(pledged, 0) > 0
+        AND COALESCE(usd_pledged, 0) <= 0
+    `).run().changes;
+
+    const now = Math.floor(Date.now() / 1000);
+    const queued = db.prepare(`
+      UPDATE tracking_settings
+      SET next_fetch = @now
+      WHERE is_tracking = 1
+        AND project_id IN (
+          SELECT id FROM projects
+          WHERE state = 'live'
+            AND (COALESCE(goal, 0) <= 0 OR deadline IS NULL)
+        )
+    `).run({ now }).changes;
+
+    if (pledgedRecovered > 0) invalidateAnalyticsCaches();
+    if (pledgedRecovered > 0 || queued > 0) {
+      console.log(`[db] recovered ${pledgedRecovered} non-USD pledged value(s); queued ${queued} incomplete live project(s) for authoritative re-fetch`);
+    }
+  } catch (e) {
+    console.error('[db] reconcileMissingLiveFields failed:', e);
+  }
+}
+
 function ensureRuntimeMigrations(db: Database) {
   cleanupFutureSnapshots(db);
   reconcileInflatedGoals(db);
   reconcileProjectStates(db);
   reconcileUnconvertedPledged(db);
   reconcileRegressedPledged(db);
+  reconcileMissingLiveFields(db);
   try { db.exec('ALTER TABLE users ADD COLUMN email_verified INTEGER DEFAULT 1'); } catch { /* already exists */ }
   try { db.exec("ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'"); } catch { /* already exists */ }
   try { db.exec('ALTER TABLE projects ADD COLUMN creator_slug TEXT'); } catch { /* already exists */ }
@@ -1384,14 +1435,39 @@ export async function getCountries(filter: { dateFrom?: number; dateTo?: number 
   `).all(params);
 }
 
-export function getTimeAnalysis(filter: { categoryParent?: string; categoryName?: string; country?: string } = {}) {
+export interface TimeAnalysisYearRow {
+  year: string;
+  total: number;
+  successful: number;
+  failed: number;
+  success_rate: number;
+  total_pledged_m: number;
+  total_backers: number;
+}
+
+export interface TimeAnalysisMonthRow {
+  year: string;
+  month: number;
+  total: number;
+  successful: number;
+  success_rate: number;
+  total_pledged_m: number;
+  total_backers: number;
+}
+
+export function getTimeAnalysis(filter: { categoryParent?: string; categoryName?: string; country?: string } = {}): {
+  yearly: TimeAnalysisYearRow[];
+  monthly: TimeAnalysisMonthRow[];
+} {
   const clauses = ['launched_at IS NOT NULL'];
   const params: Record<string, unknown> = {};
   if (filter.categoryParent) { clauses.push('category_parent = @categoryParent'); params.categoryParent = filter.categoryParent; }
   if (filter.categoryName) { clauses.push('category_name = @categoryName'); params.categoryName = filter.categoryName; }
   if (filter.country) { clauses.push('country = @country'); params.country = filter.country; }
   const where = `WHERE ${clauses.join(' AND ')}`;
-  return getDB().prepare(`
+  const db = getDB();
+
+  const yearly = db.prepare(`
     SELECT
       strftime('%Y', datetime(launched_at, 'unixepoch')) as year,
       COUNT(*) as total,
@@ -1405,15 +1481,27 @@ export function getTimeAnalysis(filter: { categoryParent?: string; categoryName?
     ${where}
     GROUP BY year
     ORDER BY year ASC
-  `).all(params) as {
-    year: string;
-    total: number;
-    successful: number;
-    failed: number;
-    success_rate: number;
-    total_pledged_m: number;
-    total_backers: number;
-  }[];
+  `).all(params) as TimeAnalysisYearRow[];
+
+  // Monthly granularity powers the year-over-year month comparison on the
+  // Time Analysis tab (e.g. "2025 March vs 2026 March", or the 12-month curve).
+  const monthly = db.prepare(`
+    SELECT
+      strftime('%Y', datetime(launched_at, 'unixepoch')) as year,
+      CAST(strftime('%m', datetime(launched_at, 'unixepoch')) AS INTEGER) as month,
+      COUNT(*) as total,
+      SUM(CASE WHEN state='successful' THEN 1 ELSE 0 END) as successful,
+      ROUND(AVG(CASE WHEN state IN ('successful','failed')
+        THEN CASE WHEN state='successful' THEN 1.0 ELSE 0.0 END END) * 100, 1) as success_rate,
+      ROUND(SUM(COALESCE(usd_pledged, 0)) / 1000000.0, 2) as total_pledged_m,
+      SUM(COALESCE(backers_count, 0)) as total_backers
+    FROM projects
+    ${where}
+    GROUP BY year, month
+    ORDER BY year ASC, month ASC
+  `).all(params) as TimeAnalysisMonthRow[];
+
+  return { yearly, monthly };
 }
 
 export interface LeaderboardFilter {
