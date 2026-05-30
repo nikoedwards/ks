@@ -480,6 +480,13 @@ async function runLiveSyncOrchestrator(options: LiveSyncOptions = {}): Promise<L
   }
 }
 
+// How long to wait before re-attempting discovery after a block. The old 6h was
+// far too long: a transient Cloudflare challenge (common on a proxy-less
+// datacenter IP) would freeze new-launch discovery for a quarter of a day even
+// once the browser worker recovered, leaving "24h 新上线" stuck at 0. Retry within
+// the hour by default so fresh launches resume as soon as the worker can pass.
+const BLOCK_BACKOFF_SEC = Math.max(300, Number(getOptionalEnv('LIVE_DISCOVERY_BLOCK_BACKOFF_SEC') || 3600));
+
 async function runDirectKickstarterDiscover(options: LiveSyncOptions = {}): Promise<LiveSyncResult> {
   const startedAt = new Date().toISOString();
   const startedAtSec = Math.floor(Date.now() / 1000);
@@ -507,7 +514,7 @@ async function runDirectKickstarterDiscover(options: LiveSyncOptions = {}): Prom
       last_status: 'blocked',
       last_completed_at: Math.floor(Date.now() / 1000),
       blocked_streak: 1,
-      next_attempt_at: Math.floor(Date.now() / 1000) + 6 * 3600,
+      next_attempt_at: Math.floor(Date.now() / 1000) + BLOCK_BACKOFF_SEC,
       message,
     });
     updateSyncState({ status: 'error', message, error: message, completedAt: new Date().toISOString(), progress: 0 });
@@ -570,7 +577,7 @@ async function runDirectKickstarterDiscover(options: LiveSyncOptions = {}): Prom
           status_code: pageData.status,
           message,
         });
-        const nextAttemptAt = Math.floor(Date.now() / 1000) + 6 * 3600;
+        const nextAttemptAt = Math.floor(Date.now() / 1000) + BLOCK_BACKOFF_SEC;
         updateCrawlerState('ks_live', jobType, {
           last_status: 'blocked',
           last_completed_at: Math.floor(Date.now() / 1000),
