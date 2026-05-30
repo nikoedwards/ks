@@ -1862,6 +1862,279 @@ async function fetchWithBrowser(input, tracker = null) {
   }
 }
 
+// ===========================================================================
+// Phase 2b — proven KS first-party rich-data recipe (ported from cf-probe).
+//
+//   POST /project { url }          -> { ok, body: { ...core, rewards[], creator } }
+//   POST /core    { urls: [...] }  -> { ok, results: [{ url, ...stats }] }
+//
+// Both reuse the warm cf_clearance session: after the first clear they are fast
+// (in-page fetch / cached challenge). Rewards come from the RewardsTab GraphQL
+// response the React app fires; creator from the creator tab's rendered DOM.
+// ===========================================================================
+
+const MAX_CORE_URLS = Math.max(1, Math.min(Number(process.env.BROWSER_CORE_MAX_URLS || 60), 200));
+
+function ksProjectPageUrl(rawUrl) {
+  const u = new URL(rawUrl);
+  u.hostname = 'www.kickstarter.com';
+  u.search = '';
+  u.hash = '';
+  if (u.pathname.endsWith('.json')) u.pathname = u.pathname.replace(/\.json$/, '');
+  return u.toString();
+}
+
+function ksCreatorSegment(pageUrl) {
+  return new URL(pageUrl).pathname.match(/^\/projects\/([^/?#]+)\//)?.[1] || null;
+}
+
+// Walk captured GraphQL bodies for the richest rewards.nodes array and map it
+// to a stable reward shape.
+function parseRewardsFromGraphql(bodies) {
+  let best = [];
+  for (const text of bodies) {
+    let data;
+    try { data = JSON.parse(text); } catch { continue; }
+    const seen = new Set();
+    const queue = [data];
+    for (let i = 0; i < queue.length && i < 6000; i++) {
+      const v = queue[i];
+      if (!v || typeof v !== 'object' || seen.has(v)) continue;
+      seen.add(v);
+      if (v.rewards && Array.isArray(v.rewards.nodes) && v.rewards.nodes.length > best.length) {
+        best = v.rewards.nodes;
+      }
+      for (const c of Object.values(v)) if (c && typeof c === 'object') queue.push(c);
+    }
+  }
+  return best.map((n, idx) => {
+    const amount = n?.amount?.amount ?? n?.amount ?? n?.minimum ?? null;
+    const currency = n?.amount?.currency ?? n?.currency ?? null;
+    const items = Array.isArray(n?.items?.nodes)
+      ? n.items.nodes.map((it) => ({ name: it?.name ?? null, quantity: it?.quantity ?? null })).filter((x) => x.name)
+      : [];
+    return {
+      id: String(n?.id ?? `${amount}-${idx}`),
+      title: n?.name ?? n?.title ?? null,
+      description: n?.description ?? null,
+      amount: amount != null ? Number(amount) : null,
+      currency,
+      backers_count: n?.backersCount ?? n?.backers_count ?? null,
+      limit: n?.limit ?? null,
+      remaining: n?.remainingQuantity ?? n?.remaining ?? null,
+      available: typeof n?.available === 'boolean' ? n.available : (n?.limit == null || (n?.remainingQuantity ?? 1) > 0),
+      estimated_delivery: n?.estimatedDeliveryOn ?? null,
+      items,
+    };
+  });
+}
+
+// Wait for the React creator tab to render, then parse name/bio/counts/collabs.
+async function extractCreatorRich(page, creatorSegment) {
+  const deadline = Date.now() + 28000;
+  while (Date.now() < deadline) {
+    const ready = await page
+      .evaluate(() => /\d[\d,]*\s+(created|backed)\s+projects?/i.test(document.body?.innerText || ''))
+      .catch(() => false);
+    if (ready) break;
+    await page.waitForTimeout(1000);
+  }
+  await page.waitForTimeout(800);
+  return page.evaluate((seg) => {
+    const clean = (s) => (s || '').replace(/\s+/g, ' ').trim();
+    const num = (v) => (v == null ? null : Number(String(v).replace(/[^0-9.\-]/g, '')) || null);
+    const body = clean(document.body?.innerText || '');
+    const blurb = clean(document.querySelector('meta[property="og:description"]')?.getAttribute('content') || '');
+    const links = Array.from(document.querySelectorAll('a[href*="/profile/"]'));
+    const nameLink = links.find((a) => {
+      const slug = (a.getAttribute('href') || '').match(/\/profile\/([^/?#]+)/)?.[1];
+      const t = clean(a.textContent);
+      return slug && seg && slug.toLowerCase() === seg.toLowerCase() && t && t.length < 60 && !/project/i.test(t);
+    });
+    const name = nameLink ? clean(nameLink.textContent) : null;
+    const backed = num((body.match(/([\d,]+)\s+backed\s+projects?/i) || [])[1]);
+    const created = num((body.match(/([\d,]+)\s+created\s+projects?/i) || [])[1]);
+    let biography = null;
+    const aboutIdx = body.search(/About the creator/i);
+    if (aboutIdx >= 0 && name) {
+      let after = body.slice(aboutIdx + 'About the creator'.length);
+      after = after.split(/Other projects by this creator|Collaborators?\b|Similar projects|Report this project/i)[0];
+      const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const m = after.match(new RegExp(`${esc}\\s+(?:is|was|founded|has|leads?|are|started|grew)[\\s\\S]*`, 'i'));
+      const sentence = m ? m[0] : null;
+      if (sentence && sentence.length > 40 && sentence !== blurb) biography = clean(sentence).slice(0, 600);
+    }
+    const collaborators = links
+      .map((a) => ({ text: clean(a.textContent), href: a.getAttribute('href') }))
+      .filter((x) => /^Collaborator/i.test(x.text))
+      .map((x) => ({ name: x.text.replace(/^Collaborator/i, '').trim(), slug: (x.href || '').match(/\/profile\/([^/?#]+)/)?.[1] || null }));
+    return { name, biography, launched_count: created, backings_count: backed, collaborators };
+  }, creatorSegment);
+}
+
+// In-page batch fetch of core live stats for many projects from one warm page.
+// Same-origin fetch reuses the browser's TLS fingerprint + cf_clearance, so no
+// per-project navigation is needed.
+async function fetchCoreStatsInPage(page, projectUrls) {
+  return page.evaluate(async (urls) => {
+    const out = [];
+    let idx = 0;
+    async function worker() {
+      while (idx < urls.length) {
+        const u = urls[idx++];
+        const row = { url: u, ok: false };
+        try {
+          const r = await fetch(`${u}/stats.json?v=1`, { headers: { accept: 'application/json' } });
+          if (r.ok) {
+            const j = await r.json();
+            const p = j.project || j;
+            row.state = p.state ?? null;
+            row.backers_count = p.backers_count ?? null;
+            row.pledged = p.pledged ?? null;
+            row.comments_count = p.comments_count ?? null;
+            row.ok = true;
+          }
+          const rf = await fetch(`${u}.json`, { headers: { accept: 'application/json, text/html' } });
+          if (rf.ok) {
+            const html = await rf.text();
+            const mn = (re) => { const x = html.match(re); return x ? Number(x[1].replace(/,/g, '')) : null; };
+            const pledged = mn(/data-pledged="([\d.]+)"/);
+            const percent = mn(/data-percent-raised="([\d.]+)"/);
+            const backers = mn(/data-backers-count="([\d.]+)"/);
+            if (pledged != null) row.pledged = pledged;
+            if (backers != null && row.backers_count == null) row.backers_count = backers;
+            if (percent != null && pledged != null && percent > 0) {
+              const frac = percent > 1 ? percent / 100 : percent;
+              row.goal = Math.round(pledged / frac);
+            }
+            const st = html.match(/data-state="([a-z]+)"/i);
+            if (st) row.state = st[1];
+          }
+        } catch (e) {
+          row.error = String(e).slice(0, 120);
+        }
+        out.push(row);
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(5, urls.length) }, worker));
+    return out;
+  }, projectUrls);
+}
+
+async function fetchKsProject(input) {
+  const targetUrl = normalizeTarget(input.url);
+  const pageUrl = ksProjectPageUrl(targetUrl);
+  const creatorSegment = ksCreatorSegment(pageUrl);
+  const timeoutMs = Math.max(20_000, Math.min(Number(input.timeoutMs || DEFAULT_TIMEOUT), 180_000));
+  const clearBudget = Math.max(20_000, Math.min(timeoutMs - 5_000, 90_000));
+  const startedAt = Date.now();
+  let context = null;
+  try {
+    context = await newBrowserContext(contextOptions({
+      locale: 'en-US',
+      timezoneId: 'America/Los_Angeles',
+      viewport: { width: 1440, height: 1000 },
+      extraHTTPHeaders: { 'Accept-Language': 'en-US,en;q=0.9' },
+    }));
+    const page = await context.newPage();
+    page.setDefaultTimeout(Math.min(timeoutMs, 45_000));
+    page.setDefaultNavigationTimeout(Math.min(timeoutMs, 45_000));
+
+    const gqlBodies = [];
+    page.on('response', async (resp) => {
+      try {
+        if (gqlBodies.length >= 40) return;
+        if (!/graphql/i.test(resp.url())) return;
+        const t = await resp.text();
+        if (/RewardsTab|"rewards"|backersCount/.test(t)) gqlBodies.push(t);
+      } catch { /* ignore */ }
+    });
+
+    if (!(await clearChallengeWithReload(page, pageUrl, clearBudget)).cleared) {
+      return { ok: false, status: 403, error: 'Cloudflare not cleared', elapsedMs: Date.now() - startedAt };
+    }
+
+    const core = (await fetchCoreStatsInPage(page, [pageUrl]).catch(() => []))[0] || {};
+    const meta = await page
+      .evaluate(() => {
+        const g = (p) => document.querySelector(`meta[property="${p}"]`)?.getAttribute('content') || null;
+        return { name: g('og:title'), blurb: g('og:description'), image: g('og:image') };
+      })
+      .catch(() => ({}));
+
+    await clearChallengeWithReload(page, `${pageUrl}/rewards`, clearBudget);
+    const rewardsDeadline = Date.now() + 18000;
+    while (Date.now() < rewardsDeadline && gqlBodies.length === 0) await page.waitForTimeout(1000);
+    await page.waitForTimeout(1500);
+    const rewards = parseRewardsFromGraphql(gqlBodies);
+
+    let creator = { slug: creatorSegment, profileUrl: creatorSegment ? `https://www.kickstarter.com/profile/${creatorSegment}` : null };
+    if ((await clearChallengeWithReload(page, `${pageUrl}/creator`, clearBudget)).cleared) {
+      const c = await extractCreatorRich(page, creatorSegment).catch(() => ({}));
+      creator = { ...creator, ...c };
+    }
+
+    const body = {
+      url: pageUrl,
+      creator_segment: creatorSegment,
+      name: meta.name ?? null,
+      blurb: meta.blurb ?? null,
+      image: meta.image ?? null,
+      state: core.state ?? null,
+      backers_count: core.backers_count ?? null,
+      pledged: core.pledged ?? null,
+      goal: core.goal ?? null,
+      comments_count: core.comments_count ?? null,
+      rewards,
+      creator,
+    };
+    console.log(`[project] ${pageUrl} state=${body.state} backers=${body.backers_count} rewards=${rewards.length} creator=${creator.name ? 'y' : 'n'} ${Date.now() - startedAt}ms`);
+    return { ok: true, status: 200, elapsedMs: Date.now() - startedAt, body };
+  } catch (err) {
+    return { ok: false, status: 0, error: safeError(err).message, elapsedMs: Date.now() - startedAt };
+  } finally {
+    if (context) await saveBrowserStorageState(context).catch(() => {});
+    await context?.close().catch(() => {});
+    await onRequestComplete().catch(() => {});
+  }
+}
+
+async function fetchCoreBatch(input) {
+  const rawUrls = Array.isArray(input.urls) ? input.urls : [];
+  const urls = [...new Set(
+    rawUrls.map((u) => { try { return ksProjectPageUrl(normalizeTarget(u)); } catch { return null; } }).filter(Boolean),
+  )].slice(0, MAX_CORE_URLS);
+  if (!urls.length) return { ok: false, status: 400, error: 'no valid kickstarter project urls' };
+  const timeoutMs = Math.max(20_000, Math.min(Number(input.timeoutMs || DEFAULT_TIMEOUT), 180_000));
+  const clearBudget = Math.max(20_000, Math.min(timeoutMs - 5_000, 90_000));
+  const startedAt = Date.now();
+  let context = null;
+  try {
+    context = await newBrowserContext(contextOptions({
+      locale: 'en-US',
+      timezoneId: 'America/Los_Angeles',
+      viewport: { width: 1440, height: 1000 },
+      extraHTTPHeaders: { 'Accept-Language': 'en-US,en;q=0.9' },
+    }));
+    const page = await context.newPage();
+    page.setDefaultTimeout(Math.min(timeoutMs, 45_000));
+    page.setDefaultNavigationTimeout(Math.min(timeoutMs, 45_000));
+    if (!(await clearChallengeWithReload(page, 'https://www.kickstarter.com/', clearBudget)).cleared) {
+      return { ok: false, status: 403, error: 'Cloudflare not cleared', elapsedMs: Date.now() - startedAt };
+    }
+    const results = await fetchCoreStatsInPage(page, urls);
+    const okCount = results.filter((r) => r.ok).length;
+    console.log(`[core] ${okCount}/${urls.length} ok in ${Date.now() - startedAt}ms`);
+    return { ok: true, status: 200, count: results.length, okCount, elapsedMs: Date.now() - startedAt, results };
+  } catch (err) {
+    return { ok: false, status: 0, error: safeError(err).message, elapsedMs: Date.now() - startedAt };
+  } finally {
+    if (context) await saveBrowserStorageState(context).catch(() => {});
+    await context?.close().catch(() => {});
+    await onRequestComplete().catch(() => {});
+  }
+}
+
 async function probeBrowserConnection() {
   if (!browserPromise) {
     return { initialized: false, connected: null, version: null };
@@ -2120,6 +2393,39 @@ async function handle(req, res) {
         error: safeError(err),
         env: workerEnvSummary(),
       });
+    }
+    return;
+  }
+
+  // Phase 2b endpoints: rich single-project fetch and batch core-stats fetch.
+  // Both reuse the warm session, are auth-gated, and share the /fetch slot.
+  if (req.method === 'POST' && (req.url === '/project' || req.url === '/core')) {
+    if (!assertAuthorized(req)) {
+      send(res, 401, { error: 'Unauthorized' });
+      return;
+    }
+    let payload;
+    try {
+      payload = await readJson(req);
+    } catch (err) {
+      send(res, 400, { ok: false, error: `Invalid JSON body: ${err instanceof Error ? err.message : String(err)}` });
+      return;
+    }
+    try {
+      await acquireFetchSlot();
+    } catch (err) {
+      res.setHeader('Retry-After', '30');
+      const retryable = err && (err.code === 'QUEUE_FULL' || err.code === 'QUEUE_TIMEOUT');
+      send(res, retryable ? 503 : 500, { ok: false, error: err instanceof Error ? err.message : String(err), code: err?.code ?? null });
+      return;
+    }
+    try {
+      const result = req.url === '/project' ? await fetchKsProject(payload) : await fetchCoreBatch(payload);
+      send(res, 200, result);
+    } catch (err) {
+      send(res, 500, { ok: false, error: safeError(err).message });
+    } finally {
+      releaseFetchSlot();
     }
     return;
   }
