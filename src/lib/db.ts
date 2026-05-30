@@ -260,6 +260,70 @@ function ensureRuntimeMigrations(db: Database) {
   if (!admin) db.prepare("UPDATE users SET role = 'admin' WHERE id = (SELECT id FROM users ORDER BY id ASC LIMIT 1)").run();
 }
 
+export type PushSegment = 'favorites' | 'digest' | 'new_users';
+export type PushTemplate = 'favorites_digest' | 'platform_digest' | 'onboarding_guide';
+export type PushFrequency = 'daily' | 'once' | 'always';
+
+export interface PushGuideStep { icon?: string; title: string; desc: string; href?: string }
+
+export interface PushRuleConfig {
+  // shared
+  headerNote?: string;
+  ctaLabel?: string;
+  ctaUrl?: string;
+  // favorites_digest
+  maxItems?: number;
+  showPledgedDelta?: boolean;
+  showBackersDelta?: boolean;
+  showFundedPct?: boolean;
+  showDaysLeft?: boolean;
+  // platform_digest
+  maxMovers?: number;
+  showFastestFunding?: boolean;
+  showFastestBackers?: boolean;
+  showNewlyLaunched?: boolean;
+  showEndingSoon?: boolean;
+  // onboarding_guide
+  newUserWindowDays?: number;
+  intro?: string;
+  steps?: PushGuideStep[];
+}
+
+export const DEFAULT_PUSH_CONFIG: Record<PushSegment, PushRuleConfig> = {
+  favorites: {
+    headerNote: '',
+    ctaLabel: '查看我的收藏',
+    ctaUrl: '/favorites',
+    maxItems: 6,
+    showPledgedDelta: true,
+    showBackersDelta: true,
+    showFundedPct: true,
+    showDaysLeft: true,
+  },
+  digest: {
+    headerNote: '',
+    ctaLabel: '进入实时情报',
+    ctaUrl: '/live-intel',
+    maxMovers: 5,
+    showFastestFunding: true,
+    showFastestBackers: true,
+    showNewlyLaunched: true,
+    showEndingSoon: true,
+  },
+  new_users: {
+    newUserWindowDays: 7,
+    intro: '欢迎来到 Kicksonar！这里是你追踪 Kickstarter 众筹动态的雷达。花一分钟了解几个核心功能：',
+    ctaLabel: '开始探索',
+    ctaUrl: '/live-intel',
+    steps: [
+      { icon: 'radar', title: '实时情报', desc: '查看全站正在升温、即将结束、超额完成的进行中项目。', href: '/live-intel' },
+      { icon: 'heart', title: '收藏项目', desc: '收藏你关注的进行中项目，之后每天自动收到它们的最新变化。', href: '/projects' },
+      { icon: 'chart', title: '数字曲线', desc: '进入任意项目详情页，查看筹款与支持者的历史走势。', href: '/projects' },
+      { icon: 'trophy', title: '排行榜分享', desc: '一键生成榜单分享图，把值得关注的项目发给团队。', href: '/leaderboard' },
+    ],
+  },
+};
+
 function ensureAnnouncementTables(db: Database) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS announcements (
@@ -288,6 +352,39 @@ function ensureAnnouncementTables(db: Database) {
     );
     CREATE INDEX IF NOT EXISTS idx_announcement_events_user ON announcement_events(user_id, announcement_id, event_type, created_at);
   `);
+  ensurePushTables(db);
+}
+
+/**
+ * Auto-generated push system. Instead of admins hand-writing announcements, the
+ * server generates a personalized digest per user from live data. Admins only
+ * toggle/configure one rule per audience segment.
+ */
+function ensurePushTables(db: Database) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS push_rules (
+      segment TEXT PRIMARY KEY,
+      template TEXT NOT NULL,
+      enabled INTEGER DEFAULT 1,
+      frequency TEXT DEFAULT 'daily',
+      config_json TEXT,
+      updated_at INTEGER DEFAULT (unixepoch())
+    );
+    CREATE TABLE IF NOT EXISTS push_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      segment TEXT NOT NULL,
+      user_id INTEGER,
+      event_type TEXT NOT NULL,
+      duration_ms INTEGER DEFAULT 0,
+      created_at INTEGER DEFAULT (unixepoch())
+    );
+    CREATE INDEX IF NOT EXISTS idx_push_events_lookup ON push_events(segment, user_id, event_type, created_at);
+  `);
+  // Seed one rule per segment (idempotent — INSERT OR IGNORE keeps admin edits).
+  const seed = db.prepare(`INSERT OR IGNORE INTO push_rules (segment, template, enabled, frequency, config_json) VALUES (@segment, @template, @enabled, @frequency, @config)`);
+  seed.run({ segment: 'favorites', template: 'favorites_digest', enabled: 1, frequency: 'daily', config: JSON.stringify(DEFAULT_PUSH_CONFIG.favorites) });
+  seed.run({ segment: 'digest', template: 'platform_digest', enabled: 1, frequency: 'daily', config: JSON.stringify(DEFAULT_PUSH_CONFIG.digest) });
+  seed.run({ segment: 'new_users', template: 'onboarding_guide', enabled: 1, frequency: 'once', config: JSON.stringify(DEFAULT_PUSH_CONFIG.new_users) });
 }
 
 function ensureKicktraqDebugTables(db: Database) {
@@ -2216,6 +2313,126 @@ export function recordAnnouncementEvent(input: { announcementId: number; userId?
     eventType: input.eventType,
     durationMs: Math.max(0, Math.floor(input.durationMs ?? 0)),
   });
+}
+
+// ─── Auto-generated push rules ──────────────────────────────────────────────
+
+export interface PushRule {
+  segment: PushSegment;
+  template: PushTemplate;
+  enabled: number;
+  frequency: PushFrequency;
+  config: PushRuleConfig;
+  updated_at?: number;
+  views?: number;
+  clicks?: number;
+  dismissals?: number;
+  avg_duration_ms?: number | null;
+}
+
+function parsePushConfig(segment: PushSegment, raw: unknown): PushRuleConfig {
+  let parsed: Partial<PushRuleConfig> = {};
+  if (typeof raw === 'string' && raw.trim()) {
+    try { parsed = JSON.parse(raw) as Partial<PushRuleConfig>; } catch { /* fall back to defaults */ }
+  }
+  return { ...DEFAULT_PUSH_CONFIG[segment], ...parsed };
+}
+
+export function listPushRules(): PushRule[] {
+  const rows = getDB().prepare(`
+    SELECT r.segment, r.template, r.enabled, r.frequency, r.config_json, r.updated_at,
+      (SELECT COUNT(*) FROM push_events e WHERE e.segment = r.segment AND e.event_type = 'view') as views,
+      (SELECT COUNT(*) FROM push_events e WHERE e.segment = r.segment AND e.event_type = 'click') as clicks,
+      (SELECT COUNT(*) FROM push_events e WHERE e.segment = r.segment AND e.event_type = 'dismiss') as dismissals,
+      (SELECT AVG(duration_ms) FROM push_events e WHERE e.segment = r.segment AND e.event_type IN ('dismiss','click')) as avg_duration_ms
+    FROM push_rules r
+    ORDER BY CASE r.segment WHEN 'favorites' THEN 0 WHEN 'digest' THEN 1 ELSE 2 END
+  `).all() as Array<Record<string, unknown>>;
+  return rows.map(r => ({
+    segment: r.segment as PushSegment,
+    template: r.template as PushTemplate,
+    enabled: Number(r.enabled ?? 0),
+    frequency: (r.frequency as PushFrequency) ?? 'daily',
+    config: parsePushConfig(r.segment as PushSegment, r.config_json),
+    updated_at: Number(r.updated_at ?? 0),
+    views: Number(r.views ?? 0),
+    clicks: Number(r.clicks ?? 0),
+    dismissals: Number(r.dismissals ?? 0),
+    avg_duration_ms: r.avg_duration_ms == null ? null : Number(r.avg_duration_ms),
+  }));
+}
+
+export function getPushRule(segment: PushSegment): PushRule | null {
+  return listPushRules().find(r => r.segment === segment) ?? null;
+}
+
+export function savePushRule(input: { segment: PushSegment; enabled?: number; frequency?: PushFrequency; config?: PushRuleConfig }): void {
+  const existing = getPushRule(input.segment);
+  if (!existing) return;
+  const mergedConfig = { ...existing.config, ...(input.config ?? {}) };
+  getDB().prepare(`
+    UPDATE push_rules
+    SET enabled = @enabled, frequency = @frequency, config_json = @config, updated_at = unixepoch()
+    WHERE segment = @segment
+  `).run({
+    segment: input.segment,
+    enabled: input.enabled == null ? existing.enabled : (input.enabled ? 1 : 0),
+    frequency: input.frequency ?? existing.frequency,
+    config: JSON.stringify(mergedConfig),
+  });
+}
+
+export function recordPushEvent(input: { segment: PushSegment; userId?: number | null; eventType: 'view' | 'dismiss' | 'click'; durationMs?: number }): void {
+  getDB().prepare(`
+    INSERT INTO push_events (segment, user_id, event_type, duration_ms)
+    VALUES (@segment, @userId, @eventType, @durationMs)
+  `).run({
+    segment: input.segment,
+    userId: input.userId ?? null,
+    eventType: input.eventType,
+    durationMs: Math.max(0, Math.floor(input.durationMs ?? 0)),
+  });
+}
+
+/**
+ * Frequency gate: has this user already seen this segment's push within the
+ * window implied by `frequency`? Mirrors the announcement logic.
+ */
+export function hasSeenPush(segment: PushSegment, userId: number | null | undefined, frequency: PushFrequency): boolean {
+  if (frequency === 'always') return false;
+  const todayStart = Math.floor(new Date().setHours(0, 0, 0, 0) / 1000);
+  const row = getDB().prepare(`
+    SELECT 1 FROM push_events
+    WHERE segment = @segment
+      AND user_id ${userId ? '= @userId' : 'IS NULL'}
+      AND event_type IN ('view', 'dismiss')
+      ${frequency === 'daily' ? 'AND created_at >= @todayStart' : ''}
+    LIMIT 1
+  `).get({ segment, userId: userId ?? null, todayStart });
+  return Boolean(row);
+}
+
+export function getUserCreatedAt(userId: number): number | null {
+  const row = getDB().prepare('SELECT created_at FROM users WHERE id = ?').get(userId) as { created_at: number } | undefined;
+  return row ? Number(row.created_at ?? 0) : null;
+}
+
+/**
+ * Live 24h/6h deltas for a specific set of projects (used to build a user's
+ * favorites digest). Reuses the same snapshot CTE as live-intel.
+ */
+export function getLiveDeltasForProjects(projectIds: string[]) {
+  const ids = projectIds.slice(0, 50);
+  if (!ids.length) return [] as Array<Record<string, unknown>>;
+  const { db, baseCte, selectProject, params } = liveIntelBase(ids.length, {});
+  const placeholders = ids.map((_, i) => `@pid${i}`).join(', ');
+  const idParams = Object.fromEntries(ids.map((id, i) => [`pid${i}`, id]));
+  return db.prepare(`
+    ${baseCte}
+    ${selectProject}
+    WHERE id IN (${placeholders})
+    ORDER BY pledged_delta_24h DESC, backers_delta_24h DESC, pledged_usd DESC
+  `).all({ ...params, ...idParams }) as Array<Record<string, unknown>>;
 }
 
 export async function getLastSync() {

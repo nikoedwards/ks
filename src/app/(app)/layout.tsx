@@ -1,5 +1,5 @@
 import Sidebar from '@/components/Sidebar';
-import UpdateAnnouncementModal from '@/components/UpdateAnnouncementModal';
+import PushModal from '@/components/PushModal';
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -8,7 +8,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       <main className="flex-1 overflow-y-auto p-6">
         {children}
       </main>
-      <UpdateAnnouncementModal />
+      <PushModal />
     </div>
   );
 }
