@@ -114,8 +114,57 @@ function cleanupFutureSnapshots(db: Database) {
   } catch { /* table may not exist yet */ }
 }
 
+let inflatedGoalsReconciled = false;
+
+/**
+ * One-time-per-process repair of goals inflated ~100x by the old FX-inference bug
+ * (see src/lib/money.ts: goalUsd used to be goalLocal * (pledgedUsd / pledgedLocal),
+ * and that ratio could balloon to ~100). Two-pronged:
+ *  1) In place: USD projects whose goal is large AND carries junk low digits
+ *     (goal % 100 != 0 — a real round goal never does) are divided by 100, e.g.
+ *     10,000,021 -> 100,000. Genuine round goals (the $100,000,000 joke campaigns,
+ *     all multiples of 100) are left untouched.
+ *  2) Re-fetch: still-suspicious tracked projects (covers non-USD, whose stored goal
+ *     is in local currency and can't be safely divided here) are marked due so the
+ *     fixed scraper overwrites the goal with an authoritative value.
+ */
+function reconcileInflatedGoals(db: Database) {
+  if (inflatedGoalsReconciled) return;
+  inflatedGoalsReconciled = true;
+  try {
+    const corrected = db.prepare(`
+      UPDATE projects
+      SET goal = ROUND(goal / 100.0)
+      WHERE COALESCE(currency, 'USD') = 'USD'
+        AND goal >= 200000
+        AND CAST(goal AS INTEGER) % 100 <> 0
+    `).run().changes;
+
+    const now = Math.floor(Date.now() / 1000);
+    const rescheduled = db.prepare(`
+      UPDATE tracking_settings
+      SET next_fetch = @now
+      WHERE is_tracking = 1
+        AND project_id IN (
+          SELECT id FROM projects
+          WHERE goal >= 200000 AND CAST(goal AS INTEGER) % 100 <> 0
+        )
+    `).run({ now }).changes;
+
+    if (corrected > 0) {
+      invalidateAnalyticsCaches();
+      console.log(`[db] corrected ${corrected} inflated USD goal(s); queued ${rescheduled} project(s) for authoritative re-fetch`);
+    } else if (rescheduled > 0) {
+      console.log(`[db] queued ${rescheduled} project(s) for authoritative goal re-fetch`);
+    }
+  } catch (e) {
+    console.error('[db] reconcileInflatedGoals failed:', e);
+  }
+}
+
 function ensureRuntimeMigrations(db: Database) {
   cleanupFutureSnapshots(db);
+  reconcileInflatedGoals(db);
   try { db.exec('ALTER TABLE users ADD COLUMN email_verified INTEGER DEFAULT 1'); } catch { /* already exists */ }
   try { db.exec("ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'"); } catch { /* already exists */ }
   try { db.exec('ALTER TABLE projects ADD COLUMN creator_slug TEXT'); } catch { /* already exists */ }

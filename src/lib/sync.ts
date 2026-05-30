@@ -13,6 +13,7 @@ import {
   updateSyncLog,
   upsertBatch,
 } from './db';
+import { sanitizeFxRate } from './money';
 import { updateSyncState } from './syncState';
 
 const DATASETS_PAGE = 'https://webrobots.io/kickstarter-datasets/';
@@ -111,9 +112,13 @@ function parseRecord(raw: RawRecord): Record<string, unknown> | null {
   const goal = parseFloat(raw.goal || '0') || 0;
   const pledged = parseFloat(raw.pledged || '0') || 0;
   const currency = raw.currency ?? 'USD';
+  const isUsd = currency.trim().toUpperCase() === 'USD';
   const usd_rate_raw = raw.static_usd_rate?.trim() || '';
-  const usd_rate = usd_rate_raw ? (parseFloat(usd_rate_raw) || 1) : 1;
-  const has_valid_rate = !!usd_rate_raw;
+  // Reject out-of-range static rates (a scale/units artifact) so they can never
+  // inflate goal/pledged; USD always converts 1:1.
+  const saneRate = sanitizeFxRate(usd_rate_raw ? parseFloat(usd_rate_raw) : null);
+  const usd_rate = isUsd ? 1 : (saneRate ?? 1);
+  const has_valid_rate = isUsd || saneRate != null;
   const usd_pledged_csv = parseFloat(raw.usd_pledged || '0') || 0;
   // Only fall back to pledged*rate when the rate is explicitly provided or this is a USD project.
   // Without a valid rate for non-USD projects, storing pledged*1 would save local currency as USD.

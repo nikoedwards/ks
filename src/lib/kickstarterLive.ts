@@ -11,6 +11,7 @@ import {
 } from './db';
 import { updateSyncState } from './syncState';
 import { runKicktraqActiveSync } from './kicktraqActive';
+import { resolveUsdAmounts as resolveUsdAmountsShared } from './money';
 
 const DISCOVER_URL = 'https://www.kickstarter.com/discover/advanced';
 
@@ -88,14 +89,16 @@ function parseNum(v: number | string | undefined): number {
 }
 
 function resolveUsdAmounts(project: KSDiscoverProject): { pledgedUsd: number; goalUsd: number } {
-  const pledgedLocal = parseNum(project.pledged);
-  const goalLocal = parseNum(project.goal);
-  const convertedPledged = parseNum(project.converted_pledged_amount);
-  const convertedGoal = parseNum(project.converted_goal_amount);
-  const explicitUsd = parseNum(project.usd_pledged);
-  const pledgedUsd = convertedPledged > 0 ? convertedPledged : explicitUsd > 0 ? explicitUsd : pledgedLocal;
-  const inferredRate = pledgedLocal > 0 && pledgedUsd > 0 ? pledgedUsd / pledgedLocal : parseNum(project.fx_rate);
-  const goalUsd = convertedGoal > 0 ? convertedGoal : inferredRate > 0 ? goalLocal * inferredRate : goalLocal;
+  const { pledgedUsd, goalUsd } = resolveUsdAmountsShared({
+    pledgedLocal: parseNum(project.pledged),
+    goalLocal: parseNum(project.goal),
+    convertedPledged: parseNum(project.converted_pledged_amount),
+    convertedGoal: parseNum(project.converted_goal_amount),
+    explicitUsdPledged: parseNum(project.usd_pledged),
+    fxRate: parseNum(project.fx_rate),
+    staticUsdRate: parseNum((project as { static_usd_rate?: number | string }).static_usd_rate),
+    currency: project.currency ?? null,
+  });
   return { pledgedUsd, goalUsd };
 }
 

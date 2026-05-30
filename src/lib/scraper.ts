@@ -13,6 +13,7 @@ import {
   type ProjectCollaborator,
   type RewardSnapshot,
 } from './db';
+import { resolveUsdAmounts as resolveUsdAmountsShared } from './money';
 
 export function getOptionalEnv(name: string) {
   const direct = process.env[name]?.trim();
@@ -157,14 +158,17 @@ function firstPositiveNumber(source: Record<string, unknown>, keys: string[]): n
 }
 
 function resolveUsdAmounts(p: KSProject): { pledgedUsd: number; goalUsd: number } {
-  const pledgedLocal = firstPositiveNumber(p, ['pledged', 'pledged_amount', 'pledge_amount', 'amount_pledged']);
-  const goalLocal = firstPositiveNumber(p, ['goal', 'goal_amount', 'funding_goal']);
-  const convertedPledged = firstPositiveNumber(p, ['converted_pledged_amount', 'converted_pledged', 'usd_pledged_amount']);
-  const convertedGoal = firstPositiveNumber(p, ['converted_goal_amount', 'converted_goal']);
-  const explicitUsd = parseNum(p.usd_pledged);
-  const pledgedUsd = convertedPledged > 0 ? convertedPledged : explicitUsd > 0 ? explicitUsd : pledgedLocal;
-  const inferredRate = pledgedLocal > 0 && pledgedUsd > 0 ? pledgedUsd / pledgedLocal : parseNum(p.fx_rate);
-  const goalUsd = convertedGoal > 0 ? convertedGoal : inferredRate > 0 ? goalLocal * inferredRate : goalLocal;
+  const currency = typeof p.currency === 'string' ? p.currency : null;
+  const { pledgedUsd, goalUsd } = resolveUsdAmountsShared({
+    pledgedLocal: firstPositiveNumber(p, ['pledged', 'pledged_amount', 'pledge_amount', 'amount_pledged']),
+    goalLocal: firstPositiveNumber(p, ['goal', 'goal_amount', 'funding_goal']),
+    convertedPledged: firstPositiveNumber(p, ['converted_pledged_amount', 'converted_pledged', 'usd_pledged_amount']),
+    convertedGoal: firstPositiveNumber(p, ['converted_goal_amount', 'converted_goal']),
+    explicitUsdPledged: parseNum(p.usd_pledged),
+    fxRate: parseNum(p.fx_rate),
+    staticUsdRate: firstPositiveNumber(p, ['static_usd_rate', 'usd_exchange_rate']),
+    currency,
+  });
   return { pledgedUsd, goalUsd };
 }
 
