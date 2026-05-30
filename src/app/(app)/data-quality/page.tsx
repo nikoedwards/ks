@@ -164,6 +164,7 @@ interface QualityReport {
     within24h: number;
     beyond24h: number;
     batchSize: number;
+    concurrency?: number;
     cycleSeconds: number;
     upcoming: {
       id: string;
@@ -637,8 +638,8 @@ function TrackingSection({ report, cn }: { report: QualityReport; cn: boolean })
           <p className="text-xs font-semibold text-gray-600">{cn ? '下次抓取排期分布' : 'Next-fetch schedule'}</p>
           <p className="text-[11px] text-gray-400">
             {cn
-              ? `每 ${Math.round(s.cycleSeconds / 60)} 分钟一批 · 每批 ${s.batchSize} 个 ≈ ${fmtNum(perHour)}/小时`
-              : `${s.batchSize}/batch every ${Math.round(s.cycleSeconds / 60)}m ≈ ${fmtNum(perHour)}/h`}
+              ? `每 ${Math.round(s.cycleSeconds / 60)} 分钟一批 · 每批 ${s.batchSize} 个${s.concurrency ? ` · ${s.concurrency} 路并发` : ''} ≈ ${fmtNum(perHour)}/小时`
+              : `${s.batchSize}/batch every ${Math.round(s.cycleSeconds / 60)}m${s.concurrency ? ` · ${s.concurrency}-way parallel` : ''} ≈ ${fmtNum(perHour)}/h`}
           </p>
         </div>
         <div className="flex h-2.5 w-full overflow-hidden rounded-full bg-gray-100">

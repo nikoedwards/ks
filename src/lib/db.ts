@@ -2433,7 +2433,8 @@ function computeDataQualityReport() {
       within6h: Number(scheduleBuckets.within6h ?? 0),
       within24h: Number(scheduleBuckets.within24h ?? 0),
       beyond24h: Number(scheduleBuckets.beyond24h ?? 0),
-      batchSize: Number(process.env.TRACKER_BATCH_SIZE ?? 20),
+      batchSize: Number(process.env.TRACKER_BATCH_SIZE ?? 60),
+      concurrency: Math.max(1, Number(process.env.TRACKER_CONCURRENCY ?? 6)),
       cycleSeconds: 5 * 60,
       upcoming: upcomingFetches.map(r => ({
         id: String(r.id),
