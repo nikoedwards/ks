@@ -2027,7 +2027,6 @@ export const DEFAULT_NAV_ITEMS = [
   'predict',
   'favorites',
   'data-quality',
-  'settings',
   'admin-users',
   'admin-updates',
   'admin-nav',
@@ -2037,7 +2036,6 @@ export type NavKey = typeof DEFAULT_NAV_ITEMS[number];
 
 const ADMIN_ONLY_NAV_ITEMS = new Set<NavKey>([
   'data-quality',
-  'settings',
   'admin-users',
   'admin-updates',
   'admin-nav',
@@ -2063,8 +2061,10 @@ export function ensureDefaultNavSettings() {
     db.prepare(`
       UPDATE nav_settings
       SET user_visible = 0
-      WHERE nav_key IN ('data-quality', 'settings', 'admin-users', 'admin-updates', 'admin-nav')
+      WHERE nav_key IN ('data-quality', 'admin-users', 'admin-updates', 'admin-nav')
     `).run();
+    // Obsolete: the standalone "数据同步" page was merged into data-quality.
+    db.prepare(`DELETE FROM nav_settings WHERE nav_key = 'settings'`).run();
   });
   tx();
 }

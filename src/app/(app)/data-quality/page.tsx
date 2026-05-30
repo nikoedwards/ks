@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { AlertTriangle, CheckCircle2, ChevronLeft, ChevronRight, Database, ExternalLink, HardDrive, Info, PlayCircle, RefreshCw, RadioTower, Search, ShieldCheck, Trash2, UploadCloud, type LucideIcon } from 'lucide-react';
 import { useLanguage } from '@/hooks/useLanguage';
+import DataSourceSync from '@/components/DataSourceSync';
 
 interface SourceHealth {
   source: string;
@@ -1032,6 +1033,8 @@ export default function DataQualityPage() {
       )}
 
       <TrackingSection report={report} cn={cn} />
+
+      <DataSourceSync cn={cn} />
 
       <section className="bg-white border border-gray-100 rounded-lg overflow-hidden">
         <div className="px-5 py-4 border-b border-gray-100">

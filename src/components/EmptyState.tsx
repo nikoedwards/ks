@@ -10,10 +10,10 @@ export default function EmptyState() {
         数据来自 webrobots.io，约 100MB（压缩），解压后约 600MB。
       </p>
       <Link
-        href="/settings"
+        href="/data-quality"
         className="bg-blue-600 text-white px-6 py-2.5 rounded-lg font-medium hover:bg-blue-700 transition-colors"
       >
-        前往数据同步
+        前往数据质量
       </Link>
     </div>
   );

@@ -12,13 +12,12 @@ const LABELS: Record<string, string> = {
   predict: '项目预测',
   favorites: '收藏夹',
   'data-quality': '数据质量',
-  settings: '数据同步',
   'admin-users': '用户看板',
   'admin-updates': '更新推送',
   'admin-nav': '导航配置',
 };
 
-const ADMIN_ONLY_NAV_KEYS = new Set(['data-quality', 'settings', 'admin-users', 'admin-updates', 'admin-nav']);
+const ADMIN_ONLY_NAV_KEYS = new Set(['data-quality', 'admin-users', 'admin-updates', 'admin-nav']);
 
 interface NavItem {
   nav_key: string;
