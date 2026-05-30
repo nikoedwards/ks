@@ -287,9 +287,6 @@ export default function LeaderboardPage() {
   const displayTitle = cn
     ? `${rangeLabel} ${categoryLabel} Kickstarter TOP100 ${titleKind}`
     : `${rangeLabel} ${categoryLabel} Kickstarter Top 100 ${titleKind}`;
-  const dataDate = data?.generatedAt
-    ? new Date(data.generatedAt * 1000).toLocaleString(cn ? 'zh-CN' : 'en-US', { year: 'numeric', month: 'short', day: 'numeric' })
-    : new Date().toLocaleDateString(cn ? 'zh-CN' : 'en-US');
 
   const load = async () => {
     setLoading(true);
@@ -409,7 +406,13 @@ export default function LeaderboardPage() {
     ctx.fill();
 
     const shareCategory = categoryNameForShare(categoryName || categoryParent, isCnShare);
-    const generatedLabel = isCnShare ? `数据时间：${dataDate}` : `Data as of ${dataDate}`;
+    // Format the date in the SHARE language (not the page language), otherwise an
+    // EN image generated while the UI is in Chinese shows a Chinese date.
+    const shareLocale = isCnShare ? 'zh-CN' : 'en-US';
+    const shareDate = data?.generatedAt
+      ? new Date(data.generatedAt * 1000).toLocaleDateString(shareLocale, { year: 'numeric', month: 'short', day: 'numeric' })
+      : new Date().toLocaleDateString(shareLocale);
+    const generatedLabel = isCnShare ? `数据时间：${shareDate}` : `Data as of ${shareDate}`;
 
     // Header lockup on a white rounded chip for clean contrast; logo at native ratio.
     const headerText = 'Kicksonar x';
@@ -523,20 +526,36 @@ export default function LeaderboardPage() {
         ctx.textAlign = 'left';
       }
 
-      // Subtle live marker: a small green dot before the name (no extra footnote).
+      // Live marker: a small labelled pill (dot + 进行中/LIVE) before the name.
+      // Clearer than a bare dot but kept soft (pale fill, no loud color block).
       const nameX = 185;
+      let liveDotPad = 0;
       if (project.state === 'live') {
-        ctx.fillStyle = '#22c55e';
+        const tag = isCnShare ? '进行中' : 'LIVE';
+        ctx.font = '700 15px Arial, sans-serif';
+        const tagW = ctx.measureText(tag).width;
+        const padX = 9, dotR = 3.5, dotGap = 6, pillH = 24;
+        const pillW = padX + dotR * 2 + dotGap + tagW + padX;
+        const pillY = y - 7 - pillH / 2;
+        ctx.fillStyle = '#d4f7e0';
         ctx.beginPath();
-        ctx.arc(nameX + 5, y - 7, 5, 0, Math.PI * 2);
+        ctx.roundRect(nameX, pillY, pillW, pillH, pillH / 2);
         ctx.fill();
+        ctx.fillStyle = '#16a34a';
+        ctx.beginPath();
+        ctx.arc(nameX + padX + dotR, y - 7, dotR, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#0a7a43';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(tag, nameX + padX + dotR * 2 + dotGap, y - 6);
+        ctx.textBaseline = 'alphabetic';
+        liveDotPad = pillW + 12;
       }
-      const liveDotPad = project.state === 'live' ? 20 : 0;
 
       ctx.fillStyle = '#0f2f20';
       ctx.font = '500 22px Arial, sans-serif';
       const translatedName = names[i] || project.name;
-      const maxNameLength = isCnShare ? 22 : 30;
+      const maxNameLength = (isCnShare ? 22 : 30) - (project.state === 'live' ? (isCnShare ? 4 : 5) : 0);
       const name = translatedName.length > maxNameLength ? `${translatedName.slice(0, maxNameLength - 1)}...` : translatedName;
       ctx.fillText(name, nameX + liveDotPad, y);
       ctx.textAlign = 'right';
@@ -549,8 +568,8 @@ export default function LeaderboardPage() {
     ctx.fillStyle = '#0f2f20';
     ctx.font = '700 24px Arial, sans-serif';
     const note = isCnShare
-      ? '注：金额已统一换算为美元，包含全球 Kickstarter 公开项目；绿点为进行中项目。'
-      : 'Note: Amounts normalized to USD for public Kickstarter projects; green dot = live.';
+      ? '注：金额已统一换算为美元，包含全球 Kickstarter 公开项目；带「进行中」标签的项目仍在筹款。'
+      : 'Note: Amounts normalized to USD for public Kickstarter projects; items tagged “LIVE” are still funding.';
     ctx.fillText(note, 64, noteY);
     return canvas.toDataURL('image/png');
   };
