@@ -1894,6 +1894,105 @@ function ksCreatorSegment(pageUrl) {
   return new URL(pageUrl).pathname.match(/^\/projects\/([^/?#]+)\//)?.[1] || null;
 }
 
+function ksProjectSlug(pageUrl) {
+  return new URL(pageUrl).pathname.match(/^\/projects\/[^/?#]+\/([^/?#]+)/)?.[1] || null;
+}
+
+// On-demand GraphQL query (proven sandbox recipe, probe 14): one in-page POST
+// to /graph returns project core stats + rewards (per-tier backers/limits) +
+// creator (name/bio/counts) for any slug — no lazy-load/scroll timing needed.
+const GQL_PROJECT_QUERY = `query($slug: String!) {
+  project(slug: $slug) {
+    id pid name state slug currency
+    backersCount percentFunded deadlineAt launchedAt
+    goal { amount currency }
+    pledged { amount currency }
+    category { name parentCategory { name } }
+    location { displayableName }
+    creator { id name biography backingsCount launchedProjects { totalCount } }
+    rewards {
+      nodes {
+        id name description
+        backersCount limit remainingQuantity available
+        amount { amount currency symbol }
+        estimatedDeliveryOn
+        items { nodes { name quantity } }
+      }
+    }
+  }
+}`;
+
+// Minimal fallback query (exactly probe 14's proven fields) used if the rich
+// query above fails validation (e.g. KS drops/renames an optional field).
+const GQL_PROJECT_QUERY_MIN = `query($slug: String!) {
+  project(slug: $slug) {
+    id pid name state slug currency backersCount percentFunded deadlineAt launchedAt
+    goal { amount currency }
+    pledged { amount currency }
+    creator { id name biography backingsCount launchedProjects { totalCount } }
+    rewards { nodes { id name backersCount limit remainingQuantity available amount { amount currency } estimatedDeliveryOn } }
+  }
+}`;
+
+function mapGqlRewards(nodes) {
+  return (nodes || []).map((n, idx) => {
+    const amount = n?.amount?.amount ?? null;
+    return {
+      id: String(n?.id ?? `${amount}-${idx}`),
+      title: n?.name ?? null,
+      description: n?.description ?? null,
+      amount: amount != null ? Number(amount) : null,
+      currency: n?.amount?.currency ?? null,
+      backers_count: n?.backersCount ?? null,
+      limit: n?.limit ?? null,
+      remaining: n?.remainingQuantity ?? null,
+      available: typeof n?.available === 'boolean' ? n.available : null,
+      estimated_delivery: n?.estimatedDeliveryOn ?? null,
+      items: Array.isArray(n?.items?.nodes)
+        ? n.items.nodes.map((it) => ({ name: it?.name ?? null, quantity: it?.quantity ?? null })).filter((x) => x.name)
+        : [],
+    };
+  });
+}
+
+// POST a GraphQL query from inside the cleared page (correct TLS + cf_clearance
+// + csrf), returning the parsed `project` node or null.
+async function queryProjectGraphql(page, slug) {
+  const csrf = await page
+    .evaluate(() => document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || null)
+    .catch(() => null);
+  const run = (query) =>
+    page.evaluate(
+      async ({ query, slug, csrf }) => {
+        try {
+          const r = await fetch('/graph', {
+            method: 'POST',
+            credentials: 'include',
+            headers: {
+              'Content-Type': 'application/json',
+              Accept: 'application/json',
+              ...(csrf ? { 'X-CSRF-Token': csrf } : {}),
+            },
+            body: JSON.stringify({ query, variables: { slug } }),
+          });
+          return { status: r.status, text: await r.text() };
+        } catch (e) {
+          return { status: 0, text: '', error: String(e) };
+        }
+      },
+      { query, slug, csrf },
+    );
+  for (const query of [GQL_PROJECT_QUERY, GQL_PROJECT_QUERY_MIN]) {
+    const res = await run(query).catch(() => null);
+    if (!res || res.status !== 200) continue;
+    let json;
+    try { json = JSON.parse(res.text); } catch { continue; }
+    const project = json?.data?.project;
+    if (project) return project;
+  }
+  return null;
+}
+
 // Walk captured GraphQL bodies for the richest rewards.nodes array and map it
 // to a stable reward shape.
 function parseRewardsFromGraphql(bodies) {
@@ -2070,22 +2169,13 @@ async function fetchKsProject(input) {
     const page = await context.newPage();
     page.setDefaultTimeout(Math.min(timeoutMs, 45_000));
     page.setDefaultNavigationTimeout(Math.min(timeoutMs, 45_000));
-
-    const gqlBodies = [];
-    page.on('response', async (resp) => {
-      try {
-        if (gqlBodies.length >= 40) return;
-        if (!/graphql/i.test(resp.url())) return;
-        const t = await resp.text();
-        if (/RewardsTab|"rewards"|backersCount/.test(t)) gqlBodies.push(t);
-      } catch { /* ignore */ }
-    });
+    const slug = ksProjectSlug(pageUrl);
 
     if (!(await clearChallengeWithReload(page, pageUrl, clearBudget)).cleared) {
       return { ok: false, status: 403, error: 'Cloudflare not cleared', elapsedMs: Date.now() - startedAt };
     }
 
-    const core = (await fetchCoreStatsInPage(page, [pageUrl]).catch(() => []))[0] || {};
+    // og:meta for blurb/image (not exposed by the GraphQL query below).
     const meta = await page
       .evaluate(() => {
         const g = (p) => document.querySelector(`meta[property="${p}"]`)?.getAttribute('content') || null;
@@ -2093,41 +2183,48 @@ async function fetchKsProject(input) {
       })
       .catch(() => ({}));
 
-    await clearChallengeWithReload(page, `${pageUrl}/rewards`, clearBudget);
-    // The RewardsTab GraphQL query is lazy — it only fires once the rewards
-    // section scrolls into view. Nudge the page and keep scrolling while we
-    // poll, otherwise gqlBodies stays empty (observed: rewards:[]).
-    const rewardsDeadline = Date.now() + 20000;
-    await page.evaluate(() => window.scrollBy(0, 1400)).catch(() => {});
-    while (Date.now() < rewardsDeadline && gqlBodies.length === 0) {
-      await page.evaluate(() => window.scrollBy(0, 1200)).catch(() => {});
-      await page.waitForTimeout(900);
-    }
-    await page.waitForTimeout(1200);
-    const rewards = parseRewardsFromGraphql(gqlBodies);
-    const gqlGoal = parseGoalFromGraphql(gqlBodies);
+    // One in-page GraphQL POST returns core + rewards + creator deterministically.
+    const gql = slug ? await queryProjectGraphql(page, slug).catch(() => null) : null;
 
-    let creator = { slug: creatorSegment, profileUrl: creatorSegment ? `https://www.kickstarter.com/profile/${creatorSegment}` : null };
-    if ((await clearChallengeWithReload(page, `${pageUrl}/creator`, clearBudget)).cleared) {
-      const c = await extractCreatorRich(page, creatorSegment).catch(() => ({}));
-      creator = { ...creator, ...c };
-    }
+    // comments_count isn't in the GraphQL query; grab it (and core fallbacks)
+    // from the same-origin stats.json on the already-cleared page.
+    const core = (await fetchCoreStatsInPage(page, [pageUrl]).catch(() => []))[0] || {};
+
+    const rewards = mapGqlRewards(gql?.rewards?.nodes);
+    const creator = {
+      slug: creatorSegment,
+      profileUrl: creatorSegment ? `https://www.kickstarter.com/profile/${creatorSegment}` : null,
+      name: gql?.creator?.name ?? null,
+      biography: gql?.creator?.biography ?? null,
+      launched_count: gql?.creator?.launchedProjects?.totalCount ?? null,
+      backings_count: gql?.creator?.backingsCount ?? null,
+    };
+
+    const gqlPledged = gql?.pledged?.amount != null ? Number(gql.pledged.amount) : null;
+    const gqlGoal = gql?.goal?.amount != null ? Number(gql.goal.amount) : null;
 
     const body = {
       url: pageUrl,
       creator_segment: creatorSegment,
-      name: meta.name ?? null,
+      name: gql?.name ?? meta.name ?? null,
       blurb: meta.blurb ?? null,
       image: meta.image ?? null,
-      state: core.state ?? null,
-      backers_count: core.backers_count ?? null,
-      pledged: core.pledged ?? null,
-      goal: core.goal ?? gqlGoal ?? null,
+      state: gql?.state ?? core.state ?? null,
+      currency: gql?.currency ?? null,
+      backers_count: gql?.backersCount ?? core.backers_count ?? null,
+      pledged: gqlPledged ?? core.pledged ?? null,
+      goal: gqlGoal ?? core.goal ?? null,
+      percent_funded: gql?.percentFunded ?? null,
+      deadline_at: gql?.deadlineAt ?? null,
+      launched_at: gql?.launchedAt ?? null,
+      category: gql?.category?.name ?? null,
+      parent_category: gql?.category?.parentCategory?.name ?? null,
+      location: gql?.location?.displayableName ?? null,
       comments_count: core.comments_count ?? null,
       rewards,
       creator,
     };
-    console.log(`[project] ${pageUrl} state=${body.state} backers=${body.backers_count} rewards=${rewards.length} creator=${creator.name ? 'y' : 'n'} ${Date.now() - startedAt}ms`);
+    console.log(`[project] ${pageUrl} gql=${gql ? 'y' : 'n'} state=${body.state} backers=${body.backers_count} rewards=${rewards.length} creator=${creator.name ? 'y' : 'n'} ${Date.now() - startedAt}ms`);
     return { ok: true, status: 200, elapsedMs: Date.now() - startedAt, body };
   } catch (err) {
     return { ok: false, status: 0, error: safeError(err).message, elapsedMs: Date.now() - startedAt };
