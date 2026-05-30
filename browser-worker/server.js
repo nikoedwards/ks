@@ -372,6 +372,18 @@ async function newBrowserContext(options) {
 
 async function saveBrowserStorageState(context, diagnostics = null) {
   try {
+    // Only persist a state that actually carries cf_clearance. Saving a
+    // half-baked state (cookies from a failed challenge, no cf_clearance) poisons
+    // every future context: CF sees a stale/mismatched clearance and serves a
+    // hard 403 the challenge JS can't auto-solve. cf-probe never had this because
+    // it always starts fresh. If we don't have clearance yet, drop any stale file.
+    const cookies = await context.cookies('https://www.kickstarter.com').catch(() => []);
+    const hasClearance = cookies.some((c) => c.name === 'cf_clearance');
+    if (!hasClearance) {
+      if (diagnostics) diagnostics.storageStateSaved = false;
+      await fs.promises.unlink(STORAGE_STATE_PATH).catch(() => {});
+      return;
+    }
     await fs.promises.mkdir(path.dirname(STORAGE_STATE_PATH), { recursive: true });
     await context.storageState({ path: STORAGE_STATE_PATH });
     if (diagnostics) diagnostics.storageStateSaved = true;
@@ -1167,26 +1179,33 @@ async function clearChallengeWithReload(page, url, maxMs) {
   const budget = Math.max(15000, Math.min(Number(maxMs) || CHALLENGE_WAIT_MS, 120000));
   const start = Date.now();
   let response = null;
+  let navs = 0;
   while (Date.now() - start < budget) {
+    navs++;
     response = await page
       .goto(url, { waitUntil: 'domcontentloaded', timeout: Math.min(budget, 45000) })
       .catch(() => response);
     const innerDeadline = Math.min(start + budget, Date.now() + 20000);
     while (Date.now() < innerDeadline) {
-      const blocked = await page
+      const probe = await page
         .evaluate((re) => {
-          const t = (document.body?.innerText || '').slice(0, 4000);
-          return new RegExp(re, 'i').test(t);
+          const t = (document.body?.innerText || '');
+          return { blocked: new RegExp(re, 'i').test(t.slice(0, 4000)), len: t.length };
         }, CHALLENGE_TEXT_RE.source)
-        .catch(() => true);
-      if (!blocked && !/__cf_chl/.test(page.url())) {
+        .catch(() => ({ blocked: true, len: 0 }));
+      // Require real content (not a blank transition frame) AND no challenge
+      // markers AND not parked on a __cf_chl URL.
+      if (!probe.blocked && probe.len > 500 && !/__cf_chl/.test(page.url())) {
         await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
+        console.log(`[clearChallenge] cleared after ${navs} nav(s) in ${Date.now() - start}ms, textLen=${probe.len}`);
         return { response, cleared: true };
       }
       await page.waitForTimeout(700);
     }
     await page.waitForTimeout(1000);
   }
+  const finalLen = await page.evaluate(() => (document.body?.innerText || '').length).catch(() => 0);
+  console.log(`[clearChallenge] NOT cleared after ${navs} nav(s)/${Date.now() - start}ms, status=${response?.status?.() ?? 'n/a'}, textLen=${finalLen}, url=${page.url().slice(0, 120)}`);
   return { response, cleared: false };
 }
 
