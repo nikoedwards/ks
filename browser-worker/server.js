@@ -44,6 +44,12 @@ function stealthDiagnostics() {
 const PORT = Number(process.env.PORT || 8080);
 const TOKEN = (process.env.BROWSER_WORKER_TOKEN || '').trim();
 const DEFAULT_TIMEOUT = Number(process.env.BROWSER_FETCH_TIMEOUT_MS || 60000);
+// Rich endpoints (/project, /core) may need a full cold Cloudflare clear
+// (~90-120s on a degraded datacenter IP) before any data work. They must NOT
+// be capped by the lighter DEFAULT_TIMEOUT, or clearBudget gets squeezed below
+// the time the challenge actually needs. Once cf_clearance is primed (via
+// storageState) clears are ~1 nav, so this large budget only bites cold.
+const RICH_FETCH_TIMEOUT_MS = Number(process.env.BROWSER_RICH_FETCH_TIMEOUT_MS || 170000);
 const MAX_BODY_BYTES = Number(process.env.BROWSER_FETCH_MAX_BYTES || 5_000_000);
 const STORAGE_STATE_PATH = process.env.BROWSER_STORAGE_STATE_PATH
   || path.join(os.tmpdir(), 'kicksonar-browser-worker-storage-state.json');
@@ -1636,7 +1642,7 @@ async function fetchWithBrowser(input, tracker = null) {
 
     const navigationUrl = navigationUrlForTarget(targetUrl, expect);
     step('page_goto:start', { navigationUrl });
-    const clearBudget = Math.max(20_000, Math.min(timeoutMs - 5_000, 90_000));
+    const clearBudget = Math.max(20_000, Math.min(timeoutMs - 5_000, 120_000));
     const { response, cleared: challengeCleared } = await clearChallengeWithReload(page, navigationUrl, clearBudget);
     step('clearChallenge:done', { status: response?.status?.() ?? null, finalUrl: page.url(), cleared: challengeCleared });
     if (!response) {
@@ -2025,8 +2031,8 @@ async function fetchKsProject(input) {
   const targetUrl = normalizeTarget(input.url);
   const pageUrl = ksProjectPageUrl(targetUrl);
   const creatorSegment = ksCreatorSegment(pageUrl);
-  const timeoutMs = Math.max(20_000, Math.min(Number(input.timeoutMs || DEFAULT_TIMEOUT), 180_000));
-  const clearBudget = Math.max(20_000, Math.min(timeoutMs - 5_000, 90_000));
+  const timeoutMs = Math.max(20_000, Math.min(Number(input.timeoutMs || RICH_FETCH_TIMEOUT_MS), 180_000));
+  const clearBudget = Math.max(20_000, Math.min(timeoutMs - 5_000, 120_000));
   const startedAt = Date.now();
   let context = null;
   try {
@@ -2105,8 +2111,8 @@ async function fetchCoreBatch(input) {
     rawUrls.map((u) => { try { return ksProjectPageUrl(normalizeTarget(u)); } catch { return null; } }).filter(Boolean),
   )].slice(0, MAX_CORE_URLS);
   if (!urls.length) return { ok: false, status: 400, error: 'no valid kickstarter project urls' };
-  const timeoutMs = Math.max(20_000, Math.min(Number(input.timeoutMs || DEFAULT_TIMEOUT), 180_000));
-  const clearBudget = Math.max(20_000, Math.min(timeoutMs - 5_000, 90_000));
+  const timeoutMs = Math.max(20_000, Math.min(Number(input.timeoutMs || RICH_FETCH_TIMEOUT_MS), 180_000));
+  const clearBudget = Math.max(20_000, Math.min(timeoutMs - 5_000, 120_000));
   const startedAt = Date.now();
   let context = null;
   try {
