@@ -1624,11 +1624,15 @@ export function storeKicktraqDays(projectId: string, days: KicktraqDay[]): Kickt
   let commentsTotal = 0;
   const written: KicktraqWrittenSnapshot[] = [];
 
+  const nowSec = Math.floor(Date.now() / 1000);
   for (const d of validDays) {
     pledgedTotal += d.pledged_usd;
     backersTotal += d.backers;
     commentsTotal += d.comments ?? 0;
     const capturedAt = Math.floor(new Date(d.date + 'T12:00:00Z').getTime() / 1000);
+    // Kicktraq charts can include campaign days that haven't happened yet
+    // (up to the deadline). Never record a "history" point in the future.
+    if (!Number.isFinite(capturedAt) || capturedAt > nowSec) continue;
     insertSnapshot({
       project_id: projectId,
       captured_at: capturedAt,

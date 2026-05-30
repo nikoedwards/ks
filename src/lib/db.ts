@@ -93,7 +93,29 @@ export function prewarmAnalyticsCaches() {
   try { getLeaderboard({ limit: 100 }); } catch { /* ignore */ }
 }
 
+let futureSnapshotsCleaned = false;
+
+/**
+ * One-time-per-process cleanup of snapshots stamped in the future. Older
+ * Kicktraq history imports could write campaign days up to the deadline, which
+ * poison MAX(captured_at)-based "latest snapshot" metrics. Safe: a snapshot can
+ * never legitimately be captured in the future.
+ */
+function cleanupFutureSnapshots(db: Database) {
+  if (futureSnapshotsCleaned) return;
+  futureSnapshotsCleaned = true;
+  try {
+    const now = Math.floor(Date.now() / 1000);
+    const res = db.prepare('DELETE FROM project_snapshots WHERE captured_at > ?').run(now);
+    if (res.changes > 0) {
+      console.log(`[db] cleaned up ${res.changes} future-dated snapshot(s)`);
+    }
+    try { db.prepare('DELETE FROM reward_snapshots WHERE captured_at > ?').run(now); } catch { /* table optional */ }
+  } catch { /* table may not exist yet */ }
+}
+
 function ensureRuntimeMigrations(db: Database) {
+  cleanupFutureSnapshots(db);
   try { db.exec('ALTER TABLE users ADD COLUMN email_verified INTEGER DEFAULT 1'); } catch { /* already exists */ }
   try { db.exec("ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'"); } catch { /* already exists */ }
   try { db.exec('ALTER TABLE projects ADD COLUMN creator_slug TEXT'); } catch { /* already exists */ }
@@ -2219,14 +2241,17 @@ function computeDataQualityReport() {
     FROM projects
   `).get({ dayAgo }) as Record<string, number | null>;
 
+  // Bound by @now everywhere: Kicktraq history imports can carry future-dated
+  // points (campaign days up to the deadline), which must not be treated as the
+  // "latest" real snapshot or count toward freshness.
   const snapshots = db.prepare(`
     SELECT
       COUNT(*) as total_snapshots,
-      SUM(CASE WHEN captured_at >= @dayAgo THEN 1 ELSE 0 END) as snapshots_24h,
+      SUM(CASE WHEN captured_at >= @dayAgo AND captured_at <= @now THEN 1 ELSE 0 END) as snapshots_24h,
       COUNT(DISTINCT project_id) as projects_with_snapshots,
-      MAX(captured_at) as latest_snapshot_at
+      MAX(CASE WHEN captured_at <= @now THEN captured_at END) as latest_snapshot_at
     FROM project_snapshots
-  `).get({ dayAgo }) as Record<string, number | null>;
+  `).get({ dayAgo, now }) as Record<string, number | null>;
 
   const staleLive = db.prepare(`
     SELECT COUNT(*) as c
@@ -2234,11 +2259,12 @@ function computeDataQualityReport() {
     LEFT JOIN (
       SELECT project_id, MAX(captured_at) as last_snapshot_at
       FROM project_snapshots
+      WHERE captured_at <= @now
       GROUP BY project_id
     ) s ON s.project_id = p.id
     WHERE p.state = 'live'
       AND (s.last_snapshot_at IS NULL OR s.last_snapshot_at < @sixHoursAgo)
-  `).get({ sixHoursAgo }) as { c: number };
+  `).get({ sixHoursAgo, now }) as { c: number };
 
   const liveTracking = db.prepare(`
     SELECT
