@@ -1155,6 +1155,41 @@ async function warmupKickstarterSession(page, campaignUrl, diagnostics, pageTime
   return true;
 }
 
+// Proven by the cf-probe experiment: the most reliable way to clear Cloudflare
+// is to re-navigate in a loop and poll the live DOM for challenge markers,
+// rather than waiting on a single navigation's response. CF's managed challenge
+// sometimes serves a 200 interstitial (no `cf-mitigated: challenge` header), so
+// status-gated waiting (waitForChallengeResolution) can return immediately
+// without ever waiting. This loop always polls and reloads until cleared.
+const CHALLENGE_TEXT_RE = /just a moment|cf_chl|enable javascript and cookies|attention required|access denied|verify you are human/i;
+
+async function clearChallengeWithReload(page, url, maxMs) {
+  const budget = Math.max(15000, Math.min(Number(maxMs) || CHALLENGE_WAIT_MS, 120000));
+  const start = Date.now();
+  let response = null;
+  while (Date.now() - start < budget) {
+    response = await page
+      .goto(url, { waitUntil: 'domcontentloaded', timeout: Math.min(budget, 45000) })
+      .catch(() => response);
+    const innerDeadline = Math.min(start + budget, Date.now() + 20000);
+    while (Date.now() < innerDeadline) {
+      const blocked = await page
+        .evaluate((re) => {
+          const t = (document.body?.innerText || '').slice(0, 4000);
+          return new RegExp(re, 'i').test(t);
+        }, CHALLENGE_TEXT_RE.source)
+        .catch(() => true);
+      if (!blocked && !/__cf_chl/.test(page.url())) {
+        await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
+        return { response, cleared: true };
+      }
+      await page.waitForTimeout(700);
+    }
+    await page.waitForTimeout(1000);
+  }
+  return { response, cleared: false };
+}
+
 async function waitForChallengeResolution(page, response, _label) {
   const headers = response?.headers?.() || {};
   const mitigated = String(headers['cf-mitigated'] || '').toLowerCase();
@@ -1582,19 +1617,14 @@ async function fetchWithBrowser(input, tracker = null) {
 
     const navigationUrl = navigationUrlForTarget(targetUrl, expect);
     step('page_goto:start', { navigationUrl });
-    const response = await page.goto(navigationUrl, {
-      waitUntil: 'domcontentloaded',
-      timeout: timeoutMs,
-    });
-    step('page_goto:done', { status: response?.status?.() ?? null, finalUrl: page.url() });
+    const clearBudget = Math.max(20_000, Math.min(timeoutMs - 5_000, 90_000));
+    const { response, cleared: challengeCleared } = await clearChallengeWithReload(page, navigationUrl, clearBudget);
+    step('clearChallenge:done', { status: response?.status?.() ?? null, finalUrl: page.url(), cleared: challengeCleared });
     if (!response) {
       throw new Error('No browser response');
     }
 
     if (pageCrashed) throw new Error(`Page crashed while navigating to ${navigationUrl}`);
-    step('waitForChallengeResolution:start');
-    const challengeCleared = await waitForChallengeResolution(page, response, 'generic_fetch_navigation');
-    step('waitForChallengeResolution:done', { challengeCleared });
     await page.waitForLoadState('networkidle', { timeout: Math.min(timeoutMs, 20_000) }).catch(() => {});
     await saveBrowserStorageState(context).catch(() => {});
     await page.waitForTimeout(Number(input.settleMs || 1200));
@@ -2017,6 +2047,9 @@ async function handle(req, res) {
       ok: true,
       service: 'kicksonar-browser-worker',
       browserConnected,
+      headed: USE_HEADED,
+      headlessMode: HEADLESS_MODE,
+      chromeChannel: CHROME_CHANNEL || null,
       hasProxy: Boolean(getProxyOptions()),
       proxyServer: getProxyOptions()?.server || null,
       storageState: await storageStateInfo(),
