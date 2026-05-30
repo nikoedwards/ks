@@ -1651,11 +1651,12 @@ async function fetchWithBrowser(input, tracker = null) {
     const finalUrl = page.url();
     let text = '';
     if (expect === 'html') {
-      text = await response.text().catch(async () => {
-        if (pageCrashed) return '';
-        return page.content();
-      });
-      if (!text && !pageCrashed) text = await page.content();
+      // After Cloudflare clears via in-page JS, the original navigation response
+      // is still the 403 challenge body — the real content now lives in the DOM.
+      // Prefer the live DOM so callers (and the warm-up check) see real content.
+      const live = pageCrashed ? '' : await page.content().catch(() => '');
+      const raw = await response.text().catch(() => '');
+      text = live && live.length >= raw.length ? live : (raw || live);
     } else {
       if (pageCrashed) throw new Error(`Page crashed before extracting text from ${navigationUrl}`);
       text = await page.evaluate(() => document.body?.innerText || document.documentElement?.textContent || '');
@@ -1792,9 +1793,14 @@ async function fetchWithBrowser(input, tracker = null) {
       };
     }
 
+    // For HTML, the original navigation status is often a stale 403 from the CF
+    // challenge even after it clears. Base success on whether the delivered
+    // content still looks like a challenge, not the initial status code.
+    const htmlBlocked = /just a moment|cf_chl|enable javascript and cookies|attention required/i.test(text);
     return {
-      ok: status >= 200 && status < 400,
+      ok: !htmlBlocked && text.length > 0,
       status,
+      blocked: htmlBlocked,
       contentType,
       finalUrl,
       elapsedMs: Date.now() - startedAt,
