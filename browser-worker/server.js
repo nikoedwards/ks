@@ -2064,16 +2064,21 @@ function parseGoalFromGraphql(bodies) {
 }
 
 // Wait for the React creator tab to render, then parse name/bio/counts/collabs.
-async function extractCreatorRich(page, creatorSegment) {
-  const deadline = Date.now() + 28000;
+async function extractCreatorRich(page, creatorSegment, maxWaitMs = 9000) {
+  // Poll only briefly for the creator stat text to render. We mainly need the
+  // collaborator profile links (which appear fast); the "N created/backed
+  // projects" text is a nice-to-have and never renders on prelaunch/STARTED
+  // pages, so waiting the full budget there is pure waste.
+  const deadline = Date.now() + Math.max(2000, maxWaitMs);
   while (Date.now() < deadline) {
     const ready = await page
-      .evaluate(() => /\d[\d,]*\s+(created|backed)\s+projects?/i.test(document.body?.innerText || ''))
+      .evaluate(() => /\d[\d,]*\s+(created|backed)\s+projects?/i.test(document.body?.innerText || '')
+        || document.querySelectorAll('a[href*="/profile/"]').length > 0)
       .catch(() => false);
     if (ready) break;
-    await page.waitForTimeout(1000);
+    await page.waitForTimeout(700);
   }
-  await page.waitForTimeout(800);
+  await page.waitForTimeout(400);
   return page.evaluate((seg) => {
     const clean = (s) => (s || '').replace(/\s+/g, ' ').trim();
     const num = (v) => (v == null ? null : Number(String(v).replace(/[^0-9.\-]/g, '')) || null);
@@ -2221,7 +2226,7 @@ async function fetchKsProject(input) {
             .evaluate((re) => new RegExp(re, 'i').test((document.body?.innerText || '').slice(0, 4000)), CHALLENGE_TEXT_RE.source)
             .catch(() => true);
           if (!stillBlocked) {
-            creatorRich = await extractCreatorRich(page, creatorSegment).catch(() => null);
+            creatorRich = await extractCreatorRich(page, creatorSegment, 9_000).catch(() => null);
             collaborators = Array.isArray(creatorRich?.collaborators) ? creatorRich.collaborators : [];
           }
         } catch {
