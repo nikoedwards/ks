@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import {
   autoTrackLiveProjects,
   getDueProjects,
@@ -9,6 +10,7 @@ import {
   scheduleFinalFetchForEndedProjects,
   recordCrawlerError,
   recordScrapeFailure,
+  acquireTrackerLock,
   upsertTrackingSettings,
   getCrawlerState,
   pruneOldDiagnostics,
@@ -25,6 +27,10 @@ import { runKickstarterLiveSync } from './kickstarterLive';
 import { runKicktraqActiveSync } from './kicktraqActive';
 
 let started = false;
+
+// Stable per-process identity + TTL for the cross-process single-runner lock.
+const TRACKER_OWNER = `${process.pid}-${randomUUID().slice(0, 8)}`;
+const TRACKER_LOCK_TTL_SEC = Math.max(120, Number(process.env.TRACKER_LOCK_TTL_SEC ?? 600));
 
 let lastLiveSync = 0;
 let lastKicktraqSync = 0;
@@ -88,6 +94,12 @@ async function runCycle() {
   }
   cycleRunning = true;
   try {
+    // Cross-process guard: with multiple replicas / deploy overlap on one shared
+    // SQLite volume, only the lock holder runs a cycle. Everyone else no-ops.
+    if (!acquireTrackerLock(TRACKER_OWNER, TRACKER_LOCK_TTL_SEC)) {
+      console.log('[tracker] another instance holds the tracker lock; skipping this cycle');
+      return;
+    }
     const now = Date.now();
     // Queue a post-deadline final fetch BEFORE scraping, so the due batch this
     // cycle captures the authoritative final numbers for just-ended projects.

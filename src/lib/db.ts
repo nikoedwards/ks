@@ -503,6 +503,11 @@ function ensureRuntimeMigrations(db: Database) {
       message TEXT,
       PRIMARY KEY (source, job_type)
     );
+    CREATE TABLE IF NOT EXISTS tracker_lock (
+      id INTEGER PRIMARY KEY,
+      owner TEXT,
+      heartbeat_at INTEGER
+    );
   `);
   try {
     db.exec(`
@@ -2071,6 +2076,41 @@ export interface CrawlerStateRow {
   blocked_streak: number;
   next_attempt_at: number | null;
   message: string | null;
+}
+
+/**
+ * Single-runner advisory lock for the background tracker. The web app may run
+ * with >1 replica (or a deploy may briefly overlap old + new containers), and
+ * they all share one SQLite volume — two trackers scraping at once doubles the
+ * worker load AND risks SQLite write corruption. Each process calls this at the
+ * start of every cycle; only the lock holder proceeds. The holder refreshes its
+ * heartbeat each cycle; if it dies, another process takes over after the TTL.
+ * Returns true if this owner holds the lock for this cycle.
+ */
+export function acquireTrackerLock(owner: string, ttlSec = 600): boolean {
+  const now = Math.floor(Date.now() / 1000);
+  try {
+    const tx = getDB().transaction(() => {
+      const row = getDB().prepare('SELECT owner, heartbeat_at FROM tracker_lock WHERE id = 1').get() as
+        | { owner: string | null; heartbeat_at: number | null }
+        | undefined;
+      const fresh = row?.heartbeat_at != null && row.heartbeat_at > now - ttlSec;
+      if (!row) {
+        getDB().prepare('INSERT OR IGNORE INTO tracker_lock (id, owner, heartbeat_at) VALUES (1, ?, ?)').run(owner, now);
+        return true;
+      }
+      if (row.owner === owner || !fresh) {
+        getDB().prepare('UPDATE tracker_lock SET owner = ?, heartbeat_at = ? WHERE id = 1').run(owner, now);
+        return true;
+      }
+      return false;
+    });
+    return tx();
+  } catch {
+    // If the lock check fails for any reason, fail open so a single instance
+    // never stops scraping entirely.
+    return true;
+  }
 }
 
 export function getCrawlerState(source: string, jobType: string): CrawlerStateRow | null {
