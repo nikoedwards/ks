@@ -118,7 +118,7 @@ async function runKickstarterFullSync(projectId: string, action: string) {
   if (!jsonUrl) return { payload: { ok: false, action, error: 'No valid Kickstarter URL for this project' }, status: 422 };
 
   const result = await scrapeAndStore(projectId, jsonUrl, {
-    track_rewards: 0,
+    track_rewards: process.env.KS_DIRECT_PRIMARY === '1' ? 1 : 0,
     track_comments: 1,
     track_text_diff: 1,
     manual: true,

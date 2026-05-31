@@ -82,8 +82,11 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
   }
   if (!jsonUrl) return NextResponse.json({ error: 'No valid KS URL for this project' }, { status: 422 });
 
+  // In KS-direct primary mode the worker /project response carries reward tiers,
+  // so persist them on a manual refresh too (otherwise rewards only land via the
+  // scheduled tracker and manual tests look like rewards were missed).
   const result = await scrapeAndStore(id, jsonUrl, {
-    track_rewards: 0,
+    track_rewards: process.env.KS_DIRECT_PRIMARY === '1' ? 1 : 0,
     track_comments: 1,
     track_text_diff: 1,
     manual: true,
