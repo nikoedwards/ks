@@ -1191,6 +1191,14 @@ async function clearChallengeWithReload(page, url, maxMs) {
     response = await page
       .goto(url, { waitUntil: 'domcontentloaded', timeout: Math.min(budget, 45000) })
       .catch(() => response);
+    // Fast-bail on a /login redirect: Kickstarter sends private / draft / removed
+    // / suspended projects to /login?then=..., which is NOT a Cloudflare challenge.
+    // Retrying it for the full 120s budget just burns the single worker lane (seen
+    // as repeated 6-nav/121s failures), so give up immediately.
+    if (/\/login(?:[/?]|$)/i.test(page.url())) {
+      console.log(`[clearChallenge] login redirect (private/removed/suspended), bailing after ${navs} nav(s)/${Date.now() - start}ms, url=${page.url().slice(0, 120)}`);
+      return { response, cleared: false, reason: 'login_redirect' };
+    }
     const innerDeadline = Math.min(start + budget, Date.now() + 20000);
     while (Date.now() < innerDeadline) {
       const probe = await page
