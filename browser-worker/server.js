@@ -2209,18 +2209,21 @@ async function fetchKsProject(input) {
     let collaborators = [];
     const creatorTabUrl = WANT_CREATOR_TAB ? projectSectionUrl(pageUrl, 'creator') : null;
     if (creatorTabUrl) {
+      // Best-effort only: the context already holds cf_clearance from the main
+      // page, so the creator tab is normally a fast same-origin nav. If it still
+      // shows a challenge we SKIP collaborators rather than burning another
+      // 45-120s re-clear — funding/rewards/creator already came from GraphQL.
       const remaining = clearBudget - (Date.now() - startedAt);
-      if (remaining > 9_000) {
+      if (remaining > 12_000) {
         try {
-          await page.goto(creatorTabUrl, { waitUntil: 'domcontentloaded', timeout: Math.min(remaining, 30_000) });
+          await page.goto(creatorTabUrl, { waitUntil: 'domcontentloaded', timeout: Math.min(remaining, 25_000) });
           const stillBlocked = await page
             .evaluate((re) => new RegExp(re, 'i').test((document.body?.innerText || '').slice(0, 4000)), CHALLENGE_TEXT_RE.source)
-            .catch(() => false);
-          if (stillBlocked) {
-            await clearChallengeWithReload(page, creatorTabUrl, Math.min(clearBudget - (Date.now() - startedAt), 45_000));
+            .catch(() => true);
+          if (!stillBlocked) {
+            creatorRich = await extractCreatorRich(page, creatorSegment).catch(() => null);
+            collaborators = Array.isArray(creatorRich?.collaborators) ? creatorRich.collaborators : [];
           }
-          creatorRich = await extractCreatorRich(page, creatorSegment).catch(() => null);
-          collaborators = Array.isArray(creatorRich?.collaborators) ? creatorRich.collaborators : [];
         } catch {
           /* creator tab is best-effort; GraphQL creator still populates the body */
         }

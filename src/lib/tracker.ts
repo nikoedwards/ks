@@ -61,6 +61,9 @@ const KS_CORE_BATCH = Math.max(1, Number(process.env.KS_CORE_BATCH_SIZE ?? 60));
 const KS_CORE_CHUNK = Math.max(1, Math.min(Number(process.env.KS_CORE_CHUNK ?? 40), 60));
 const KS_RICH_BATCH = Math.max(0, Number(process.env.KS_RICH_BATCH_SIZE ?? 12));
 const KS_RICH_INTERVAL_SEC = Math.max(3600, Number(process.env.KS_RICH_INTERVAL_SEC ?? 48 * 3600));
+// Cap how long the (expensive, serial) RICH pass may run per cycle so it never
+// starves the CORE funding pass that follows it. Default 2 min of a 3-min cycle.
+const KS_RICH_CYCLE_BUDGET_MS = Math.max(20_000, Number(process.env.KS_RICH_CYCLE_BUDGET_MS ?? 120_000));
 
 export function initTracker() {
   if (started || typeof window !== 'undefined') return;
@@ -250,8 +253,19 @@ async function scrapeRichDueProjects() {
     const now = Math.floor(Date.now() / 1000);
     const due = getRichDueProjects(KS_RICH_BATCH, now - KS_RICH_INTERVAL_SEC) as DueProject[];
     if (!due.length) return;
+    // Wall-clock budget: each /project can take 70-120s when Cloudflare issues
+    // slow challenges (degraded IP). Without a cap the rich pass would run for
+    // ~16 min and starve the cheap CORE funding pass that follows it in the same
+    // cycle. Stop pulling new rich projects once the budget is spent — leftover
+    // stale projects are simply picked up next cycle.
+    const deadline = Date.now() + KS_RICH_CYCLE_BUDGET_MS;
     console.log(`[tracker] rich pass: ${due.length} project(s) (stale rewards/creator)`);
+    let done = 0;
     for (const d of due) {
+      if (Date.now() >= deadline) {
+        console.log(`[tracker] rich pass: budget spent after ${done}/${due.length}; deferring the rest`);
+        break;
+      }
       try {
         const ok = await scrapeOneDue(d);
         // Stamp on success → next rich in KS_RICH_INTERVAL_SEC. On failure stamp
@@ -265,6 +279,7 @@ async function scrapeRichDueProjects() {
         console.error(`[tracker] rich scrape error for ${d.project_id}:`, e);
         markRewardsSynced(d.project_id, now - KS_RICH_INTERVAL_SEC + 6 * 3600);
       }
+      done++;
     }
   } catch (e) {
     console.error('[tracker] rich pass error:', e);
