@@ -2121,6 +2121,7 @@ async function fetchCoreStatsInPage(page, projectUrls) {
             row.backers_count = p.backers_count ?? null;
             row.pledged = p.pledged ?? null;
             row.goal = p.goal ?? null;
+            row.currency = p.currency ?? null;
             row.comments_count = p.comments_count ?? null;
             row.ok = true;
           }
@@ -2139,6 +2140,10 @@ async function fetchCoreStatsInPage(page, projectUrls) {
             }
             const st = html.match(/data-state="([a-z]+)"/i);
             if (st) row.state = st[1];
+            if (row.currency == null) {
+              const cur = html.match(/data-currency="([A-Z]{3})"/i);
+              if (cur) row.currency = cur[1].toUpperCase();
+            }
           }
         } catch (e) {
           row.error = String(e).slice(0, 120);
