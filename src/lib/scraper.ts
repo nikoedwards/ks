@@ -650,8 +650,20 @@ export async function fetchProjectViaWorker(pageUrl: string, projectId?: string)
       });
       return null;
     }
-    const data = JSON.parse(text) as { ok?: boolean; status?: number; body?: WorkerProjectBody; error?: string };
+    const data = JSON.parse(text) as { ok?: boolean; status?: number; reason?: string; body?: WorkerProjectBody; error?: string };
     if (!data.ok || !data.body) {
+      // A /login redirect means KS took the project down (suspended) or it's no
+      // longer public. Demote it out of the live set so it stops being queued;
+      // KS discovery re-promotes it to 'live' if it ever comes back.
+      if (data.reason === 'login_redirect' && projectId) {
+        updateProjectLiveMetadata(projectId, { state: 'suspended' });
+        recordCrawlerError({
+          source: 'ks_project', job_type: 'worker_project', project_id: projectId, url: pageUrl,
+          status_code: data.status ?? 451,
+          message: 'Project redirects to /login (suspended/unavailable); demoted out of live set.',
+        });
+        return null;
+      }
       recordCrawlerError({
         source: 'ks_project', job_type: 'worker_project', project_id: projectId ?? null, url: pageUrl,
         status_code: data.status ?? res.status,

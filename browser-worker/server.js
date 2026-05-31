@@ -2194,7 +2194,13 @@ async function fetchKsProject(input) {
     page.setDefaultNavigationTimeout(Math.min(timeoutMs, 45_000));
     const slug = ksProjectSlug(pageUrl);
 
-    if (!(await clearChallengeWithReload(page, pageUrl, clearBudget)).cleared) {
+    const clearResult = await clearChallengeWithReload(page, pageUrl, clearBudget);
+    if (!clearResult.cleared) {
+      // Surface a /login redirect so the app can demote (suspend) the project
+      // instead of retrying a permanently-unavailable page every 24h.
+      if (clearResult.reason === 'login_redirect') {
+        return { ok: false, status: 451, reason: 'login_redirect', error: 'project redirects to login (unavailable)', elapsedMs: Date.now() - startedAt };
+      }
       return { ok: false, status: 403, error: 'Cloudflare not cleared', elapsedMs: Date.now() - startedAt };
     }
 
