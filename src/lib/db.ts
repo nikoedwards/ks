@@ -2093,20 +2093,20 @@ export interface CrawlerStateRow {
  * heartbeat each cycle; if it dies, another process takes over after the TTL.
  * Returns true if this owner holds the lock for this cycle.
  */
-export function acquireTrackerLock(owner: string, ttlSec = 600): boolean {
+export function acquireProcessLock(lockId: number, owner: string, ttlSec = 600): boolean {
   const now = Math.floor(Date.now() / 1000);
   try {
     const tx = getDB().transaction(() => {
-      const row = getDB().prepare('SELECT owner, heartbeat_at FROM tracker_lock WHERE id = 1').get() as
+      const row = getDB().prepare('SELECT owner, heartbeat_at FROM tracker_lock WHERE id = ?').get(lockId) as
         | { owner: string | null; heartbeat_at: number | null }
         | undefined;
       const fresh = row?.heartbeat_at != null && row.heartbeat_at > now - ttlSec;
       if (!row) {
-        getDB().prepare('INSERT OR IGNORE INTO tracker_lock (id, owner, heartbeat_at) VALUES (1, ?, ?)').run(owner, now);
+        getDB().prepare('INSERT OR IGNORE INTO tracker_lock (id, owner, heartbeat_at) VALUES (?, ?, ?)').run(lockId, owner, now);
         return true;
       }
       if (row.owner === owner || !fresh) {
-        getDB().prepare('UPDATE tracker_lock SET owner = ?, heartbeat_at = ? WHERE id = 1').run(owner, now);
+        getDB().prepare('UPDATE tracker_lock SET owner = ?, heartbeat_at = ? WHERE id = ?').run(owner, now, lockId);
         return true;
       }
       return false;
@@ -2114,9 +2114,14 @@ export function acquireTrackerLock(owner: string, ttlSec = 600): boolean {
     return tx();
   } catch {
     // If the lock check fails for any reason, fail open so a single instance
-    // never stops scraping entirely.
+    // never stops working entirely.
     return true;
   }
+}
+
+// Lock id 1 = background tracker cycle, id 2 = webrobots dataset import.
+export function acquireTrackerLock(owner: string, ttlSec = 600): boolean {
+  return acquireProcessLock(1, owner, ttlSec);
 }
 
 export function getCrawlerState(source: string, jobType: string): CrawlerStateRow | null {
