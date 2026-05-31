@@ -1881,6 +1881,11 @@ async function fetchWithBrowser(input, tracker = null) {
 
 const MAX_CORE_URLS = Math.max(1, Math.min(Number(process.env.BROWSER_CORE_MAX_URLS || 60), 200));
 
+// Whether /project also visits the creator tab to harvest collaborators (the
+// GraphQL project query doesn't expose them). On by default; set
+// BROWSER_PROJECT_CREATOR_TAB=0 to skip the extra navigation and save worker time.
+const WANT_CREATOR_TAB = process.env.BROWSER_PROJECT_CREATOR_TAB !== '0';
+
 function ksProjectPageUrl(rawUrl) {
   const u = new URL(rawUrl);
   u.hostname = 'www.kickstarter.com';
@@ -2196,13 +2201,39 @@ async function fetchKsProject(input) {
     const core = (await fetchCoreStatsInPage(page, [pageUrl]).catch(() => []))[0] || {};
 
     const rewards = mapGqlRewards(gql?.rewards?.nodes);
+
+    // Collaborators aren't exposed by the GraphQL project query, so parse the
+    // creator tab DOM (reuses the already-cleared warm context). Bounded by the
+    // remaining clear budget so it never blows the rich-fetch timeout.
+    let creatorRich = null;
+    let collaborators = [];
+    const creatorTabUrl = WANT_CREATOR_TAB ? projectSectionUrl(pageUrl, 'creator') : null;
+    if (creatorTabUrl) {
+      const remaining = clearBudget - (Date.now() - startedAt);
+      if (remaining > 9_000) {
+        try {
+          await page.goto(creatorTabUrl, { waitUntil: 'domcontentloaded', timeout: Math.min(remaining, 30_000) });
+          const stillBlocked = await page
+            .evaluate((re) => new RegExp(re, 'i').test((document.body?.innerText || '').slice(0, 4000)), CHALLENGE_TEXT_RE.source)
+            .catch(() => false);
+          if (stillBlocked) {
+            await clearChallengeWithReload(page, creatorTabUrl, Math.min(clearBudget - (Date.now() - startedAt), 45_000));
+          }
+          creatorRich = await extractCreatorRich(page, creatorSegment).catch(() => null);
+          collaborators = Array.isArray(creatorRich?.collaborators) ? creatorRich.collaborators : [];
+        } catch {
+          /* creator tab is best-effort; GraphQL creator still populates the body */
+        }
+      }
+    }
+
     const creator = {
       slug: creatorSegment,
       profileUrl: creatorSegment ? `https://www.kickstarter.com/profile/${creatorSegment}` : null,
-      name: gql?.creator?.name ?? null,
-      biography: gql?.creator?.biography ?? null,
-      launched_count: gql?.creator?.launchedProjects?.totalCount ?? null,
-      backings_count: gql?.creator?.backingsCount ?? null,
+      name: gql?.creator?.name ?? creatorRich?.name ?? null,
+      biography: gql?.creator?.biography ?? creatorRich?.biography ?? null,
+      launched_count: gql?.creator?.launchedProjects?.totalCount ?? creatorRich?.launched_count ?? null,
+      backings_count: gql?.creator?.backingsCount ?? creatorRich?.backings_count ?? null,
     };
 
     const gqlPledged = gql?.pledged?.amount != null ? Number(gql.pledged.amount) : null;
@@ -2228,8 +2259,9 @@ async function fetchKsProject(input) {
       comments_count: core.comments_count ?? null,
       rewards,
       creator,
+      collaborators,
     };
-    console.log(`[project] ${pageUrl} gql=${gql ? 'y' : 'n'} state=${body.state} backers=${body.backers_count} rewards=${rewards.length} creator=${creator.name ? 'y' : 'n'} ${Date.now() - startedAt}ms`);
+    console.log(`[project] ${pageUrl} gql=${gql ? 'y' : 'n'} state=${body.state} backers=${body.backers_count} rewards=${rewards.length} creator=${creator.name ? 'y' : 'n'} collabs=${collaborators.length} ${Date.now() - startedAt}ms`);
     return { ok: true, status: 200, elapsedMs: Date.now() - startedAt, body };
   } catch (err) {
     return { ok: false, status: 0, error: safeError(err).message, elapsedMs: Date.now() - startedAt };

@@ -567,6 +567,7 @@ interface WorkerProjectBody {
     launched_count?: number | null;
     backings_count?: number | null;
   } | null;
+  collaborators?: { name?: string | null; slug?: string | null; role?: string | null }[];
 }
 
 // Map the worker /project body into the KSProject shape so the existing
@@ -594,6 +595,15 @@ function mapWorkerProjectToKS(body: WorkerProjectBody, pageUrl: string): KSProje
         urls: { web: { user: body.creator.profileUrl ?? undefined } },
       }
     : undefined;
+  const collaborators: KSCollaborator[] = Array.isArray(body.collaborators)
+    ? body.collaborators
+        .filter((c) => c && typeof c.name === 'string' && c.name.trim())
+        .map((c) => ({
+          name: c.name!.trim(),
+          slug: c.slug ?? undefined,
+          role: c.role ?? 'Collaborator',
+        }))
+    : [];
   return {
     id: 0,
     name: body.name ?? '',
@@ -609,6 +619,7 @@ function mapWorkerProjectToKS(body: WorkerProjectBody, pageUrl: string): KSProje
     deadline: typeof body.deadline_at === 'number' ? body.deadline_at : undefined,
     rewards,
     creator,
+    collaborators,
     photo: body.image ? { full: body.image } : undefined,
   } as KSProject;
 }
