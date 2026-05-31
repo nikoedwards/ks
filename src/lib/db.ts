@@ -116,6 +116,7 @@ function cleanupFutureSnapshots(db: Database) {
 
 let inflatedGoalsReconciled = false;
 let projectStatesReconciled = false;
+let inflatedPledgedReconciled = false;
 let regressedPledgedReconciled = false;
 let unconvertedPledgedReconciled = false;
 let missingLiveFieldsReconciled = false;
@@ -319,6 +320,60 @@ function reconcileRegressedPledged(db: Database) {
     }
   } catch (e) {
     console.error('[db] reconcileRegressedPledged failed:', e);
+    return;
+  }
+}
+
+/**
+ * One-time-per-process repair of pledged amounts inflated past any real value
+ * (Kickstarter's all-time record is ~$41.7M). A single bad write — e.g. a
+ * "£1.3M" text mis-parsed with a million-multiplier, or a minor-unit/scale
+ * artifact — produced a billion-dollar usd_pledged, and the monotonic MAX guard
+ * in updateProjectLiveMetadata then locked it in so correct re-scrapes could
+ * never lower it (seen as "£1324.2M / 完成率 >1000%" rows). We:
+ *  1) null impossibly-large snapshots so reconcileRegressedPledged can't re-lift
+ *     the row from them,
+ *  2) reset each over-ceiling project row to its best surviving plausible
+ *     snapshot (<= ceiling) or 0, and
+ *  3) queue an authoritative re-fetch so the real number is restored.
+ * The go-forward money.ts ceiling + the MIN() clamp prevent new occurrences.
+ */
+function reconcileInflatedPledged(db: Database) {
+  if (inflatedPledgedReconciled) return;
+  inflatedPledgedReconciled = true;
+  const CEILING = 60_000_000;
+  try {
+    const now = Math.floor(Date.now() / 1000);
+    // 1) Queue re-fetch for the affected projects BEFORE we reset their rows.
+    const queued = db.prepare(`
+      UPDATE tracking_settings SET next_fetch = @now
+      WHERE is_tracking = 1
+        AND project_id IN (SELECT id FROM projects WHERE COALESCE(usd_pledged, 0) > @ceiling)
+    `).run({ now, ceiling: CEILING }).changes;
+
+    // 2) Null impossibly-large snapshots so the regressed-pledged reconcile can't
+    //    re-inflate the row from them.
+    const snapsNulled = db.prepare(
+      'UPDATE project_snapshots SET pledged_usd = NULL WHERE COALESCE(pledged_usd, 0) > @ceiling'
+    ).run({ ceiling: CEILING }).changes;
+
+    // 3) Reset each over-ceiling project row to its best surviving plausible
+    //    snapshot value (<= ceiling), else 0.
+    const projFixed = db.prepare(`
+      UPDATE projects
+      SET usd_pledged = COALESCE((
+        SELECT MAX(ps.pledged_usd) FROM project_snapshots ps
+        WHERE ps.project_id = projects.id AND COALESCE(ps.pledged_usd, 0) <= @ceiling
+      ), 0)
+      WHERE COALESCE(usd_pledged, 0) > @ceiling
+    `).run({ ceiling: CEILING }).changes;
+
+    if (projFixed > 0 || snapsNulled > 0) {
+      invalidateAnalyticsCaches();
+      console.log(`[db] corrected ${projFixed} inflated pledged row(s) + ${snapsNulled} snapshot(s); queued ${queued} for authoritative re-fetch`);
+    }
+  } catch (e) {
+    console.error('[db] reconcileInflatedPledged failed:', e);
   }
 }
 
@@ -426,6 +481,7 @@ function ensureRuntimeMigrations(db: Database) {
   reconcileInflatedGoals(db);
   reconcileProjectStates(db);
   reconcileUnconvertedPledged(db);
+  reconcileInflatedPledged(db);
   reconcileRegressedPledged(db);
   reconcileMissingLiveFields(db);
   try { db.exec('ALTER TABLE users ADD COLUMN email_verified INTEGER DEFAULT 1'); } catch { /* already exists */ }
@@ -2586,7 +2642,7 @@ export function updateProjectLiveMetadata(projectId: string, data: {
       launched_at = COALESCE(@launched_at, launched_at),
       deadline = COALESCE(@deadline, deadline),
       goal = CASE WHEN @goal_usd IS NOT NULL THEN @goal_usd ELSE goal END,
-      usd_pledged = CASE WHEN @pledged_usd IS NOT NULL THEN MAX(COALESCE(usd_pledged, 0), @pledged_usd) ELSE usd_pledged END,
+      usd_pledged = CASE WHEN @pledged_usd IS NOT NULL THEN MIN(60000000, MAX(COALESCE(usd_pledged, 0), @pledged_usd)) ELSE usd_pledged END,
       backers_count = CASE WHEN @backers_count IS NOT NULL THEN MAX(COALESCE(backers_count, 0), @backers_count) ELSE backers_count END,
       creator_name = COALESCE(@creator_name, creator_name),
       creator_slug = COALESCE(@creator_slug, creator_slug),

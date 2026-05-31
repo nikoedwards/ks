@@ -23,6 +23,12 @@
 export const MIN_FX_RATE = 0.0005;
 export const MAX_FX_RATE = 10;
 
+// Hard sanity ceiling for a USD pledged total. Kickstarter's all-time record is
+// ~$41.7M, so any computed pledged above this is a units/scale artifact (e.g. a
+// "£1.3M" text parsed as 1.3M * a million-multiplier, or minor-unit amounts).
+// Treated as invalid so it never gets stored and MAX-locked into the row.
+export const MAX_PLAUSIBLE_PLEDGED_USD = 60_000_000;
+
 // Static currency→USD fallback rates for every currency Kickstarter supports. Used
 // when a payload carries neither an FX rate nor a trustworthy converted-USD figure,
 // so we always apply a real conversion instead of storing the local amount as USD
@@ -101,9 +107,13 @@ export function resolveUsdAmounts(input: UsdAmountInput): UsdAmounts {
   // 2) Pledged in USD: never store the raw local amount. Prefer a supplied USD figure
   //    only when it is plausible for pledgedLocal*rate; otherwise convert ourselves.
   const suppliedUsd = convertedPledged > 0 ? convertedPledged : explicitUsd;
-  const pledgedUsd = isUsd
+  let pledgedUsd = isUsd
     ? (suppliedUsd > 0 ? suppliedUsd : pledgedLocal)
     : reconcileUsdFigure(suppliedUsd, pledgedLocal, rate);
+  // Reject impossibly-large pledged totals (scale/units artifacts). Returning 0
+  // lets the ingest fall back to the project's existing value instead of writing
+  // (and MAX-locking) a bogus billion-dollar figure.
+  if (pledgedUsd > MAX_PLAUSIBLE_PLEDGED_USD) pledgedUsd = 0;
 
   // 3) Goal in USD. converted_goal_amount is occasionally present; trust it only when
   //    it agrees with goalLocal*rate (guards minor-unit/cents payloads that are ~100x off).
