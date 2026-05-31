@@ -799,7 +799,12 @@ export async function scrapeKSJson(
   ) {
     const rich = await fetchProjectViaWorker(pageUrl, projectId);
     if (rich) return rich;
-    // else fall through to the legacy direct/browser/html chain below.
+    // /project failed (often a 503 when the single-lane worker queue is full).
+    // Do NOT fall through to the worker-based /fetch json+html fallbacks — that
+    // turns one failed project into three more worker calls and saturates the
+    // queue. Disable browser fallback so the remainder only tries direct .json
+    // (which doesn't touch the worker) before giving up.
+    options = { ...options, allowBrowserFallback: false };
   }
 
   for (let attempt = 1; attempt <= attempts; attempt++) {

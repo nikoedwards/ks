@@ -41,7 +41,12 @@ const AUTO_TRACK_BATCH_SIZE = Number(process.env.AUTO_TRACK_BATCH_SIZE ?? 250);
 // extra concurrency just queues at the worker. Also drives Kicktraq removal
 // from discovery. Toggle with KS_DIRECT_PRIMARY=1.
 const KS_DIRECT_PRIMARY = process.env.KS_DIRECT_PRIMARY === '1';
-const KS_DIRECT_CONCURRENCY = Math.max(1, Number(process.env.KS_DIRECT_CONCURRENCY ?? 2));
+// The browser worker is single-lane and each /project call takes ~8s, so it can
+// only clear ~20 projects per 3-min cycle. Keep the per-cycle batch small and
+// concurrency at 1 so the tracker never floods the worker queue (which would
+// 503 the discovery + manual refresh requests that share the same lane).
+const KS_DIRECT_CONCURRENCY = Math.max(1, Number(process.env.KS_DIRECT_CONCURRENCY ?? 1));
+const KS_DIRECT_BATCH_SIZE = Math.max(1, Number(process.env.KS_DIRECT_BATCH_SIZE ?? 15));
 
 export function initTracker() {
   if (started || typeof window !== 'undefined') return;
@@ -216,7 +221,8 @@ async function scrapeOneDue(due: DueProject) {
 
 async function scrapeDueProjects() {
   try {
-    const due = getDueProjects(TRACKING_BATCH_SIZE) as DueProject[];
+    const batchSize = KS_DIRECT_PRIMARY ? KS_DIRECT_BATCH_SIZE : TRACKING_BATCH_SIZE;
+    const due = getDueProjects(batchSize) as DueProject[];
     if (!due.length) return;
 
     const concurrency = Math.min(KS_DIRECT_PRIMARY ? KS_DIRECT_CONCURRENCY : TRACKING_CONCURRENCY, due.length);
