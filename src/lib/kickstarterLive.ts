@@ -271,6 +271,13 @@ async function fetchDiscoverViaBrowser(url: string): Promise<BrowserFetchOutcome
   }
   const token = getOptionalEnv('BROWSER_WORKER_TOKEN');
 
+  // Cloudflare blocks the discover format=json API for any non-Chrome TLS
+  // fingerprint, so the legacy /fetch path (context.request.get) always got
+  // re-challenged. Route to the dedicated /discover endpoint, which clears the
+  // HTML page then runs the JSON fetch IN-PAGE (real Chrome fingerprint +
+  // cf_clearance). Derive the base from the configured /fetch URL.
+  const discoverEndpoint = `${proxyUrl.replace(/\/(fetch|project|core|discover)\/?$/i, '')}/discover`;
+
   // The browser worker now passes a 45s Cloudflare challenge per cold-cached
   // page, so the per-request budget needs to be well above that. Default 180s
   // (was 60s) gives the worker headroom for one CF challenge + page render +
@@ -279,7 +286,7 @@ async function fetchDiscoverViaBrowser(url: string): Promise<BrowserFetchOutcome
   const workerTimeoutMs = Math.max(60_000, Math.min(Number(getOptionalEnv('KICKSTARTER_BROWSER_TIMEOUT_MS') || 180_000), 300_000));
   let res: Response;
   try {
-    res = await fetch(proxyUrl, {
+    res = await fetch(discoverEndpoint, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -289,7 +296,7 @@ async function fetchDiscoverViaBrowser(url: string): Promise<BrowserFetchOutcome
       // Explicitly tell the worker how long IT has, so its internal page-goto
       // / challenge-wait can fit inside our outer abort signal (otherwise the
       // worker uses its 60s default and we'd abort before it can recover).
-      body: JSON.stringify({ url, expect: 'json', timeoutMs: workerTimeoutMs - 10_000, settleMs: 1500 }),
+      body: JSON.stringify({ url, timeoutMs: workerTimeoutMs - 10_000 }),
       signal: AbortSignal.timeout(workerTimeoutMs),
       cache: 'no-store',
     });

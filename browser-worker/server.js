@@ -1879,8 +1879,9 @@ async function fetchWithBrowser(input, tracker = null) {
 // ===========================================================================
 // Phase 2b — proven KS first-party rich-data recipe (ported from cf-probe).
 //
-//   POST /project { url }          -> { ok, body: { ...core, rewards[], creator } }
-//   POST /core    { urls: [...] }  -> { ok, results: [{ url, ...stats }] }
+//   POST /project  { url }          -> { ok, body: { ...core, rewards[], creator } }
+//   POST /core     { urls: [...] }  -> { ok, results: [{ url, ...stats }] }
+//   POST /discover { url }          -> { ok, body: { projects[], ... } } (in-page JSON)
 //
 // Both reuse the warm cf_clearance session: after the first clear they are fast
 // (in-page fetch / cached challenge). Rewards come from the RewardsTab GraphQL
@@ -2330,6 +2331,69 @@ async function fetchCoreBatch(input) {
   }
 }
 
+// Discover endpoint: Cloudflare blocks the /discover/advanced?format=json API
+// for any non-Chrome TLS fingerprint (Node fetch, context.request.get), even
+// after the HTML page is cleared. The fix mirrors /project: clear the HTML
+// discover page, then run the format=json fetch INSIDE the page so it carries
+// real Chrome's TLS/HTTP2 fingerprint + the page's cf_clearance cookie.
+async function fetchDiscover(input) {
+  const rawUrl = typeof input.url === 'string' ? input.url : '';
+  let jsonUrl;
+  try {
+    jsonUrl = new URL(rawUrl);
+  } catch {
+    return { ok: false, status: 400, error: 'invalid discover url' };
+  }
+  jsonUrl.searchParams.set('format', 'json');
+  // The HTML variant (no format=json) ships the Cloudflare challenge JS we need
+  // to clear; the JSON variant is a bare document with no challenge to solve.
+  const htmlUrl = new URL(jsonUrl.toString());
+  htmlUrl.searchParams.delete('format');
+  const timeoutMs = Math.max(20_000, Math.min(Number(input.timeoutMs || RICH_FETCH_TIMEOUT_MS), 180_000));
+  const clearBudget = Math.max(20_000, Math.min(timeoutMs - 5_000, 120_000));
+  const startedAt = Date.now();
+  let context = null;
+  try {
+    context = await newBrowserContext(contextOptions({
+      locale: 'en-US',
+      timezoneId: 'America/Los_Angeles',
+      viewport: { width: 1440, height: 1000 },
+      extraHTTPHeaders: { 'Accept-Language': 'en-US,en;q=0.9' },
+    }));
+    const page = await context.newPage();
+    page.setDefaultTimeout(Math.min(timeoutMs, 45_000));
+    page.setDefaultNavigationTimeout(Math.min(timeoutMs, 45_000));
+    if (!(await clearChallengeWithReload(page, htmlUrl.toString(), clearBudget)).cleared) {
+      return { ok: false, status: 403, error: 'Cloudflare not cleared', elapsedMs: Date.now() - startedAt };
+    }
+    const out = await page.evaluate(async (u) => {
+      try {
+        const r = await fetch(u, {
+          headers: { accept: 'application/json, text/plain, */*' },
+          credentials: 'include',
+        });
+        return { status: r.status, text: await r.text() };
+      } catch (e) {
+        return { status: 0, text: '', error: String((e && e.message) || e) };
+      }
+    }, jsonUrl.toString());
+    let bodyJson = null;
+    try { bodyJson = out.text ? JSON.parse(out.text) : null; } catch { /* non-JSON (challenge/html) */ }
+    const projectCount = Array.isArray(bodyJson?.projects) ? bodyJson.projects.length : null;
+    console.log(`[discover] state=${htmlUrl.searchParams.get('state') || 'all'} page=${htmlUrl.searchParams.get('page') || '1'} status=${out.status} projects=${projectCount ?? '?'} ${Date.now() - startedAt}ms`);
+    if (out.status !== 200 || !bodyJson) {
+      return { ok: false, status: out.status || 502, error: out.error || 'discover fetch failed', preview: (out.text || '').slice(0, 300), elapsedMs: Date.now() - startedAt };
+    }
+    return { ok: true, status: 200, body: bodyJson, elapsedMs: Date.now() - startedAt };
+  } catch (err) {
+    return { ok: false, status: 0, error: safeError(err).message, elapsedMs: Date.now() - startedAt };
+  } finally {
+    if (context) await saveBrowserStorageState(context).catch(() => {});
+    await context?.close().catch(() => {});
+    await onRequestComplete().catch(() => {});
+  }
+}
+
 async function probeBrowserConnection() {
   if (!browserPromise) {
     return { initialized: false, connected: null, version: null };
@@ -2594,7 +2658,7 @@ async function handle(req, res) {
 
   // Phase 2b endpoints: rich single-project fetch and batch core-stats fetch.
   // Both reuse the warm session, are auth-gated, and share the /fetch slot.
-  if (req.method === 'POST' && (req.url === '/project' || req.url === '/core')) {
+  if (req.method === 'POST' && (req.url === '/project' || req.url === '/core' || req.url === '/discover')) {
     if (!assertAuthorized(req)) {
       send(res, 401, { error: 'Unauthorized' });
       return;
@@ -2615,7 +2679,11 @@ async function handle(req, res) {
       return;
     }
     try {
-      const result = req.url === '/project' ? await fetchKsProject(payload) : await fetchCoreBatch(payload);
+      const result = req.url === '/project'
+        ? await fetchKsProject(payload)
+        : req.url === '/discover'
+          ? await fetchDiscover(payload)
+          : await fetchCoreBatch(payload);
       send(res, 200, result);
     } catch (err) {
       send(res, 500, { ok: false, error: safeError(err).message });
