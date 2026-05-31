@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
   ArrowLeft, ExternalLink, TrendingUp, Calendar, Award, Heart,
-  Activity, FileText, Layers, RefreshCw, Radio,
+  Activity, FileText, Layers, RefreshCw, Radio, Gift, Users,
 } from 'lucide-react';
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -345,7 +345,9 @@ export default function ProjectDetailPage() {
   const TABS = [
     { id: 'overview' as TabId, label: tr.tabOverview, icon: Activity },
     { id: 'curve' as TabId, label: tr.tabCurve, icon: TrendingUp },
+    { id: 'rewards' as TabId, label: tr.tabRewards, icon: Gift },
     { id: 'changes' as TabId, label: tr.tabChanges, icon: FileText },
+    { id: 'collaborators' as TabId, label: tr.tabCollaborators, icon: Users },
     { id: 'similar' as TabId, label: tr.tabSimilar, icon: Layers },
   ];
 
