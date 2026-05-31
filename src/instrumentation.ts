@@ -2,7 +2,7 @@ import cron from 'node-cron';
 import { randomUUID } from 'crypto';
 import { runSync, getLatestDatasetUrl } from './lib/sync';
 import { getSyncState } from './lib/syncState';
-import { getLastSync, prewarmAnalyticsCaches, acquireProcessLock } from './lib/db';
+import { isDatasetImported, prewarmAnalyticsCaches, acquireProcessLock } from './lib/db';
 import { initTracker } from './lib/tracker';
 
 // Per-process identity for the cross-process webrobots-import lock (id 2). The
@@ -14,9 +14,8 @@ const SYNC_OWNER = `${process.pid}-${randomUUID().slice(0, 8)}`;
 const SYNC_LOCK_TTL_SEC = 45 * 60;
 
 async function checkWebrobotsDataset(reason: string) {
-  const lastSync = await getLastSync() as { url?: string; status?: string } | null;
   const latestUrl = await getLatestDatasetUrl();
-  const alreadySynced = lastSync?.status === 'completed' && lastSync?.url === latestUrl;
+  const alreadySynced = await isDatasetImported(latestUrl);
 
   if (alreadySynced) {
     console.log(`[Kicksonar] webrobots dataset is up to date during ${reason}, skipping sync.`);

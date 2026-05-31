@@ -3092,6 +3092,18 @@ export async function getLastSync() {
   return getDB().prepare(`SELECT * FROM sync_logs ORDER BY id DESC LIMIT 1`).get() ?? null;
 }
 
+// Has this exact webrobots dataset URL already been imported to completion?
+// Used to gate the startup/daily re-import. We must match on url (not "last
+// sync row") because sync_logs is shared with the ks_live + kicktraq discovery
+// jobs that write a row every cycle — using the latest row made the webrobots
+// dedup always miss and re-import the full ~270k dataset on every restart.
+export async function isDatasetImported(url: string): Promise<boolean> {
+  const row = getDB()
+    .prepare(`SELECT 1 AS ok FROM sync_logs WHERE status = 'completed' AND url = @url LIMIT 1`)
+    .get({ url }) as { ok: number } | undefined;
+  return Boolean(row?.ok);
+}
+
 export async function getSyncHistory() {
   return getDB().prepare(`SELECT * FROM sync_logs ORDER BY id DESC LIMIT 10`).all();
 }
