@@ -8,6 +8,7 @@ import {
   insertTextIfChanged,
   insertComment,
   markFetched,
+  recordScrapeFailure,
   recordCrawlerError,
   updateProjectLiveMetadata,
   type ProjectCollaborator,
@@ -664,6 +665,7 @@ export interface WorkerCoreResult {
   backers_count?: number | null;
   pledged?: number | null;
   goal?: number | null;
+  currency?: string | null;
   comments_count?: number | null;
   error?: string;
 }
@@ -709,6 +711,83 @@ export async function fetchCoreBatchViaWorker(pageUrls: string[]): Promise<Worke
     });
     return [];
   }
+}
+
+/**
+ * Persist a single /core batch result for a project. This is the cheap,
+ * high-frequency funding refresh: it updates pledged/backers/state and writes a
+ * snapshot, but does NOT touch rewards/creator (those come from the rich
+ * /project pass). Returns true on success, false (and records a failure) on a
+ * not-ok result so the tracker can back off.
+ */
+export async function storeWorkerCoreResult(projectId: string, result: WorkerCoreResult): Promise<boolean> {
+  if (!result || !result.ok) {
+    recordScrapeFailure(projectId);
+    return false;
+  }
+  const now = Math.floor(Date.now() / 1000);
+  const existing = await getProjectById(projectId) as {
+    state?: string | null;
+    deadline?: number | null;
+    goal?: number | null;
+    currency?: string | null;
+    usd_pledged?: number;
+    backers_count?: number;
+  } | null;
+
+  const currency = result.currency ?? existing?.currency ?? null;
+  const pledgedLocal = Number(result.pledged ?? 0);
+  const goalLocal = Number(result.goal ?? 0);
+  const { pledgedUsd, goalUsd } = resolveUsdAmountsShared({
+    pledgedLocal: pledgedLocal > 0 ? pledgedLocal : 0,
+    goalLocal: goalLocal > 0 ? goalLocal : 0,
+    currency,
+  });
+
+  const deadline = existing?.deadline ?? null;
+  const projectState = resolveProjectState({
+    raw: result.state ?? existing?.state,
+    deadline,
+    goal: goalUsd,
+    pledged: pledgedUsd,
+    now,
+  });
+
+  const latestSnapshot = getSnapshots(projectId).at(-1);
+  const baselinePledged = Math.max(Number(existing?.usd_pledged ?? 0), Number(latestSnapshot?.pledged_usd ?? 0));
+  const baselineBackers = Math.max(Number(existing?.backers_count ?? 0), Number(latestSnapshot?.backers_count ?? 0));
+  const fetchedBackers = Number(result.backers_count ?? 0);
+  const safePledgedUsd = pledgedUsd > 0 ? pledgedUsd : baselinePledged;
+  const safeBackers = fetchedBackers > 0 ? fetchedBackers : baselineBackers;
+
+  // Guard against a degraded scrape that returns zeros for a project that
+  // already has funding/backers — don't overwrite good data with nothing.
+  if (pledgedUsd <= 0 && fetchedBackers <= 0 && (baselinePledged > 0 || baselineBackers > 0)) {
+    recordScrapeFailure(projectId);
+    return false;
+  }
+
+  insertSnapshot({
+    project_id: projectId,
+    captured_at: now,
+    pledged_usd: safePledgedUsd,
+    backers_count: safeBackers,
+    days_to_go: daysToGo(deadline ?? undefined),
+    comments_count: result.comments_count ?? 0,
+    updates_count: 0,
+    state: projectState,
+    source: 'ks',
+  });
+
+  updateProjectLiveMetadata(projectId, {
+    state: projectState,
+    goal_usd: goalUsd > 0 ? goalUsd : existing?.goal ?? null,
+    pledged_usd: safePledgedUsd > 0 ? safePledgedUsd : null,
+    backers_count: safeBackers > 0 ? safeBackers : null,
+  });
+
+  markFetched(projectId);
+  return true;
 }
 
 async function fetchHtmlViaBrowserProxy(url: string, projectId?: string): Promise<string | null> {

@@ -1,6 +1,8 @@
 import {
   autoTrackLiveProjects,
   getDueProjects,
+  getRichDueProjects,
+  markRewardsSynced,
   getProjectById,
   getRecentCrawlerErrors,
   markEndedLiveProjects,
@@ -11,7 +13,14 @@ import {
   getCrawlerState,
   pruneOldDiagnostics,
 } from './db';
-import { buildKSJsonUrl, scrapeAndStore, extractCreatorSlug, extractProjectSlug } from './scraper';
+import {
+  buildKSJsonUrl,
+  scrapeAndStore,
+  extractCreatorSlug,
+  extractProjectSlug,
+  fetchCoreBatchViaWorker,
+  storeWorkerCoreResult,
+} from './scraper';
 import { runKickstarterLiveSync } from './kickstarterLive';
 import { runKicktraqActiveSync } from './kicktraqActive';
 
@@ -37,16 +46,21 @@ const TRACKING_CONCURRENCY = Math.max(1, Number(process.env.TRACKER_CONCURRENCY 
 const AUTO_TRACK_BATCH_SIZE = Number(process.env.AUTO_TRACK_BATCH_SIZE ?? 250);
 
 // KS-direct primary: per-project refresh goes through the single-lane browser
-// worker /project endpoint (rich: rewards + creator), so cap concurrency low —
-// extra concurrency just queues at the worker. Also drives Kicktraq removal
-// from discovery. Toggle with KS_DIRECT_PRIMARY=1.
+// worker (rich: rewards + creator). Also drives Kicktraq removal from
+// discovery. Toggle with KS_DIRECT_PRIMARY=1.
 const KS_DIRECT_PRIMARY = process.env.KS_DIRECT_PRIMARY === '1';
-// The browser worker is single-lane and each /project call takes ~8s, so it can
-// only clear ~20 projects per 3-min cycle. Keep the per-cycle batch small and
-// concurrency at 1 so the tracker never floods the worker queue (which would
-// 503 the discovery + manual refresh requests that share the same lane).
-const KS_DIRECT_CONCURRENCY = Math.max(1, Number(process.env.KS_DIRECT_CONCURRENCY ?? 1));
-const KS_DIRECT_BATCH_SIZE = Math.max(1, Number(process.env.KS_DIRECT_BATCH_SIZE ?? 15));
+
+// Tiered KS-direct cadence (capacity for ~10k live projects on a single-lane
+// worker):
+//   - CORE pass (cheap, every cycle): one warm session batch-fetches stats.json
+//     for many due projects via the worker /core endpoint, refreshing funding.
+//   - RICH pass (expensive, low-freq): a small batch of projects whose rewards/
+//     creator data is stale go through /project (one clear + GraphQL each).
+// All env-overridable so production can tune throughput vs. worker load.
+const KS_CORE_BATCH = Math.max(1, Number(process.env.KS_CORE_BATCH_SIZE ?? 60));
+const KS_CORE_CHUNK = Math.max(1, Math.min(Number(process.env.KS_CORE_CHUNK ?? 40), 60));
+const KS_RICH_BATCH = Math.max(0, Number(process.env.KS_RICH_BATCH_SIZE ?? 12));
+const KS_RICH_INTERVAL_SEC = Math.max(3600, Number(process.env.KS_RICH_INTERVAL_SEC ?? 48 * 3600));
 
 export function initTracker() {
   if (started || typeof window !== 'undefined') return;
@@ -174,10 +188,10 @@ async function enrollLiveProjects(now: number) {
 
 type DueProject = { project_id: string; track_comments: number; track_text_diff: number; consecutive_failures: number };
 
-async function scrapeOneDue(due: DueProject) {
+async function scrapeOneDue(due: DueProject): Promise<boolean> {
   const { project_id, track_comments, track_text_diff } = due;
   const project = await getProjectById(project_id) as { source_url?: string; creator_slug?: string; slug?: string } | null;
-  if (!project) return;
+  if (!project) return false;
 
   const jsonUrl = buildProjectJsonUrl(project);
   if (!jsonUrl) {
@@ -190,7 +204,7 @@ async function scrapeOneDue(due: DueProject) {
       message: 'Cannot build Kickstarter JSON URL for project.',
     });
     upsertTrackingSettings({ project_id, next_fetch: Math.floor(Date.now() / 1000) + 24 * 3600 });
-    return;
+    return false;
   }
 
   // In KS-direct primary mode the worker /project response carries reward tiers,
@@ -217,16 +231,125 @@ async function scrapeOneDue(due: DueProject) {
     });
   }
   // On success, the scrape pipeline already wrote next_fetch + reset consecutive_failures.
+  return result.ok;
+}
+
+function ksPathKey(url: string): string {
+  try {
+    return new URL(url).pathname.replace(/\.json$/, '').replace(/\/$/, '').toLowerCase();
+  } catch {
+    return url;
+  }
+}
+
+// RICH pass: refresh rewards/creator for a small batch of projects whose rich
+// data is stale, via the worker /project endpoint (serial — single worker lane).
+async function scrapeRichDueProjects() {
+  if (KS_RICH_BATCH <= 0) return;
+  try {
+    const now = Math.floor(Date.now() / 1000);
+    const due = getRichDueProjects(KS_RICH_BATCH, now - KS_RICH_INTERVAL_SEC) as DueProject[];
+    if (!due.length) return;
+    console.log(`[tracker] rich pass: ${due.length} project(s) (stale rewards/creator)`);
+    for (const d of due) {
+      try {
+        const ok = await scrapeOneDue(d);
+        // Stamp on success → next rich in KS_RICH_INTERVAL_SEC. On failure stamp
+        // a near-past time so it retries rich in ~6h instead of blocking the
+        // NULLS-first queue every cycle (core keeps funding fresh meanwhile).
+        markRewardsSynced(
+          d.project_id,
+          ok ? now : now - KS_RICH_INTERVAL_SEC + 6 * 3600,
+        );
+      } catch (e) {
+        console.error(`[tracker] rich scrape error for ${d.project_id}:`, e);
+        markRewardsSynced(d.project_id, now - KS_RICH_INTERVAL_SEC + 6 * 3600);
+      }
+    }
+  } catch (e) {
+    console.error('[tracker] rich pass error:', e);
+    recordCrawlerError({
+      source: 'tracker',
+      job_type: 'scrape_rich_due',
+      message: e instanceof Error ? e.message : String(e),
+    });
+  }
+}
+
+// CORE pass: cheap high-frequency funding refresh for due projects via the
+// worker /core batch endpoint (one warm session, no per-project navigation).
+async function scrapeCoreDueProjects() {
+  try {
+    const due = getDueProjects(KS_CORE_BATCH) as DueProject[];
+    if (!due.length) return;
+
+    const sent: { projectId: string; pageUrl: string }[] = [];
+    for (const d of due) {
+      const project = await getProjectById(d.project_id) as { source_url?: string; creator_slug?: string; slug?: string } | null;
+      if (!project) continue;
+      const jsonUrl = buildProjectJsonUrl(project);
+      if (!jsonUrl) {
+        upsertTrackingSettings({ project_id: d.project_id, next_fetch: Math.floor(Date.now() / 1000) + 24 * 3600 });
+        continue;
+      }
+      sent.push({ projectId: d.project_id, pageUrl: jsonUrl.replace(/\.json(?:[?#].*)?$/, '') });
+    }
+    if (!sent.length) return;
+
+    const keyToId = new Map(sent.map((s) => [ksPathKey(s.pageUrl), s.projectId]));
+    console.log(`[tracker] core pass: ${sent.length} project(s) via /core`);
+
+    for (let i = 0; i < sent.length; i += KS_CORE_CHUNK) {
+      const chunk = sent.slice(i, i + KS_CORE_CHUNK);
+      const handled = new Set<string>();
+      try {
+        const results = await fetchCoreBatchViaWorker(chunk.map((c) => c.pageUrl));
+        for (const r of results) {
+          const id = keyToId.get(ksPathKey(r.url));
+          if (!id) continue;
+          handled.add(id);
+          try {
+            await storeWorkerCoreResult(id, r);
+          } catch (e) {
+            console.error(`[tracker] core store error for ${id}:`, e);
+            recordScrapeFailure(id);
+          }
+        }
+      } catch (e) {
+        console.error('[tracker] core batch error:', e);
+      }
+      // Any project the worker didn't return a row for → back off so it doesn't
+      // stay perpetually due and dominate the next core batch.
+      for (const c of chunk) {
+        if (!handled.has(c.projectId)) recordScrapeFailure(c.projectId);
+      }
+    }
+  } catch (e) {
+    console.error('[tracker] core pass error:', e);
+    recordCrawlerError({
+      source: 'tracker',
+      job_type: 'scrape_core_due',
+      message: e instanceof Error ? e.message : String(e),
+    });
+  }
 }
 
 async function scrapeDueProjects() {
+  // KS-direct primary: split into a cheap high-frequency CORE pass and an
+  // expensive low-frequency RICH pass. Run RICH first — it does a full /project
+  // scrape (which markFetched-bumps next_fetch), so those projects drop out of
+  // the CORE due queue this cycle, avoiding duplicate worker calls.
+  if (KS_DIRECT_PRIMARY) {
+    await scrapeRichDueProjects();
+    await scrapeCoreDueProjects();
+    return;
+  }
   try {
-    const batchSize = KS_DIRECT_PRIMARY ? KS_DIRECT_BATCH_SIZE : TRACKING_BATCH_SIZE;
-    const due = getDueProjects(batchSize) as DueProject[];
+    const due = getDueProjects(TRACKING_BATCH_SIZE) as DueProject[];
     if (!due.length) return;
 
-    const concurrency = Math.min(KS_DIRECT_PRIMARY ? KS_DIRECT_CONCURRENCY : TRACKING_CONCURRENCY, due.length);
-    console.log(`[tracker] scraping ${due.length} due project(s) with concurrency ${concurrency}${KS_DIRECT_PRIMARY ? ' (ks-direct)' : ''}`);
+    const concurrency = Math.min(TRACKING_CONCURRENCY, due.length);
+    console.log(`[tracker] scraping ${due.length} due project(s) with concurrency ${concurrency}`);
 
     // Bounded worker pool: each worker pulls the next index until the batch is
     // drained. Replaces the old strictly-serial loop (20 per 5 min) so the

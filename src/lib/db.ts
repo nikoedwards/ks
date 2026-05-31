@@ -445,6 +445,10 @@ function ensureRuntimeMigrations(db: Database) {
   try { db.exec('ALTER TABLE projects ADD COLUMN image_thumb_url TEXT'); } catch { /* already exists */ }
   try { db.exec('ALTER TABLE projects ADD COLUMN has_service_agency INTEGER DEFAULT 0'); } catch { /* already exists */ }
   try { db.exec('ALTER TABLE projects ADD COLUMN service_agency_name TEXT'); } catch { /* already exists */ }
+  // Tiered KS-direct refresh: tracks when rich data (rewards/creator via the
+  // worker /project endpoint) was last fetched, so the tracker can run a cheap
+  // high-frequency /core funding pass and a separate low-frequency rich pass.
+  try { db.exec('ALTER TABLE projects ADD COLUMN rewards_synced_at INTEGER'); } catch { /* already exists */ }
   db.exec(`
     CREATE TABLE IF NOT EXISTS project_collaborators (
       project_id TEXT NOT NULL,
@@ -4070,6 +4074,38 @@ export function getDueProjects(limit = 25): { project_id: string; priority: numb
     ORDER BY t.priority DESC, t.priority_score DESC, COALESCE(t.next_fetch, 0) ASC, t.last_fetched ASC
     LIMIT ?
   `).all(now, limit) as { project_id: string; priority: number; track_rewards: number; track_comments: number; track_text_diff: number; consecutive_failures: number }[];
+}
+
+/**
+ * Tiered KS-direct refresh — RICH pass selection.
+ *
+ * Returns live, tracked projects whose rich data (rewards/creator) is stale or
+ * has never been fetched, oldest first (NULLs first). The tracker fetches these
+ * via the worker /project endpoint (the expensive path) on a low-frequency
+ * cadence, while the cheap /core funding pass keeps everything else current.
+ */
+export function getRichDueProjects(
+  limit = 12,
+  staleBeforeSec?: number
+): { project_id: string; priority: number; track_rewards: number; track_comments: number; track_text_diff: number; consecutive_failures: number }[] {
+  const stale = staleBeforeSec ?? Math.floor(Date.now() / 1000) - 48 * 3600;
+  return getDB().prepare(`
+    SELECT t.project_id, t.priority, t.track_rewards, t.track_comments, t.track_text_diff,
+           COALESCE(t.consecutive_failures, 0) as consecutive_failures
+    FROM tracking_settings t
+    JOIN projects p ON p.id = t.project_id
+    WHERE t.is_tracking = 1
+      AND p.state = 'live'
+      AND (p.rewards_synced_at IS NULL OR p.rewards_synced_at <= ?)
+    ORDER BY (p.rewards_synced_at IS NOT NULL), p.rewards_synced_at ASC,
+             t.priority DESC, t.priority_score DESC
+    LIMIT ?
+  `).all(stale, limit) as { project_id: string; priority: number; track_rewards: number; track_comments: number; track_text_diff: number; consecutive_failures: number }[];
+}
+
+export function markRewardsSynced(projectId: string, ts?: number) {
+  const now = ts ?? Math.floor(Date.now() / 1000);
+  getDB().prepare('UPDATE projects SET rewards_synced_at = ? WHERE id = ?').run(now, projectId);
 }
 
 /**
