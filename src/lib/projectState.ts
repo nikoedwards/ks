@@ -1,14 +1,27 @@
-// Canonical Kickstarter project states. Everything stored in the DB must be one
-// of these lowercase values so charts, filters and the live CTE stay consistent.
+// Canonical Kickstarter project states. The first five are the analytics-facing
+// states used by charts, filters and the live CTE. `prelaunch` is a sixth
+// stored state for campaigns that exist but haven't launched yet (KS GraphQL
+// STARTED/SUBMITTED/DRAFT): it deliberately is NOT 'live' so prelaunch pages
+// stay out of the live set and scrape queues. They re-promote to 'live'
+// automatically when KS live discovery sees them after launch.
 export const CANONICAL_STATES = ['live', 'successful', 'failed', 'canceled', 'suspended'] as const;
-export type ProjectState = typeof CANONICAL_STATES[number];
+export const PRELAUNCH_STATE = 'prelaunch' as const;
+export type ProjectState = typeof CANONICAL_STATES[number] | typeof PRELAUNCH_STATE;
 
-const CANONICAL_SET = new Set<string>(CANONICAL_STATES);
+const CANONICAL_SET = new Set<string>([...CANONICAL_STATES, PRELAUNCH_STATE]);
+
+// Raw KS labels (and synonyms) that mean "created but not launched yet".
+const PRELAUNCH_RAW = new Set(['prelaunch', 'pre-launch', 'started', 'submitted', 'draft', 'preview', 'registration']);
+
+/** True when a raw KS state means the campaign hasn't launched yet. */
+export function isPrelaunchRaw(raw: unknown): boolean {
+  return PRELAUNCH_RAW.has(String(raw ?? '').trim().toLowerCase());
+}
 
 /**
  * Map a raw state string to a canonical state, or null when it is not a known
- * terminal/live state (e.g. started, submitted, unknown, historical, draft, '').
- * Case-insensitive and folds common synonyms (funded → successful, etc).
+ * state (e.g. unknown, historical, ''). Case-insensitive; folds common synonyms
+ * (funded → successful) and prelaunch labels (started/submitted → prelaunch).
  */
 export function normalizeState(raw: unknown): ProjectState | null {
   const s = String(raw ?? '').trim().toLowerCase();
@@ -28,6 +41,14 @@ export function normalizeState(raw: unknown): ProjectState | null {
       return 'canceled';
     case 'suspended':
       return 'suspended';
+    case 'prelaunch':
+    case 'pre-launch':
+    case 'started':
+    case 'submitted':
+    case 'draft':
+    case 'preview':
+    case 'registration':
+      return PRELAUNCH_STATE;
     default:
       return CANONICAL_SET.has(s) ? (s as ProjectState) : null;
   }

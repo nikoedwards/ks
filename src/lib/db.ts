@@ -153,11 +153,17 @@ function reconcileProjectStates(db: Database) {
       UPDATE projects SET state = 'successful' WHERE state IN ('success', 'funded');
       UPDATE projects SET state = 'canceled'   WHERE state = 'cancelled';
       UPDATE projects SET state = 'failed'     WHERE state = 'unsuccessful';
+      -- Fold "created but not launched" labels into the 'prelaunch' bucket so
+      -- they stay out of the live set + scrape queues (re-promoted to 'live' by
+      -- KS discovery once they actually launch).
+      UPDATE projects SET state = 'prelaunch'
+        WHERE lower(COALESCE(state, '')) IN ('prelaunch', 'pre-launch', 'started', 'submitted', 'draft', 'preview', 'registration');
     `);
 
     // 2) Infer a canonical state for everything that is still non-canonical
-    //    (started, submitted, unknown, historical, draft, purged, '', NULL …)
-    //    from the project's own numbers. goal + usd_pledged are both USD here.
+    //    (unknown, historical, purged, '', NULL …) from the project's own
+    //    numbers. goal + usd_pledged are both USD here. 'prelaunch' is excluded
+    //    so it isn't wrongly promoted to 'live' (prelaunch rows have no deadline).
     const reclassified = db.prepare(`
       UPDATE projects
       SET state = CASE
@@ -166,7 +172,7 @@ function reconcileProjectStates(db: Database) {
         WHEN deadline IS NOT NULL THEN 'failed'
         ELSE 'live'
       END
-      WHERE COALESCE(state, '') NOT IN ('live', 'successful', 'failed', 'canceled', 'suspended')
+      WHERE COALESCE(state, '') NOT IN ('live', 'successful', 'failed', 'canceled', 'suspended', 'prelaunch')
     `).run({ now }).changes;
 
     // 3) Fold casing + synonyms on snapshots so the live CTE matching 'live' works.
