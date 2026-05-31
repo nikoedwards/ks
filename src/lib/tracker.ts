@@ -109,7 +109,11 @@ async function runCycle() {
     // Safety net AFTER scraping: only projects we still couldn't settle (long
     // past deadline, unreachable) get the deadline-based state correction.
     reconcileEndedProjects();
-    startDiscoveryJobs(now);
+    // Awaited (not fire-and-forget) so discovery runs while the single-lane
+    // browser-worker is free — i.e. after this cycle's rich/core passes and
+    // before the next cycle's. Overlapping discovery with the rich pass starved
+    // the worker and timed out pages 2+ ("Browser worker request failed").
+    await startDiscoveryJobs(now);
     runDiagnosticsPrune(now);
   } finally {
     cycleRunning = false;
@@ -404,28 +408,29 @@ async function scrapeDueProjects() {
   }
 }
 
-function startDiscoveryJobs(now: number) {
+async function startDiscoveryJobs(now: number) {
   if (isDiscoveryDue('ks_live', 'discover:live', lastLiveSync, LIVE_SYNC_INTERVAL, now)) {
     lastLiveSync = now;
     console.log('[tracker] Starting KS live discovery sync...');
-    runKickstarterLiveSync({
-      state: 'live',
-      maxPages: Number(process.env.LIVE_DISCOVERY_MAX_PAGES ?? 5),
-      since: Math.floor(Date.now() / 1000) - Number(process.env.LIVE_DISCOVERY_LOOKBACK_DAYS ?? 3) * 24 * 3600,
-    }).then(result => {
+    try {
+      const result = await runKickstarterLiveSync({
+        state: 'live',
+        maxPages: Number(process.env.LIVE_DISCOVERY_MAX_PAGES ?? 5),
+        since: Math.floor(Date.now() / 1000) - Number(process.env.LIVE_DISCOVERY_LOOKBACK_DAYS ?? 3) * 24 * 3600,
+      });
       console.log(`[tracker] KS live sync done: ${result.insertedOrUpdated} upserted, stopped=${result.stoppedReason}`);
       if (result.stoppedReason !== 'blocked') {
         const auto = autoTrackLiveProjects(AUTO_TRACK_BATCH_SIZE);
         console.log(`[tracker] post-KS auto-track: inserted=${auto.inserted}, remaining=${auto.remaining}`);
       }
-    }).catch(e => {
+    } catch (e) {
       console.error('[tracker] KS live sync error:', e);
       recordCrawlerError({
         source: 'tracker',
         job_type: 'ks_live_discovery',
         message: e instanceof Error ? e.message : String(e),
       });
-    });
+    }
   }
 
   // KS-direct primary mode: Kicktraq is relegated to manual historical OCR only,
@@ -433,21 +438,22 @@ function startDiscoveryJobs(now: number) {
   if (!KS_DIRECT_PRIMARY && isDiscoveryDue('kicktraq_active', 'discover', lastKicktraqSync, KICKTRAQ_SYNC_INTERVAL, now)) {
     lastKicktraqSync = now;
     console.log('[tracker] Starting Kicktraq active sync...');
-    runKicktraqActiveSync({
-      maxPages: 5,
-      onlyCurrentlyLive: true,
-    }).then(result => {
+    try {
+      const result = await runKicktraqActiveSync({
+        maxPages: 5,
+        onlyCurrentlyLive: true,
+      });
       console.log(`[tracker] Kicktraq active sync done: ${result.imported} imported, stopped=${result.stoppedReason}`);
       const auto = autoTrackLiveProjects(AUTO_TRACK_BATCH_SIZE);
       console.log(`[tracker] post-Kicktraq auto-track: inserted=${auto.inserted}, remaining=${auto.remaining}`);
-    }).catch(e => {
+    } catch (e) {
       console.error('[tracker] Kicktraq active sync error:', e);
       recordCrawlerError({
         source: 'tracker',
         job_type: 'kicktraq_active_discovery',
         message: e instanceof Error ? e.message : String(e),
       });
-    });
+    }
   }
 }
 
