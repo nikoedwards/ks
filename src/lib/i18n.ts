@@ -43,6 +43,7 @@ export const t = {
       live: '进行中',
       canceled: '已取消',
       suspended: '已暂停',
+      prelaunch: '预热中',
     },
     categories: {
       title: '类目分析',
@@ -147,10 +148,12 @@ export const t = {
       },
       states: {
         all: '全部',
+        live: '进行中',
+        prelaunch: '预热中',
         successful: '成功',
         failed: '失败',
-        live: '进行中',
         canceled: '已取消',
+        suspended: '已暂停',
       },
       allCategories: '全部类目',
       allCountries: '全部国家',
@@ -429,6 +432,7 @@ export const t = {
       live: 'Live',
       canceled: 'Canceled',
       suspended: 'Suspended',
+      prelaunch: 'Prelaunch',
     },
     categories: {
       title: 'Category Analysis',
@@ -533,10 +537,12 @@ export const t = {
       },
       states: {
         all: 'All',
+        live: 'Live',
+        prelaunch: 'Prelaunch',
         successful: 'Successful',
         failed: 'Failed',
-        live: 'Live',
         canceled: 'Canceled',
+        suspended: 'Suspended',
       },
       allCategories: 'All Categories',
       allCountries: 'All Countries',

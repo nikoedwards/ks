@@ -52,6 +52,7 @@ const STATE_BADGE: Record<string, string> = {
   live: 'bg-blue-50 text-blue-600',
   canceled: 'bg-amber-50 text-amber-600',
   suspended: 'bg-purple-50 text-purple-600',
+  prelaunch: 'bg-orange-50 text-orange-600',
 };
 
 function fmtMoney(v: number, currency = 'USD') {
