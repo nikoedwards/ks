@@ -14,6 +14,8 @@ import {
   upsertTrackingSettings,
   getCrawlerState,
   pruneOldDiagnostics,
+  getPrelaunchWatchDue,
+  markPrelaunchChecked,
 } from './db';
 import {
   buildKSJsonUrl,
@@ -21,8 +23,10 @@ import {
   extractCreatorSlug,
   extractProjectSlug,
   fetchCoreBatchViaWorker,
+  fetchProjectViaWorker,
   storeWorkerCoreResult,
 } from './scraper';
+import { normalizeState } from './projectState';
 import { runKickstarterLiveSync } from './kickstarterLive';
 import { runKicktraqActiveSync } from './kicktraqActive';
 
@@ -71,6 +75,19 @@ const KS_RICH_INTERVAL_SEC = Math.max(3600, Number(process.env.KS_RICH_INTERVAL_
 // starves the CORE funding pass that follows it. Default 2 min of a 3-min cycle.
 const KS_RICH_CYCLE_BUDGET_MS = Math.max(20_000, Number(process.env.KS_RICH_CYCLE_BUDGET_MS ?? 120_000));
 
+// Isolated "prelaunch watch" — fully separate from the live core/rich passes
+// and OFF by default. When KS_PRELAUNCH_WATCH=1, a low-frequency pass probes
+// known prelaunch projects via the worker /project endpoint to detect when they
+// launch (state -> live), then hands them to the normal ingest path. Runs
+// sequentially inside the locked cycle (after discovery), bounded by its own
+// batch size + wall-clock budget so it never races or starves the live passes.
+const KS_PRELAUNCH_WATCH = process.env.KS_PRELAUNCH_WATCH === '1';
+const KS_PRELAUNCH_BATCH = Math.max(1, Number(process.env.KS_PRELAUNCH_BATCH ?? 10));
+const KS_PRELAUNCH_INTERVAL_MS = Number(process.env.KS_PRELAUNCH_INTERVAL_MS ?? 30 * 60 * 1000);
+const KS_PRELAUNCH_STALE_SEC = Math.max(3600, Number(process.env.KS_PRELAUNCH_STALE_SEC ?? 6 * 3600));
+const KS_PRELAUNCH_BUDGET_MS = Math.max(20_000, Number(process.env.KS_PRELAUNCH_BUDGET_MS ?? 90_000));
+let lastPrelaunchWatch = 0;
+
 export function initTracker() {
   if (started || typeof window !== 'undefined') return;
   if (process.env.NEXT_PHASE === 'phase-production-build') return;
@@ -114,6 +131,7 @@ async function runCycle() {
     // before the next cycle's. Overlapping discovery with the rich pass starved
     // the worker and timed out pages 2+ ("Browser worker request failed").
     await startDiscoveryJobs(now);
+    await scrapePrelaunchWatch();
     runDiagnosticsPrune(now);
   } finally {
     cycleRunning = false;
@@ -455,6 +473,76 @@ async function startDiscoveryJobs(now: number) {
       });
     }
   }
+}
+
+// Isolated prelaunch watch pass. Default OFF (KS_PRELAUNCH_WATCH). Probes known
+// prelaunch projects to detect launch; never touches the live core/rich queues.
+async function scrapePrelaunchWatch() {
+  if (!KS_PRELAUNCH_WATCH) return;
+  const now = Date.now();
+  if (now - lastPrelaunchWatch <= KS_PRELAUNCH_INTERVAL_MS) return;
+  lastPrelaunchWatch = now;
+  try {
+    const due = getPrelaunchWatchDue(KS_PRELAUNCH_BATCH, Math.floor(Date.now() / 1000) - KS_PRELAUNCH_STALE_SEC);
+    if (!due.length) return;
+    console.log(`[tracker] prelaunch watch: ${due.length} project(s)`);
+    const deadline = Date.now() + KS_PRELAUNCH_BUDGET_MS;
+    let launched = 0;
+    let done = 0;
+    for (const row of due) {
+      if (Date.now() >= deadline) {
+        console.log(`[tracker] prelaunch watch: budget spent after ${done}/${due.length}; deferring the rest`);
+        break;
+      }
+      done++;
+      try {
+        if (await watchOnePrelaunch(row.project_id)) launched++;
+      } catch (e) {
+        console.error(`[tracker] prelaunch watch error for ${row.project_id}:`, e);
+      }
+    }
+    if (launched) console.log(`[tracker] prelaunch watch: ${launched} project(s) launched -> live`);
+  } catch (e) {
+    console.error('[tracker] prelaunch watch error:', e);
+    recordCrawlerError({
+      source: 'tracker',
+      job_type: 'prelaunch_watch',
+      message: e instanceof Error ? e.message : String(e),
+    });
+  }
+}
+
+// Probe a single prelaunch project. Returns true if it has launched (now live).
+// We read state cheaply via the worker /project and only run the full ingest
+// (scrapeAndStore) once the project is no longer prelaunch — this avoids the
+// "no usable funding/backers" rejection + failure backoff that a still-prelaunch
+// page would otherwise trip in scrapeAndStore.
+async function watchOnePrelaunch(projectId: string): Promise<boolean> {
+  const project = await getProjectById(projectId) as { source_url?: string; creator_slug?: string; slug?: string } | null;
+  if (!project) return false;
+  const jsonUrl = buildProjectJsonUrl(project);
+  if (!jsonUrl) {
+    markPrelaunchChecked(projectId);
+    return false;
+  }
+  const pageUrl = jsonUrl.replace(/\.json(?:[?#].*)?$/, '');
+  // login_redirect demotion (-> suspended) is handled inside fetchProjectViaWorker;
+  // a null result simply means "couldn't read it this time, try again later".
+  const ks = await fetchProjectViaWorker(pageUrl, projectId);
+  markPrelaunchChecked(projectId);
+  if (!ks) return false;
+  const norm = normalizeState(ks.state);
+  if (norm && norm !== 'prelaunch') {
+    // Launched (or ended/canceled): full ingest so it's stored + promoted into
+    // the normal pipeline. auto-track enrolls live ones on the next cycle.
+    await scrapeAndStore(projectId, jsonUrl, {
+      track_rewards: KS_DIRECT_PRIMARY ? 1 : 0,
+      track_comments: 1,
+      track_text_diff: 1,
+    });
+    return norm === 'live';
+  }
+  return false;
 }
 
 function buildProjectJsonUrl(project: { source_url?: string; creator_slug?: string; slug?: string }) {

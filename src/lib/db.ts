@@ -511,6 +511,10 @@ function ensureRuntimeMigrations(db: Database) {
   // worker /project endpoint) was last fetched, so the tracker can run a cheap
   // high-frequency /core funding pass and a separate low-frequency rich pass.
   try { db.exec('ALTER TABLE projects ADD COLUMN rewards_synced_at INTEGER'); } catch { /* already exists */ }
+  // Isolated "prelaunch watch": when a prelaunch project's launch status was
+  // last probed by the (flag-gated) watch pass. Kept separate from the live
+  // refresh timestamps so the watch never touches the live core/rich cadence.
+  try { db.exec('ALTER TABLE projects ADD COLUMN prelaunch_checked_at INTEGER'); } catch { /* already exists */ }
   db.exec(`
     CREATE TABLE IF NOT EXISTS project_collaborators (
       project_id TEXT NOT NULL,
@@ -4225,6 +4229,39 @@ export function getRichDueProjects(
 export function markRewardsSynced(projectId: string, ts?: number) {
   const now = ts ?? Math.floor(Date.now() / 1000);
   getDB().prepare('UPDATE projects SET rewards_synced_at = ? WHERE id = ?').run(now, projectId);
+}
+
+/**
+ * Isolated "prelaunch watch" selection — completely separate from the live
+ * core/rich passes (which all require state='live'). Returns prelaunch projects
+ * with a usable Kickstarter URL whose launch status hasn't been probed recently,
+ * least-recently-checked first, capped. The watch pass (gated by
+ * KS_PRELAUNCH_WATCH) polls these to detect when they go live, then hands them
+ * to the normal ingest path which promotes them and lets auto-track enroll them.
+ */
+export function getPrelaunchWatchDue(
+  limit = 10,
+  staleBeforeSec?: number,
+): { project_id: string }[] {
+  const stale = staleBeforeSec ?? Math.floor(Date.now() / 1000) - 6 * 3600;
+  return getDB().prepare(`
+    SELECT p.id AS project_id
+    FROM projects p
+    WHERE p.state = 'prelaunch'
+      AND (
+        p.source_url LIKE 'https://www.kickstarter.com/projects/%'
+        OR (p.creator_slug IS NOT NULL AND p.slug IS NOT NULL)
+      )
+      AND (p.prelaunch_checked_at IS NULL OR p.prelaunch_checked_at <= @stale)
+    ORDER BY (p.prelaunch_checked_at IS NOT NULL), p.prelaunch_checked_at ASC,
+             COALESCE(p.last_seen_at, 0) DESC
+    LIMIT @limit
+  `).all({ stale, limit }) as { project_id: string }[];
+}
+
+export function markPrelaunchChecked(projectId: string, ts?: number) {
+  const now = ts ?? Math.floor(Date.now() / 1000);
+  getDB().prepare('UPDATE projects SET prelaunch_checked_at = ? WHERE id = ?').run(now, projectId);
 }
 
 /**
