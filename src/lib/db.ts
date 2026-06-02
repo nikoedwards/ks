@@ -515,6 +515,11 @@ function ensureRuntimeMigrations(db: Database) {
   // last probed by the (flag-gated) watch pass. Kept separate from the live
   // refresh timestamps so the watch never touches the live core/rich cadence.
   try { db.exec('ALTER TABLE projects ADD COLUMN prelaunch_checked_at INTEGER'); } catch { /* already exists */ }
+  // Isolated "collaborator backfill": when a project's collaborators were last
+  // probed by the (flag-gated) backfill pass via the worker /collab endpoint.
+  // Separate from the live refresh timestamps so the backfill never touches the
+  // live core/rich cadence.
+  try { db.exec('ALTER TABLE projects ADD COLUMN collab_checked_at INTEGER'); } catch { /* already exists */ }
   db.exec(`
     CREATE TABLE IF NOT EXISTS project_collaborators (
       project_id TEXT NOT NULL,
@@ -4262,6 +4267,43 @@ export function getPrelaunchWatchDue(
 export function markPrelaunchChecked(projectId: string, ts?: number) {
   const now = ts ?? Math.floor(Date.now() / 1000);
   getDB().prepare('UPDATE projects SET prelaunch_checked_at = ? WHERE id = ?').run(now, projectId);
+}
+
+/**
+ * Isolated "collaborator backfill" selection — completely separate from the
+ * live core/rich passes. Returns projects with a usable Kickstarter URL whose
+ * collaborators haven't been probed recently (least-recently-checked first),
+ * scoped to the realistic rich set: currently-live projects plus any project
+ * we've already rich-fetched before (rewards_synced_at set). The backfill pass
+ * (gated by KS_COLLAB_BACKFILL) probes these via the worker /collab endpoint.
+ * Note: we re-check regardless of current collaborator count, because "0
+ * collaborators" can mean either "never fetched" or "genuinely none"; the
+ * collab_checked_at timestamp is what bounds the work.
+ */
+export function getCollabBackfillDue(
+  limit = 10,
+  staleBeforeSec?: number,
+): { project_id: string }[] {
+  const stale = staleBeforeSec ?? Math.floor(Date.now() / 1000) - 30 * 24 * 3600;
+  return getDB().prepare(`
+    SELECT p.id AS project_id
+    FROM projects p
+    WHERE (
+        p.source_url LIKE 'https://www.kickstarter.com/projects/%'
+        OR (p.creator_slug IS NOT NULL AND p.slug IS NOT NULL)
+      )
+      AND (p.state = 'live' OR p.rewards_synced_at IS NOT NULL)
+      AND (p.collab_checked_at IS NULL OR p.collab_checked_at <= @stale)
+    ORDER BY (p.collab_checked_at IS NOT NULL), p.collab_checked_at ASC,
+             (p.state = 'live') DESC,
+             COALESCE(p.rewards_synced_at, 0) DESC
+    LIMIT @limit
+  `).all({ stale, limit }) as { project_id: string }[];
+}
+
+export function markCollabChecked(projectId: string, ts?: number) {
+  const now = ts ?? Math.floor(Date.now() / 1000);
+  getDB().prepare('UPDATE projects SET collab_checked_at = ? WHERE id = ?').run(now, projectId);
 }
 
 /**

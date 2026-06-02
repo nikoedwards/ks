@@ -16,6 +16,8 @@ import {
   pruneOldDiagnostics,
   getPrelaunchWatchDue,
   markPrelaunchChecked,
+  getCollabBackfillDue,
+  markCollabChecked,
 } from './db';
 import {
   buildKSJsonUrl,
@@ -24,6 +26,8 @@ import {
   extractProjectSlug,
   fetchCoreBatchViaWorker,
   fetchProjectViaWorker,
+  fetchCollaboratorsViaWorker,
+  storeCollaboratorsFromWorker,
   storeWorkerCoreResult,
 } from './scraper';
 import { normalizeState } from './projectState';
@@ -88,6 +92,19 @@ const KS_PRELAUNCH_STALE_SEC = Math.max(3600, Number(process.env.KS_PRELAUNCH_ST
 const KS_PRELAUNCH_BUDGET_MS = Math.max(20_000, Number(process.env.KS_PRELAUNCH_BUDGET_MS ?? 90_000));
 let lastPrelaunchWatch = 0;
 
+// Isolated "collaborator backfill" — fully separate from the live core/rich
+// passes and OFF by default. When KS_COLLAB_BACKFILL=1, a low-frequency pass
+// probes projects (live + previously rich-fetched) via the worker /collab
+// endpoint and stores collaborators, healing both old and new projects. Runs
+// sequentially inside the locked cycle (after the prelaunch watch), bounded by
+// its own batch size + wall-clock budget so it never starves the live passes.
+const KS_COLLAB_BACKFILL = process.env.KS_COLLAB_BACKFILL === '1';
+const KS_COLLAB_BATCH = Math.max(1, Number(process.env.KS_COLLAB_BATCH ?? 10));
+const KS_COLLAB_INTERVAL_MS = Number(process.env.KS_COLLAB_INTERVAL_MS ?? 20 * 60 * 1000);
+const KS_COLLAB_STALE_SEC = Math.max(3600, Number(process.env.KS_COLLAB_STALE_SEC ?? 30 * 24 * 3600));
+const KS_COLLAB_BUDGET_MS = Math.max(20_000, Number(process.env.KS_COLLAB_BUDGET_MS ?? 90_000));
+let lastCollabBackfill = 0;
+
 export function initTracker() {
   if (started || typeof window !== 'undefined') return;
   if (process.env.NEXT_PHASE === 'phase-production-build') return;
@@ -132,6 +149,7 @@ async function runCycle() {
     // the worker and timed out pages 2+ ("Browser worker request failed").
     await startDiscoveryJobs(now);
     await scrapePrelaunchWatch();
+    await scrapeCollabBackfill();
     runDiagnosticsPrune(now);
   } finally {
     cycleRunning = false;
@@ -543,6 +561,64 @@ async function watchOnePrelaunch(projectId: string): Promise<boolean> {
     return norm === 'live';
   }
   return false;
+}
+
+// Isolated collaborator backfill pass. Default OFF (KS_COLLAB_BACKFILL). Probes
+// projects via the worker /collab endpoint and stores collaborators; never
+// touches the live core/rich queues or the stable /project path.
+async function scrapeCollabBackfill() {
+  if (!KS_COLLAB_BACKFILL) return;
+  const now = Date.now();
+  if (now - lastCollabBackfill <= KS_COLLAB_INTERVAL_MS) return;
+  lastCollabBackfill = now;
+  try {
+    const due = getCollabBackfillDue(KS_COLLAB_BATCH, Math.floor(Date.now() / 1000) - KS_COLLAB_STALE_SEC);
+    if (!due.length) return;
+    console.log(`[tracker] collab backfill: ${due.length} project(s)`);
+    const deadline = Date.now() + KS_COLLAB_BUDGET_MS;
+    let filled = 0;
+    let done = 0;
+    for (const row of due) {
+      if (Date.now() >= deadline) {
+        console.log(`[tracker] collab backfill: budget spent after ${done}/${due.length}; deferring the rest`);
+        break;
+      }
+      done++;
+      try {
+        if (await backfillOneCollab(row.project_id)) filled++;
+      } catch (e) {
+        console.error(`[tracker] collab backfill error for ${row.project_id}:`, e);
+      }
+    }
+    if (filled) console.log(`[tracker] collab backfill: ${filled}/${done} project(s) got collaborators`);
+  } catch (e) {
+    console.error('[tracker] collab backfill error:', e);
+    recordCrawlerError({
+      source: 'tracker',
+      job_type: 'collab_backfill',
+      message: e instanceof Error ? e.message : String(e),
+    });
+  }
+}
+
+// Probe a single project's collaborators via the worker /collab endpoint and
+// store them. Always marks the project as checked (so we don't re-probe it next
+// cycle), even when it has genuinely zero collaborators. Returns true if any
+// collaborators were stored.
+async function backfillOneCollab(projectId: string): Promise<boolean> {
+  const project = await getProjectById(projectId) as { source_url?: string; creator_slug?: string; slug?: string } | null;
+  if (!project) return false;
+  const jsonUrl = buildProjectJsonUrl(project);
+  if (!jsonUrl) {
+    markCollabChecked(projectId);
+    return false;
+  }
+  const pageUrl = jsonUrl.replace(/\.json(?:[?#].*)?$/, '');
+  const res = await fetchCollaboratorsViaWorker(pageUrl, projectId);
+  markCollabChecked(projectId);
+  if (!res) return false;
+  const stored = storeCollaboratorsFromWorker(projectId, res.collaborators);
+  return stored > 0;
 }
 
 function buildProjectJsonUrl(project: { source_url?: string; creator_slug?: string; slug?: string }) {

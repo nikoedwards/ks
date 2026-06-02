@@ -681,6 +681,96 @@ export async function fetchProjectViaWorker(pageUrl: string, projectId?: string)
   }
 }
 
+export interface WorkerCollaborator {
+  name?: string | null;
+  slug?: string | null;
+  role?: string | null;
+  profileUrl?: string | null;
+  avatarUrl?: string | null;
+}
+
+// ── ISOLATED collaborator backfill plumbing (worker /collab) ────────────────
+// Calls the isolated worker endpoint that probes a project's collaborators via
+// GraphQL + main-page DOM. Returns the raw collaborator list (+ debug) so the
+// flag-gated backfill pass can store them. Does not touch the stable /project
+// path. `debug` is surfaced for the first isolated validation runs.
+export async function fetchCollaboratorsViaWorker(
+  pageUrl: string,
+  projectId?: string,
+): Promise<{ collaborators: WorkerCollaborator[]; debug?: unknown } | null> {
+  const base = getWorkerBaseUrl();
+  if (!base) return null;
+  const token = getOptionalEnv('BROWSER_WORKER_TOKEN');
+  try {
+    const res = await fetch(`${base}/collab`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ url: pageUrl }),
+      signal: AbortSignal.timeout(Math.max(60_000, Math.min(Number(getOptionalEnv('KICKSTARTER_BROWSER_TIMEOUT_MS') || 180_000), 300_000))),
+      cache: 'no-store',
+    });
+    const text = await res.text();
+    if (!res.ok) {
+      recordCrawlerError({
+        source: 'ks_project', job_type: 'worker_collab', project_id: projectId ?? null, url: pageUrl,
+        status_code: res.status, message: `Worker /collab HTTP ${res.status}: ${text.slice(0, 500)}`,
+      });
+      return null;
+    }
+    const data = JSON.parse(text) as {
+      ok?: boolean; status?: number; reason?: string; error?: string;
+      body?: { collaborators?: WorkerCollaborator[]; debug?: unknown };
+    };
+    if (!data.ok || !data.body) {
+      if (data.reason === 'login_redirect' && projectId) {
+        updateProjectLiveMetadata(projectId, { state: 'suspended' });
+        return null;
+      }
+      recordCrawlerError({
+        source: 'ks_project', job_type: 'worker_collab', project_id: projectId ?? null, url: pageUrl,
+        status_code: data.status ?? res.status,
+        message: `Worker /collab not ok. status=${data.status ?? 'unknown'} error=${data.error ?? ''}`,
+      });
+      return null;
+    }
+    return {
+      collaborators: Array.isArray(data.body.collaborators) ? data.body.collaborators : [],
+      debug: data.body.debug,
+    };
+  } catch (err) {
+    recordCrawlerError({
+      source: 'ks_project', job_type: 'worker_collab', project_id: projectId ?? null, url: pageUrl,
+      message: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  }
+}
+
+// Normalize worker collaborators into the stored shape and upsert them. Reuses
+// the same dedup/service-agency logic as the main ingest path.
+export function storeCollaboratorsFromWorker(
+  projectId: string,
+  collaborators: WorkerCollaborator[],
+  now: number = Math.floor(Date.now() / 1000),
+): number {
+  const ksCollabs: KSCollaborator[] = collaborators
+    .filter((c) => c && c.name)
+    .map((c) => ({
+      name: c.name as string,
+      slug: c.slug ?? undefined,
+      role: c.role ?? undefined,
+      urls: c.profileUrl ? { web: { user: c.profileUrl } } : undefined,
+      photo: c.avatarUrl ? { small: c.avatarUrl } : undefined,
+    }));
+  const normalized = normalizeCollaborators(projectId, { collaborators: ksCollabs } as KSProject, now);
+  if (normalized.length) upsertProjectCollaborators(projectId, normalized);
+  return normalized.length;
+}
+
 export interface WorkerCoreResult {
   url: string;
   ok: boolean;

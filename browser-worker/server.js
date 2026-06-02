@@ -1882,6 +1882,7 @@ async function fetchWithBrowser(input, tracker = null) {
 //   POST /project  { url }          -> { ok, body: { ...core, rewards[], creator } }
 //   POST /core     { urls: [...] }  -> { ok, results: [{ url, ...stats }] }
 //   POST /discover { url }          -> { ok, body: { projects[], ... } } (in-page JSON)
+//   POST /collab   { url }          -> { ok, body: { collaborators[], debug } } (isolated)
 //
 // Both reuse the warm cf_clearance session: after the first clear they are fast
 // (in-page fetch / cached challenge). Rewards come from the RewardsTab GraphQL
@@ -2394,6 +2395,149 @@ async function fetchDiscover(input) {
   }
 }
 
+// ── ISOLATED collaborator probe (POST /collab) ──────────────────────────────
+// Stable /project leaves collaborators to a fragile creator-tab DOM scrape that
+// is usually skipped (budget-gated) or looks on the wrong page. This isolated
+// endpoint clears the main project page and tries BOTH (a) a GraphQL
+// collaborators query and (b) a main-page DOM parse, returning debug so the
+// first isolated run reveals which source actually works. /project is untouched
+// until this is validated and merged.
+const GQL_COLLAB_QUERIES = [
+  `query($slug:String!){ project(slug:$slug){ collaborators { edges { title node { name url imageUrl } } } } }`,
+  `query($slug:String!){ project(slug:$slug){ collaborators { edges { permissions node { name url imageUrl } } } } }`,
+  `query($slug:String!){ project(slug:$slug){ collaborators { edges { node { name url imageUrl } } } } }`,
+];
+
+async function queryCollaboratorsGraphql(page, slug) {
+  const csrf = await page
+    .evaluate(() => document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || null)
+    .catch(() => null);
+  const debug = { attempts: [] };
+  for (const query of GQL_COLLAB_QUERIES) {
+    const res = await page.evaluate(async ({ query, slug, csrf }) => {
+      try {
+        const r = await fetch('/graph', {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json', Accept: 'application/json', ...(csrf ? { 'X-CSRF-Token': csrf } : {}) },
+          body: JSON.stringify({ query, variables: { slug } }),
+        });
+        return { status: r.status, text: await r.text() };
+      } catch (e) {
+        return { status: 0, text: '', error: String((e && e.message) || e) };
+      }
+    }, { query, slug, csrf }).catch(() => null);
+    if (!res) { debug.attempts.push({ status: 'eval_failed' }); continue; }
+    let json;
+    try { json = JSON.parse(res.text); } catch { debug.attempts.push({ status: res.status, parse: 'fail', preview: (res.text || '').slice(0, 200) }); continue; }
+    const edges = json?.data?.project?.collaborators?.edges;
+    if (Array.isArray(edges)) {
+      const collaborators = edges.map((e) => ({
+        name: e?.node?.name ?? null,
+        slug: (e?.node?.url || '').match(/\/profile\/([^/?#]+)/)?.[1] ?? null,
+        role: e?.title ?? e?.permissions ?? null,
+        profileUrl: e?.node?.url ?? null,
+        avatarUrl: e?.node?.imageUrl ?? null,
+      })).filter((c) => c.name);
+      debug.attempts.push({ status: res.status, ok: true, count: collaborators.length });
+      return { collaborators, debug };
+    }
+    debug.attempts.push({ status: res.status, errors: (json?.errors || []).map((x) => x.message).slice(0, 3) });
+  }
+  return { collaborators: [], debug };
+}
+
+async function extractCollaboratorsDom(page) {
+  const deadline = Date.now() + 6000;
+  while (Date.now() < deadline) {
+    const ready = await page.evaluate(() => /collaborators/i.test(document.body?.innerText || '')).catch(() => false);
+    if (ready) break;
+    await page.waitForTimeout(600);
+  }
+  return page.evaluate(() => {
+    const clean = (s) => (s || '').replace(/\s+/g, ' ').trim();
+    const headings = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,[role="heading"]'));
+    const head = headings.find((h) => /^collaborators\b/i.test(clean(h.textContent)));
+    const collaborators = [];
+    if (head) {
+      const scope = head.closest('section,aside,div') || head.parentElement || document.body;
+      const links = Array.from(scope.querySelectorAll('a[href*="/profile/"]'));
+      const seen = new Set();
+      for (const a of links) {
+        const href = a.getAttribute('href') || '';
+        const slug = (href.match(/\/profile\/([^/?#]+)/) || [])[1] || null;
+        const name = clean(a.textContent);
+        if (!name || name.length > 80) continue;
+        const key = (slug || name).toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const li = a.closest('li,div');
+        let role = null;
+        if (li) {
+          const txt = clean(li.textContent).replace(name, '').trim();
+          if (txt && txt.length <= 60) role = txt;
+        }
+        const img = a.querySelector('img') || li?.querySelector('img');
+        collaborators.push({ name, slug, role, profileUrl: slug ? `https://www.kickstarter.com/profile/${slug}` : null, avatarUrl: img?.getAttribute('src') || null });
+      }
+    }
+    const allLinks = Array.from(document.querySelectorAll('a[href*="/profile/"]'));
+    const debug = {
+      headingFound: Boolean(head),
+      bodyHasCollaborators: /collaborators/i.test(document.body?.innerText || ''),
+      profileLinkCount: allLinks.length,
+      sampleLinks: allLinks.slice(0, 12).map((a) => ({ t: clean(a.textContent).slice(0, 40), h: a.getAttribute('href') })),
+    };
+    return { collaborators, debug };
+  });
+}
+
+async function fetchCollaborators(input) {
+  const targetUrl = normalizeTarget(input.url);
+  const pageUrl = ksProjectPageUrl(targetUrl);
+  const slug = ksProjectSlug(pageUrl);
+  const timeoutMs = Math.max(20_000, Math.min(Number(input.timeoutMs || RICH_FETCH_TIMEOUT_MS), 180_000));
+  const clearBudget = Math.max(20_000, Math.min(timeoutMs - 5_000, 120_000));
+  const startedAt = Date.now();
+  let context = null;
+  try {
+    context = await newBrowserContext(contextOptions({
+      locale: 'en-US',
+      timezoneId: 'America/Los_Angeles',
+      viewport: { width: 1440, height: 1000 },
+      extraHTTPHeaders: { 'Accept-Language': 'en-US,en;q=0.9' },
+    }));
+    const page = await context.newPage();
+    page.setDefaultTimeout(Math.min(timeoutMs, 45_000));
+    page.setDefaultNavigationTimeout(Math.min(timeoutMs, 45_000));
+    const clearResult = await clearChallengeWithReload(page, pageUrl, clearBudget);
+    if (!clearResult.cleared) {
+      if (clearResult.reason === 'login_redirect') return { ok: false, status: 451, reason: 'login_redirect', elapsedMs: Date.now() - startedAt };
+      return { ok: false, status: 403, error: 'Cloudflare not cleared', elapsedMs: Date.now() - startedAt };
+    }
+    const gql = slug ? await queryCollaboratorsGraphql(page, slug).catch(() => null) : null;
+    const dom = await extractCollaboratorsDom(page).catch(() => null);
+    // Prefer GraphQL when it yields anything; else fall back to the (heading-
+    // scoped) DOM parse. Never union, to avoid pulling in unrelated /profile/
+    // links (e.g. the creator) as fake collaborators.
+    const collaborators = (gql?.collaborators?.length ? gql.collaborators : (dom?.collaborators || []));
+    const gqlInfo = gql?.collaborators?.length ? String(gql.collaborators.length) : 'err/0';
+    console.log(`[collab] ${pageUrl} gql=${gqlInfo} dom=${dom?.collaborators?.length ?? 'n'} -> ${collaborators.length} ${Date.now() - startedAt}ms`);
+    return {
+      ok: true,
+      status: 200,
+      elapsedMs: Date.now() - startedAt,
+      body: { url: pageUrl, collaborators, debug: { gql: gql?.debug ?? null, dom: dom?.debug ?? null } },
+    };
+  } catch (err) {
+    return { ok: false, status: 0, error: safeError(err).message, elapsedMs: Date.now() - startedAt };
+  } finally {
+    if (context) await saveBrowserStorageState(context).catch(() => {});
+    await context?.close().catch(() => {});
+    await onRequestComplete().catch(() => {});
+  }
+}
+
 async function probeBrowserConnection() {
   if (!browserPromise) {
     return { initialized: false, connected: null, version: null };
@@ -2658,7 +2802,7 @@ async function handle(req, res) {
 
   // Phase 2b endpoints: rich single-project fetch and batch core-stats fetch.
   // Both reuse the warm session, are auth-gated, and share the /fetch slot.
-  if (req.method === 'POST' && (req.url === '/project' || req.url === '/core' || req.url === '/discover')) {
+  if (req.method === 'POST' && (req.url === '/project' || req.url === '/core' || req.url === '/discover' || req.url === '/collab')) {
     if (!assertAuthorized(req)) {
       send(res, 401, { error: 'Unauthorized' });
       return;
@@ -2683,7 +2827,9 @@ async function handle(req, res) {
         ? await fetchKsProject(payload)
         : req.url === '/discover'
           ? await fetchDiscover(payload)
-          : await fetchCoreBatch(payload);
+          : req.url === '/collab'
+            ? await fetchCollaborators(payload)
+            : await fetchCoreBatch(payload);
       send(res, 200, result);
     } catch (err) {
       send(res, 500, { ok: false, error: safeError(err).message });
