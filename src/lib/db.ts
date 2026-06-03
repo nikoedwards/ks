@@ -4492,6 +4492,22 @@ export function deleteKicktraqSnapshots(projectId: string) {
   `).run(projectId);
 }
 
+/** Current kicktraq-sourced snapshot coverage for a project (used by the import preview). */
+export function getKicktraqSnapshotStats(projectId: string): { count: number; dateFrom: string | null; dateTo: string | null } {
+  const row = getDB().prepare(`
+    SELECT COUNT(*) AS count, MIN(captured_at) AS minAt, MAX(captured_at) AS maxAt
+    FROM project_snapshots
+    WHERE project_id = ? AND source = 'kicktraq'
+  `).get(projectId) as { count: number; minAt: number | null; maxAt: number | null } | undefined;
+  const toDate = (s: number | null | undefined) =>
+    typeof s === 'number' && Number.isFinite(s) ? new Date(s * 1000).toISOString().slice(0, 10) : null;
+  return {
+    count: row?.count ?? 0,
+    dateFrom: toDate(row?.minAt),
+    dateTo: toDate(row?.maxAt),
+  };
+}
+
 export interface KicktraqImportDebugPayload {
   ok?: boolean;
   status: 'running' | 'complete' | 'failed';

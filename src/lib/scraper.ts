@@ -99,7 +99,7 @@ interface KSCollaborator {
   [key: string]: unknown;
 }
 
-interface KicktraqSummary {
+export interface KicktraqSummary {
   pledged_usd: number;
   backers_count: number;
   goal_usd: number;
@@ -1699,6 +1699,25 @@ export async function scrapeKicktraq(creatorSlug: string, projectSlug: string): 
   return (await scrapeKicktraqDetailed(creatorSlug, projectSlug)).days;
 }
 
+export interface KicktraqPreviewResult {
+  summary: KicktraqSummary | null;
+  days: KicktraqDay[];
+  diagnostics: KicktraqScrapeDiagnostics;
+}
+
+/**
+ * Read-only Kicktraq fetch used by the data-quality workbench preview step.
+ * Pulls the textual summary layer (HTML, reliable) and the daily curve layer
+ * (JSON/HTML/OCR, best-effort) WITHOUT writing anything to the database.
+ * Committing is a separate, user-confirmed step (storeKicktraqSummary /
+ * storeKicktraqDays). Kept isolated from the KS Live discovery pipeline.
+ */
+export async function previewKicktraqImport(creatorSlug: string, projectSlug: string): Promise<KicktraqPreviewResult> {
+  const summary = await scrapeKicktraqProjectSummary(creatorSlug, projectSlug);
+  const { days, diagnostics } = await scrapeKicktraqDetailed(creatorSlug, projectSlug);
+  return { summary, days, diagnostics };
+}
+
 // ─── OCR fallback via Claude Vision ──────────────────────────────────────────
 
 async function scrapeKicktraqViaOCR(pageUrl: string, cookieStr: string, diagnostics?: KicktraqScrapeDiagnostics): Promise<KicktraqDay[]> {
@@ -2036,14 +2055,22 @@ export interface KicktraqWrittenSnapshot {
   source: 'kicktraq';
 }
 
-export function storeKicktraqDays(projectId: string, days: KicktraqDay[]): KicktraqWrittenSnapshot[] {
+export function storeKicktraqDays(
+  projectId: string,
+  days: KicktraqDay[],
+  opts?: { mode?: 'overwrite' | 'merge' },
+): KicktraqWrittenSnapshot[] {
+  // mode='overwrite' (default, legacy behaviour): wipe existing kicktraq snapshots then
+  // re-insert the full curve. mode='merge': keep existing rows and only fill in dates that
+  // are not already stored (insertSnapshot uses INSERT OR IGNORE on the unique date key).
+  const mode = opts?.mode ?? 'overwrite';
   const validDays = days
     .filter(d => d.pledged_usd > 0 || d.backers > 0 || (d.comments ?? 0) > 0)
     .sort((a, b) => a.date.localeCompare(b.date));
 
   if (!validDays.length) return [];
 
-  deleteKicktraqSnapshots(projectId);
+  if (mode === 'overwrite') deleteKicktraqSnapshots(projectId);
 
   let pledgedTotal = 0;
   let backersTotal = 0;

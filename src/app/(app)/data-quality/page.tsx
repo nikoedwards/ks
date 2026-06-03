@@ -132,6 +132,34 @@ interface WorkbenchPayload {
   filter: string;
 }
 
+interface KicktraqDayRow {
+  date: string;
+  pledged_usd: number;
+  backers: number;
+  comments?: number;
+}
+
+interface KicktraqPreviewPayload {
+  projectName: string;
+  summary: {
+    incoming: { pledged_usd: number; backers_count: number; goal_usd: number; currency: string | null } | null;
+    current: { pledged_usd: number; backers_count: number; goal_usd: number };
+  };
+  daily: {
+    incoming: { days: KicktraqDayRow[]; count: number; sumPledged: number; sumBackers: number; dateFrom: string | null; dateTo: string | null };
+    current: { snapshotCount: number; dateFrom: string | null; dateTo: string | null };
+  };
+  validation: {
+    pledgedMatchPct: number | null;
+    backersMatchPct: number | null;
+    negativeDays: number;
+    confidence: 'high' | 'low' | 'none';
+  };
+}
+
+type SummaryMode = 'overwrite' | 'skip';
+type DailyMode = 'overwrite' | 'merge';
+
 interface QualityReport {
   generatedAt: number;
   totals: {
@@ -825,6 +853,25 @@ export default function DataQualityPage() {
   const [errorsPage, setErrorsPage] = useState(0);
   const [workbenchLimit, setWorkbenchLimit] = useState(5);
 
+  // ─── Kicktraq import (manual preview/commit) ───────────────────────────────
+  const [ktModalProjectId, setKtModalProjectId] = useState<string | null>(null);
+  const [ktPreview, setKtPreview] = useState<KicktraqPreviewPayload | null>(null);
+  const [ktPreviewLoading, setKtPreviewLoading] = useState(false);
+  const [ktPreviewError, setKtPreviewError] = useState<string | null>(null);
+  const [ktImportSummary, setKtImportSummary] = useState(true);
+  const [ktImportDaily, setKtImportDaily] = useState(true);
+  const [ktSummaryMode, setKtSummaryMode] = useState<SummaryMode>('overwrite');
+  const [ktDailyMode, setKtDailyMode] = useState<DailyMode>('overwrite');
+  const [ktCommitting, setKtCommitting] = useState(false);
+
+  const [ktBatchOpen, setKtBatchOpen] = useState(false);
+  const [ktBatchSummaryImport, setKtBatchSummaryImport] = useState(true);
+  const [ktBatchSummaryMode, setKtBatchSummaryMode] = useState<SummaryMode>('skip');
+  const [ktBatchDailyImport, setKtBatchDailyImport] = useState(true);
+  const [ktBatchDailyMode, setKtBatchDailyMode] = useState<DailyMode>('overwrite');
+  const [ktBatchSkipLowConfidence, setKtBatchSkipLowConfidence] = useState(true);
+  const [ktBatchRunning, setKtBatchRunning] = useState(false);
+
   const KS_LIVE_PAGE_SIZE = 8;
   const RUNS_PAGE_SIZE = 6;
   const ERRORS_PAGE_SIZE = 5;
@@ -960,6 +1007,128 @@ export default function DataQualityPage() {
       setActionMessage({ kind: 'error', text: 'Network error while running batch action.' });
     } finally {
       setRunningAction(null);
+    }
+  };
+
+  // ─── Kicktraq preview/commit handlers ──────────────────────────────────────
+  const closeKtModal = () => {
+    setKtModalProjectId(null);
+    setKtPreview(null);
+    setKtPreviewError(null);
+  };
+
+  const openKicktraqPreview = async (projectId: string) => {
+    setKtModalProjectId(projectId);
+    setKtPreview(null);
+    setKtPreviewError(null);
+    setKtPreviewLoading(true);
+    setKtImportSummary(true);
+    setKtImportDaily(true);
+    setKtSummaryMode('overwrite');
+    setKtDailyMode('overwrite');
+    try {
+      const res = await fetch('/api/data-quality/workbench', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId, action: 'kicktraq_preview' }),
+      });
+      const data = await res.json().catch(() => ({})) as { ok?: boolean; preview?: KicktraqPreviewPayload; error?: string; message?: string };
+      if (!res.ok || !data.ok || !data.preview) {
+        setKtPreviewError(data.error ?? data.message ?? (cn ? '抓取失败。' : 'Preview failed.'));
+        return;
+      }
+      const preview = data.preview;
+      setKtPreview(preview);
+      setKtImportSummary(!!preview.summary.incoming);
+      setKtImportDaily(preview.daily.incoming.count > 0);
+      // Default existing data to overwrite; if daily already exists, default to merge (gap-fill).
+      setKtSummaryMode('overwrite');
+      setKtDailyMode(preview.daily.current.snapshotCount > 0 ? 'merge' : 'overwrite');
+    } catch {
+      setKtPreviewError(cn ? '网络错误。' : 'Network error.');
+    } finally {
+      setKtPreviewLoading(false);
+    }
+  };
+
+  const confirmKicktraqCommit = async () => {
+    if (!ktModalProjectId || !ktPreview) return;
+    if (!ktImportSummary && !ktImportDaily) return;
+    setKtCommitting(true);
+    setActionMessage(null);
+    try {
+      const res = await fetch('/api/data-quality/workbench', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          projectId: ktModalProjectId,
+          action: 'kicktraq_commit',
+          parts: { summary: ktImportSummary, daily: ktImportDaily },
+          summaryMode: ktSummaryMode,
+          dailyMode: ktDailyMode,
+          payload: {
+            summary: ktImportSummary ? ktPreview.summary.incoming : undefined,
+            days: ktImportDaily ? ktPreview.daily.incoming.days : undefined,
+          },
+        }),
+      });
+      const data = await res.json().catch(() => ({})) as { ok?: boolean; summaryWritten?: boolean; summarySkipped?: boolean; dailyWritten?: number; error?: string; message?: string };
+      if (!res.ok || !data.ok) {
+        setActionMessage({ kind: 'error', text: data.error ?? data.message ?? (cn ? '入库失败。' : 'Commit failed.') });
+      } else {
+        const parts: string[] = [];
+        if (data.summaryWritten) parts.push(cn ? '汇总已更新' : 'summary updated');
+        else if (data.summarySkipped) parts.push(cn ? '汇总已跳过（已有数据）' : 'summary skipped');
+        if ((data.dailyWritten ?? 0) > 0) parts.push(cn ? `每日明细写入 ${data.dailyWritten} 条` : `${data.dailyWritten} daily snapshots`);
+        setActionMessage({ kind: 'success', text: (cn ? 'Kicktraq 入库完成：' : 'Kicktraq import done: ') + (parts.join(cn ? '，' : ', ') || (cn ? '无变化' : 'no changes')) });
+        closeKtModal();
+        await Promise.all([load(), loadWorkbench(workbenchFilter, workbenchQuery)]);
+      }
+    } catch {
+      setActionMessage({ kind: 'error', text: cn ? '入库时网络错误。' : 'Network error while committing.' });
+    } finally {
+      setKtCommitting(false);
+    }
+  };
+
+  const runKicktraqBatch = async () => {
+    if (!selectedProjectIds.length) return;
+    if (!ktBatchSummaryImport && !ktBatchDailyImport) return;
+    setKtBatchRunning(true);
+    setActionMessage(null);
+    try {
+      const res = await fetch('/api/data-quality/workbench', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          projectIds: selectedProjectIds,
+          action: 'kicktraq_batch_commit',
+          config: {
+            summary: { import: ktBatchSummaryImport, mode: ktBatchSummaryMode },
+            daily: { import: ktBatchDailyImport, mode: ktBatchDailyMode },
+            skipLowConfidence: ktBatchSkipLowConfidence,
+          },
+        }),
+      });
+      const data = await res.json().catch(() => ({})) as {
+        ok?: boolean; succeeded?: number; failed?: number; summaryWritten?: number; dailyWritten?: number; skippedLowConfidence?: number; error?: string;
+      };
+      if (!res.ok || !data.ok) {
+        setActionMessage({ kind: 'error', text: data.error ?? (cn ? '批量入库失败。' : 'Batch import failed.') });
+      } else {
+        setActionMessage({
+          kind: 'success',
+          text: cn
+            ? `批量 Kicktraq 入库：成功 ${data.succeeded ?? 0}，失败 ${data.failed ?? 0}（汇总 ${data.summaryWritten ?? 0}，每日 ${data.dailyWritten ?? 0}，因 OCR 质量跳过每日 ${data.skippedLowConfidence ?? 0}）。`
+            : `Batch Kicktraq import: ${data.succeeded ?? 0} ok, ${data.failed ?? 0} failed (summary ${data.summaryWritten ?? 0}, daily ${data.dailyWritten ?? 0}, daily skipped on low OCR ${data.skippedLowConfidence ?? 0}).`,
+        });
+        setKtBatchOpen(false);
+        await Promise.all([load(), loadWorkbench(workbenchFilter, workbenchQuery)]);
+      }
+    } catch {
+      setActionMessage({ kind: 'error', text: cn ? '批量入库时网络错误。' : 'Network error during batch import.' });
+    } finally {
+      setKtBatchRunning(false);
     }
   };
 
@@ -1172,12 +1341,12 @@ export default function DataQualityPage() {
                 {cn ? '批量从 Kickstarter 抓取' : 'Scrape Kickstarter'}
               </button>
               <button
-                onClick={() => runBatchAction('kicktraq_import')}
-                disabled={!!runningAction}
-                title={cn ? '从 Kicktraq 抓取历史曲线并写库' : 'Import history curve from Kicktraq'}
+                onClick={() => setKtBatchOpen(true)}
+                disabled={!!runningAction || ktBatchRunning}
+                title={cn ? '配置入库方式后批量从 Kicktraq 抓取写库' : 'Configure import options, then batch import from Kicktraq'}
                 className="inline-flex items-center gap-1.5 rounded-lg bg-white px-3 py-2 text-xs font-bold text-gray-700 ring-1 ring-gray-200 hover:bg-gray-50 disabled:opacity-50"
               >
-                <UploadCloud className={`h-3.5 w-3.5 ${runningAction === 'bulk:kicktraq_import' ? 'animate-spin' : ''}`} />
+                <UploadCloud className={`h-3.5 w-3.5 ${ktBatchRunning ? 'animate-spin' : ''}`} />
                 {cn ? '批量从 Kicktraq 抓取' : 'Scrape Kicktraq'}
               </button>
               <button
@@ -1224,7 +1393,6 @@ export default function DataQualityPage() {
             <tbody className="divide-y divide-gray-50">
               {(workbench?.rows ?? []).map(project => {
                 const runningKs = runningAction === `kickstarter_sync:${project.id}`;
-                const runningKt = runningAction === `kicktraq_import:${project.id}`;
                 const fundedPct = project.goal && project.goal > 0
                   ? Math.round((Number(project.usd_pledged ?? 0) / project.goal) * 100)
                   : null;
@@ -1289,12 +1457,12 @@ export default function DataQualityPage() {
                           {cn ? '从 Kickstarter 抓取' : 'Kickstarter'}
                         </button>
                         <button
-                          onClick={() => runWorkbenchRequest(project.id, 'kicktraq_import')}
-                          disabled={!!runningAction}
-                          title={cn ? '从 Kicktraq 抓取历史曲线并写入数据库' : 'Import history curve from Kicktraq and write to DB'}
+                          onClick={() => openKicktraqPreview(project.id)}
+                          disabled={!!runningAction || ktPreviewLoading || ktCommitting}
+                          title={cn ? '预览 Kicktraq 数据，确认后再写入数据库' : 'Preview Kicktraq data, then confirm before writing to DB'}
                           className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-50"
                         >
-                          <UploadCloud className={`h-3.5 w-3.5 flex-shrink-0 ${runningKt ? 'animate-spin' : ''}`} />
+                          <UploadCloud className={`h-3.5 w-3.5 flex-shrink-0 ${(ktPreviewLoading && ktModalProjectId === project.id) ? 'animate-spin' : ''}`} />
                           {cn ? '从 Kicktraq 抓取' : 'Kicktraq'}
                         </button>
                       </div>
@@ -1572,6 +1740,225 @@ export default function DataQualityPage() {
           </div>
           <Pager page={errorsPageClamped} totalPages={errorsTotalPages} onChange={setErrorsPage} cn={cn} />
         </section>
+      )}
+
+      {ktModalProjectId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={closeKtModal}>
+          <div
+            className="max-h-[90vh] w-full max-w-2xl overflow-hidden rounded-xl bg-white shadow-xl flex flex-col"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-3 border-b border-gray-100 px-5 py-4">
+              <div className="min-w-0">
+                <h3 className="font-semibold text-gray-900">{cn ? 'Kicktraq 数据预览' : 'Kicktraq preview'}</h3>
+                <p className="mt-0.5 truncate text-xs text-gray-500">{ktPreview?.projectName ?? ''}</p>
+              </div>
+              {ktPreview && (() => {
+                const c = ktPreview.validation.confidence;
+                const map = {
+                  high: { cls: 'bg-green-100 text-green-700', cn: '可靠', en: 'Reliable' },
+                  low: { cls: 'bg-amber-100 text-amber-700', cn: 'OCR 可能异常', en: 'Check OCR' },
+                  none: { cls: 'bg-gray-100 text-gray-500', cn: '无每日数据', en: 'No daily data' },
+                }[c];
+                return <span className={`flex-shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold ${map.cls}`}>{cn ? map.cn : map.en}</span>;
+              })()}
+            </div>
+
+            <div className="flex-1 overflow-y-auto px-5 py-4">
+              {ktPreviewLoading && (
+                <div className="flex items-center justify-center gap-2 py-12 text-sm text-gray-500">
+                  <RefreshCw className="h-4 w-4 animate-spin" />
+                  {cn ? '正在从 Kicktraq 抓取（含 OCR），请稍候…' : 'Fetching from Kicktraq (incl. OCR)…'}
+                </div>
+              )}
+              {!ktPreviewLoading && ktPreviewError && (
+                <div className="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{ktPreviewError}</div>
+              )}
+              {!ktPreviewLoading && ktPreview && (
+                <div className="space-y-4">
+                  {/* Layer 1: summary */}
+                  <div className={`rounded-lg border p-4 ${ktImportSummary ? 'border-ks-green/40 bg-green-50/30' : 'border-gray-200 bg-gray-50/40'}`}>
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={ktImportSummary}
+                        disabled={!ktPreview.summary.incoming}
+                        onChange={e => setKtImportSummary(e.target.checked)}
+                        className="h-4 w-4 rounded border-gray-300 text-ks-green focus:ring-ks-green"
+                      />
+                      <span className="text-sm font-semibold text-gray-800">{cn ? '① 汇总（筹款 / 支持者 / 目标）' : '① Summary (pledged / backers / goal)'}</span>
+                      <span className="rounded bg-green-100 px-1.5 py-0.5 text-[10px] font-medium text-green-700">{cn ? 'HTML 文本 · 可靠' : 'HTML text · reliable'}</span>
+                    </label>
+                    {ktPreview.summary.incoming ? (
+                      <div className="mt-3 grid grid-cols-[auto_1fr_1fr] gap-x-4 gap-y-1.5 text-sm">
+                        <span className="text-xs text-gray-400">{cn ? '字段' : 'Field'}</span>
+                        <span className="text-xs text-gray-400">{cn ? '现有' : 'Current'}</span>
+                        <span className="text-xs text-gray-400">{cn ? '即将入库' : 'Incoming'}</span>
+                        {([
+                          { label: cn ? '总筹款' : 'Pledged', cur: ktPreview.summary.current.pledged_usd, inc: ktPreview.summary.incoming.pledged_usd, money: true },
+                          { label: cn ? '支持者' : 'Backers', cur: ktPreview.summary.current.backers_count, inc: ktPreview.summary.incoming.backers_count, money: false },
+                          { label: cn ? '目标' : 'Goal', cur: ktPreview.summary.current.goal_usd, inc: ktPreview.summary.incoming.goal_usd, money: true },
+                        ]).map(row => {
+                          const changed = Math.round(row.cur) !== Math.round(row.inc);
+                          const fmt = (v: number) => (row.money ? fmtMoney(v) : fmtNum(v));
+                          return (
+                            <div key={row.label} className="contents">
+                              <span className="text-gray-600">{row.label}</span>
+                              <span className="tabular-nums text-gray-500">{fmt(row.cur)}</span>
+                              <span className={`tabular-nums font-semibold ${changed ? 'text-ks-green' : 'text-gray-400'}`}>{fmt(row.inc)}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <p className="mt-2 text-xs text-gray-400">{cn ? '未解析到汇总数据。' : 'No summary data parsed.'}</p>
+                    )}
+                    {ktImportSummary && ktPreview.summary.incoming && (Number(ktPreview.summary.current.pledged_usd) > 0 || Number(ktPreview.summary.current.backers_count) > 0) && (
+                      <div className="mt-3 flex items-center gap-3 text-xs">
+                        <span className="text-gray-500">{cn ? '已有数据：' : 'Existing data:'}</span>
+                        {(['overwrite', 'skip'] as SummaryMode[]).map(m => (
+                          <label key={m} className="flex items-center gap-1 cursor-pointer">
+                            <input type="radio" name="kt-summary-mode" checked={ktSummaryMode === m} onChange={() => setKtSummaryMode(m)} className="text-ks-green focus:ring-ks-green" />
+                            <span className="text-gray-700">{m === 'overwrite' ? (cn ? '覆盖' : 'Overwrite') : (cn ? '跳过' : 'Skip')}</span>
+                          </label>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Layer 2: daily */}
+                  <div className={`rounded-lg border p-4 ${ktImportDaily ? 'border-ks-green/40 bg-green-50/30' : 'border-gray-200 bg-gray-50/40'}`}>
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={ktImportDaily}
+                        disabled={ktPreview.daily.incoming.count === 0}
+                        onChange={e => setKtImportDaily(e.target.checked)}
+                        className="h-4 w-4 rounded border-gray-300 text-ks-green focus:ring-ks-green"
+                      />
+                      <span className="text-sm font-semibold text-gray-800">{cn ? '② 每日明细曲线' : '② Daily curve'}</span>
+                      <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">{cn ? 'OCR · 尽力回填' : 'OCR · best-effort'}</span>
+                    </label>
+                    <div className="mt-3 grid grid-cols-2 gap-4 text-sm">
+                      <div>
+                        <p className="text-xs text-gray-400">{cn ? '现有' : 'Current'}</p>
+                        <p className="text-gray-600">{cn ? `${fmtNum(ktPreview.daily.current.snapshotCount)} 个快照` : `${fmtNum(ktPreview.daily.current.snapshotCount)} snapshots`}</p>
+                        {ktPreview.daily.current.dateFrom && <p className="text-xs text-gray-400">{ktPreview.daily.current.dateFrom} → {ktPreview.daily.current.dateTo}</p>}
+                      </div>
+                      <div>
+                        <p className="text-xs text-gray-400">{cn ? '即将入库' : 'Incoming'}</p>
+                        <p className="font-semibold text-gray-800">{cn ? `${fmtNum(ktPreview.daily.incoming.count)} 天` : `${fmtNum(ktPreview.daily.incoming.count)} days`}</p>
+                        {ktPreview.daily.incoming.dateFrom && <p className="text-xs text-gray-400">{ktPreview.daily.incoming.dateFrom} → {ktPreview.daily.incoming.dateTo}</p>}
+                      </div>
+                    </div>
+                    <p className="mt-2 text-[11px] text-gray-400">
+                      {cn ? '自校验（仅供参考，汇总含结束后销售，差异正常）：' : 'Self-check (informational; summary includes post-campaign sales):'}
+                      {' '}
+                      {cn ? '筹款' : 'pledged'} {ktPreview.validation.pledgedMatchPct ?? '—'}% · {cn ? '支持者' : 'backers'} {ktPreview.validation.backersMatchPct ?? '—'}%
+                      {ktPreview.validation.negativeDays > 0 && <span className="text-amber-600"> · {cn ? `${ktPreview.validation.negativeDays} 天出现负增长` : `${ktPreview.validation.negativeDays} negative days`}</span>}
+                    </p>
+                    {ktPreview.validation.confidence === 'low' && (
+                      <p className="mt-1 text-[11px] font-medium text-amber-600">{cn ? '⚠ OCR 可能读取异常，请确认后再入库每日明细。' : '⚠ OCR may have mis-read; confirm before importing daily data.'}</p>
+                    )}
+                    {ktImportDaily && ktPreview.daily.current.snapshotCount > 0 && (
+                      <div className="mt-3 flex items-center gap-3 text-xs">
+                        <span className="text-gray-500">{cn ? '已有数据：' : 'Existing data:'}</span>
+                        {(['overwrite', 'merge'] as DailyMode[]).map(m => (
+                          <label key={m} className="flex items-center gap-1 cursor-pointer">
+                            <input type="radio" name="kt-daily-mode" checked={ktDailyMode === m} onChange={() => setKtDailyMode(m)} className="text-ks-green focus:ring-ks-green" />
+                            <span className="text-gray-700">{m === 'overwrite' ? (cn ? '覆盖（先清空）' : 'Overwrite') : (cn ? '合并（补缺失）' : 'Merge (gap-fill)')}</span>
+                          </label>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center justify-end gap-2 border-t border-gray-100 px-5 py-3">
+              <button onClick={closeKtModal} disabled={ktCommitting} className="rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50">
+                {cn ? '取消' : 'Cancel'}
+              </button>
+              <button
+                onClick={confirmKicktraqCommit}
+                disabled={ktCommitting || ktPreviewLoading || !ktPreview || (!ktImportSummary && !ktImportDaily)}
+                className="inline-flex items-center gap-2 rounded-lg bg-ks-green px-4 py-2 text-sm font-semibold text-white hover:bg-ks-green-dark disabled:opacity-50"
+              >
+                {ktCommitting && <RefreshCw className="h-4 w-4 animate-spin" />}
+                {cn ? `确认入库（${(ktImportSummary ? 1 : 0) + (ktImportDaily ? 1 : 0)} 项）` : `Confirm import (${(ktImportSummary ? 1 : 0) + (ktImportDaily ? 1 : 0)})`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {ktBatchOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => !ktBatchRunning && setKtBatchOpen(false)}>
+          <div className="w-full max-w-lg overflow-hidden rounded-xl bg-white shadow-xl" onClick={e => e.stopPropagation()}>
+            <div className="border-b border-gray-100 px-5 py-4">
+              <h3 className="font-semibold text-gray-900">{cn ? '批量从 Kicktraq 入库' : 'Batch import from Kicktraq'}</h3>
+              <p className="mt-0.5 text-xs text-gray-500">{cn ? `共 ${selectedProjectIds.length} 个选中项目 · 先设定入库规则` : `${selectedProjectIds.length} selected projects · set import rules first`}</p>
+            </div>
+            <div className="space-y-4 px-5 py-4">
+              <div className="rounded-lg border border-gray-200 p-4">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" checked={ktBatchSummaryImport} onChange={e => setKtBatchSummaryImport(e.target.checked)} className="h-4 w-4 rounded border-gray-300 text-ks-green focus:ring-ks-green" />
+                  <span className="text-sm font-semibold text-gray-800">{cn ? '① 汇总（筹款 / 支持者 / 目标）' : '① Summary'}</span>
+                  <span className="rounded bg-green-100 px-1.5 py-0.5 text-[10px] font-medium text-green-700">{cn ? 'HTML · 可靠' : 'HTML · reliable'}</span>
+                </label>
+                {ktBatchSummaryImport && (
+                  <div className="mt-3 flex items-center gap-3 text-xs">
+                    <span className="text-gray-500">{cn ? '已有数据：' : 'Existing:'}</span>
+                    {(['overwrite', 'skip'] as SummaryMode[]).map(m => (
+                      <label key={m} className="flex items-center gap-1 cursor-pointer">
+                        <input type="radio" name="kt-batch-summary" checked={ktBatchSummaryMode === m} onChange={() => setKtBatchSummaryMode(m)} className="text-ks-green focus:ring-ks-green" />
+                        <span className="text-gray-700">{m === 'overwrite' ? (cn ? '覆盖' : 'Overwrite') : (cn ? '跳过' : 'Skip')}</span>
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div className="rounded-lg border border-gray-200 p-4">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" checked={ktBatchDailyImport} onChange={e => setKtBatchDailyImport(e.target.checked)} className="h-4 w-4 rounded border-gray-300 text-ks-green focus:ring-ks-green" />
+                  <span className="text-sm font-semibold text-gray-800">{cn ? '② 每日明细曲线' : '② Daily curve'}</span>
+                  <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">{cn ? 'OCR · 可能不准' : 'OCR · may be off'}</span>
+                </label>
+                {ktBatchDailyImport && (
+                  <div className="mt-3 space-y-2 text-xs">
+                    <div className="flex items-center gap-3">
+                      <span className="text-gray-500">{cn ? '已有数据：' : 'Existing:'}</span>
+                      {(['overwrite', 'merge'] as DailyMode[]).map(m => (
+                        <label key={m} className="flex items-center gap-1 cursor-pointer">
+                          <input type="radio" name="kt-batch-daily" checked={ktBatchDailyMode === m} onChange={() => setKtBatchDailyMode(m)} className="text-ks-green focus:ring-ks-green" />
+                          <span className="text-gray-700">{m === 'overwrite' ? (cn ? '覆盖' : 'Overwrite') : (cn ? '合并' : 'Merge')}</span>
+                        </label>
+                      ))}
+                    </div>
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input type="checkbox" checked={ktBatchSkipLowConfidence} onChange={e => setKtBatchSkipLowConfidence(e.target.checked)} className="h-4 w-4 rounded border-gray-300 text-ks-green focus:ring-ks-green" />
+                      <span className="text-gray-700">{cn ? 'OCR 质量异常的项目自动跳过每日明细（只入汇总）' : 'Auto-skip daily for projects with bad OCR (summary only)'}</span>
+                    </label>
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-2 border-t border-gray-100 px-5 py-3">
+              <button onClick={() => setKtBatchOpen(false)} disabled={ktBatchRunning} className="rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50">
+                {cn ? '取消' : 'Cancel'}
+              </button>
+              <button
+                onClick={runKicktraqBatch}
+                disabled={ktBatchRunning || (!ktBatchSummaryImport && !ktBatchDailyImport)}
+                className="inline-flex items-center gap-2 rounded-lg bg-ks-green px-4 py-2 text-sm font-semibold text-white hover:bg-ks-green-dark disabled:opacity-50"
+              >
+                {ktBatchRunning && <RefreshCw className="h-4 w-4 animate-spin" />}
+                {cn ? `开始批量入库（${selectedProjectIds.length}）` : `Start batch import (${selectedProjectIds.length})`}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
