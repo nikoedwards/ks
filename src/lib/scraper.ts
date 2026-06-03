@@ -1833,7 +1833,8 @@ async function scrapeKicktraqViaQwen(pageUrl: string, cookieStr: string, diagnos
   const qwenModel = getOptionalEnv('QWEN_VISION_MODEL') || 'qwen-vl-plus';
   const qwenBaseUrl = (getOptionalEnv('QWEN_BASE_URL') || 'https://dashscope.aliyuncs.com/compatible-mode/v1').replace(/\/+$/, '');
   const qwenEndpoint = `${qwenBaseUrl}/chat/completions`;
-  const qwenTimeoutMs = Math.max(60_000, Number(getOptionalEnv('QWEN_TIMEOUT_MS') || 180_000));
+  const qwenTimeoutMs = Math.max(30_000, Number(getOptionalEnv('QWEN_TIMEOUT_MS') || 110_000));
+  const qwenStartedAt = Date.now();
   if (diagnostics) diagnostics.ocrProvider = 'qwen';
   if (diagnostics) diagnostics.ocrEndpoint = qwenEndpoint;
   if (diagnostics) diagnostics.ocrTimeoutMs = qwenTimeoutMs;
@@ -1846,7 +1847,7 @@ async function scrapeKicktraqViaQwen(pageUrl: string, cookieStr: string, diagnos
       const body = JSON.stringify({
         model: qwenModel,
         temperature: 0,
-        max_tokens: 8192,
+        max_tokens: 4096,
         messages: [{
           role: 'user',
           content: [
@@ -1860,7 +1861,11 @@ async function scrapeKicktraqViaQwen(pageUrl: string, cookieStr: string, diagnos
       });
 
       let res: Response | null = null;
-      for (let attempt = 0; attempt < 3; attempt++) {
+      // Only 2 attempts, and never retry a timeout: a single Qwen call that already
+      // blew past the timeout will only blow past it again, so retrying just makes the
+      // whole request hang well past the client's abort window. Retry only transient
+      // network errors and 429s.
+      for (let attempt = 0; attempt < 2; attempt++) {
         try {
           res = await fetch(qwenEndpoint, {
             method: 'POST',
@@ -1872,11 +1877,13 @@ async function scrapeKicktraqViaQwen(pageUrl: string, cookieStr: string, diagnos
             signal: AbortSignal.timeout(qwenTimeoutMs),
           });
         } catch (e) {
-          if (attempt === 2) throw e;
+          const name = e instanceof Error ? e.name : '';
+          const isTimeout = name === 'TimeoutError' || name === 'AbortError';
+          if (attempt === 1 || isTimeout) throw e;
           await sleep(1500 * (attempt + 1));
           continue;
         }
-        if (res.status !== 429 || attempt === 2) break;
+        if (res.status !== 429 || attempt === 1) break;
         const retryAfter = Number(res.headers.get('retry-after') ?? 0);
         await sleep(retryAfter > 0 ? retryAfter * 1000 : 1500 * (attempt + 1));
       }
@@ -1915,10 +1922,15 @@ async function scrapeKicktraqViaQwen(pageUrl: string, cookieStr: string, diagnos
     if (diagnostics) diagnostics.debug = { ...(diagnostics.debug ?? {}), structuredRows: days };
     return days;
   } catch (e) {
-    console.log('[Qwen OCR] exception: ' + String(e));
+    const elapsedMs = Date.now() - qwenStartedAt;
+    const name = e instanceof Error ? e.name : '';
+    const isTimeout = name === 'TimeoutError' || name === 'AbortError';
+    console.log('[Qwen OCR] exception after ' + elapsedMs + 'ms: ' + String(e));
     if (diagnostics) {
-      diagnostics.ocrError = String(e);
-      diagnostics.reason = `Qwen OCR request failed before receiving an HTTP response.`;
+      diagnostics.ocrError = `${String(e)} (after ${Math.round(elapsedMs / 1000)}s)`;
+      diagnostics.reason = isTimeout
+        ? `Qwen OCR timed out after ${Math.round(elapsedMs / 1000)}s (limit ${Math.round(qwenTimeoutMs / 1000)}s). The DashScope endpoint may be slow/blocked from this server region — try QWEN_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1 or an OpenAI key.`
+        : `Qwen OCR request failed before receiving an HTTP response (after ${Math.round(elapsedMs / 1000)}s).`;
     }
     return [];
   }

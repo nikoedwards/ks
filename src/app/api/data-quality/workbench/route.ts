@@ -366,7 +366,7 @@ async function runKicktraqDaily(
       },
       message: metrics.count === 0
         ? (hasOcr
-            ? `No daily rows parsed. page=${diagnostics.pageStatus ?? '-'}, json=${diagnostics.jsonStatus ?? '-'}, image=${diagnostics.imageStatus ?? '-'}, ocr=${diagnostics.ocrProvider ?? '-'} ${diagnostics.ocrStatus ?? '-'}.${diagnostics.reason ? ' ' + diagnostics.reason : ''}`
+            ? `No daily rows parsed. page=${diagnostics.pageStatus ?? '-'}, json=${diagnostics.jsonStatus ?? '-'}, image=${diagnostics.imageStatus ?? '-'}, ocr=${diagnostics.ocrProvider ?? '-'} ${diagnostics.ocrStatus ?? '-'}.${diagnostics.ocrError ? ' ' + diagnostics.ocrError : ''}${diagnostics.reason ? ' ' + diagnostics.reason : ''}`
             : 'No OCR provider key configured, so the image-only daily curve cannot be read.')
         : undefined,
       diagnostics,
