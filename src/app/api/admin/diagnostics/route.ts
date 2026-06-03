@@ -87,8 +87,71 @@ async function probeBrowserWorker(): Promise<{ health: WorkerHealthResult; diag:
   return { health, diag };
 }
 
+interface OcrPingResult {
+  ok: boolean;
+  configured: boolean;
+  status: number | null;
+  latencyMs: number | null;
+  model: string;
+  endpoint: string;
+  reply?: string;
+  message?: string;
+}
+
+// Minimal text-only probe of the Qwen endpoint to isolate "is the key/endpoint
+// reachable and fast" from "is the big chart image too slow". No images, 5 tokens.
+async function probeQwen(timeoutMs: number): Promise<OcrPingResult> {
+  const key = process.env.QWEN_API_KEY?.trim();
+  const model = process.env.QWEN_VISION_MODEL?.trim() || 'qwen-vl-plus';
+  const baseUrl = (process.env.QWEN_BASE_URL?.trim() || 'https://dashscope.aliyuncs.com/compatible-mode/v1').replace(/\/+$/, '');
+  const endpoint = `${baseUrl}/chat/completions`;
+  if (!key) {
+    return { ok: false, configured: false, status: null, latencyMs: null, model, endpoint, message: 'QWEN_API_KEY is not set on this service.' };
+  }
+  const startedAt = Date.now();
+  try {
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
+      body: JSON.stringify({
+        model,
+        max_tokens: 5,
+        temperature: 0,
+        messages: [{ role: 'user', content: 'Reply with the single word OK.' }],
+      }),
+      signal: AbortSignal.timeout(timeoutMs),
+      cache: 'no-store',
+    });
+    const text = await res.text();
+    let reply: string;
+    try {
+      const j = JSON.parse(text) as { choices?: Array<{ message?: { content?: string } }> };
+      reply = j.choices?.[0]?.message?.content ?? text.slice(0, 300);
+    } catch {
+      reply = text.slice(0, 300);
+    }
+    return { ok: res.ok, configured: true, status: res.status, latencyMs: Date.now() - startedAt, model, endpoint, reply };
+  } catch (e) {
+    return {
+      ok: false,
+      configured: true,
+      status: null,
+      latencyMs: Date.now() - startedAt,
+      model,
+      endpoint,
+      message: e instanceof Error ? `${e.name}: ${e.message}` : String(e),
+    };
+  }
+}
+
 export async function GET(req: NextRequest) {
   if (!requireAdmin(req)) return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+  const ocrPing = req.nextUrl.searchParams.get('ocrPing') === '1';
+  if (ocrPing) {
+    const timeoutMs = Math.min(120_000, Math.max(5_000, Number(req.nextUrl.searchParams.get('timeoutMs')) || 30_000));
+    const qwenPing = await probeQwen(timeoutMs);
+    return NextResponse.json({ qwenPing });
+  }
   const probeWorker = req.nextUrl.searchParams.get('probeWorker') !== '0';
   const diagnostics = getDiagnosticsReport();
   const worker = probeWorker ? await probeBrowserWorker() : { health: null, diag: null };
