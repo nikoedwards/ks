@@ -157,6 +157,15 @@ interface KicktraqPreviewPayload {
   };
 }
 
+interface KickstarterPreviewPayload {
+  projectName: string;
+  summary: {
+    incoming: { pledged_usd: number; backers_count: number; goal_usd: number; state: string | null; currency: string | null } | null;
+    current: { pledged_usd: number; backers_count: number; goal_usd: number; state: string | null };
+  };
+  warning?: string;
+}
+
 type SummaryMode = 'overwrite' | 'skip';
 type DailyMode = 'overwrite' | 'merge';
 
@@ -866,6 +875,13 @@ export default function DataQualityPage() {
   const [ktDailyLoading, setKtDailyLoading] = useState(false);
   const [ktDailyError, setKtDailyError] = useState<string | null>(null);
 
+  // ─── Kickstarter import (manual preview/confirm) ───────────────────────────
+  const [ksModalProjectId, setKsModalProjectId] = useState<string | null>(null);
+  const [ksPreview, setKsPreview] = useState<KickstarterPreviewPayload | null>(null);
+  const [ksPreviewLoading, setKsPreviewLoading] = useState(false);
+  const [ksPreviewError, setKsPreviewError] = useState<string | null>(null);
+  const [ksCommitting, setKsCommitting] = useState(false);
+
   const [ktBatchOpen, setKtBatchOpen] = useState(false);
   const [ktBatchSummaryImport, setKtBatchSummaryImport] = useState(true);
   const [ktBatchSummaryMode, setKtBatchSummaryMode] = useState<SummaryMode>('skip');
@@ -1142,6 +1158,68 @@ export default function DataQualityPage() {
       setActionMessage({ kind: 'error', text: cn ? '入库时网络错误。' : 'Network error while committing.' });
     } finally {
       setKtCommitting(false);
+    }
+  };
+
+  // ─── Kickstarter preview/confirm handlers (mirror the Kicktraq flow) ────────
+  const closeKsModal = () => {
+    setKsModalProjectId(null);
+    setKsPreview(null);
+    setKsPreviewError(null);
+  };
+
+  const openKickstarterPreview = async (projectId: string) => {
+    setKsModalProjectId(projectId);
+    setKsPreview(null);
+    setKsPreviewError(null);
+    setKsPreviewLoading(true);
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 70_000);
+      const res = await fetch('/api/data-quality/workbench', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId, action: 'kickstarter_preview' }),
+        signal: ctrl.signal,
+      });
+      clearTimeout(timer);
+      const data = await res.json().catch(() => ({})) as { ok?: boolean; preview?: KickstarterPreviewPayload; error?: string; message?: string };
+      if (!res.ok || !data.ok || !data.preview) {
+        setKsPreviewError(data.error ?? data.message ?? (cn ? '预览失败。' : 'Preview failed.'));
+        return;
+      }
+      setKsPreview(data.preview);
+    } catch (e) {
+      setKsPreviewError((e instanceof Error && e.name === 'AbortError')
+        ? (cn ? '读取超时，请重试。' : 'Preview timed out, please retry.')
+        : (cn ? '网络错误。' : 'Network error.'));
+    } finally {
+      setKsPreviewLoading(false);
+    }
+  };
+
+  const confirmKickstarterCommit = async () => {
+    if (!ksModalProjectId) return;
+    setKsCommitting(true);
+    setActionMessage(null);
+    try {
+      const res = await fetch('/api/data-quality/workbench', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId: ksModalProjectId, action: 'kickstarter_sync' }),
+      });
+      const data = await res.json().catch(() => ({})) as { ok?: boolean; message?: string; error?: string; source?: string };
+      if (!res.ok || !data.ok) {
+        setActionMessage({ kind: 'error', text: data.error ?? data.message ?? (cn ? '入库失败。' : 'Sync failed.') });
+      } else {
+        setActionMessage({ kind: 'success', text: `${data.message ?? (cn ? '已从 Kickstarter 更新。' : 'Synced from Kickstarter.')}${data.source ? ` | source=${data.source}` : ''}` });
+        closeKsModal();
+        await Promise.all([load(), loadWorkbench(workbenchFilter, workbenchQuery)]);
+      }
+    } catch {
+      setActionMessage({ kind: 'error', text: cn ? '入库时网络错误。' : 'Network error while syncing.' });
+    } finally {
+      setKsCommitting(false);
     }
   };
 
@@ -1502,12 +1580,12 @@ export default function DataQualityPage() {
                     <td className="px-5 py-4">
                       <div className="flex flex-nowrap justify-end gap-1.5">
                         <button
-                          onClick={() => runWorkbenchRequest(project.id, 'kickstarter_sync')}
-                          disabled={!!runningAction}
-                          title={cn ? '从 Kickstarter 重新抓取最新数据并写入数据库' : 'Re-scrape latest data from Kickstarter and write to DB'}
+                          onClick={() => openKickstarterPreview(project.id)}
+                          disabled={!!runningAction || ksPreviewLoading || ksCommitting}
+                          title={cn ? '预览 Kickstarter 最新数据，确认后再写入数据库' : 'Preview latest Kickstarter data, then confirm before writing to DB'}
                           className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg bg-ks-green px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-ks-green-dark disabled:opacity-50"
                         >
-                          <RefreshCw className={`h-3.5 w-3.5 flex-shrink-0 ${runningKs ? 'animate-spin' : ''}`} />
+                          <RefreshCw className={`h-3.5 w-3.5 flex-shrink-0 ${(runningKs || (ksPreviewLoading && ksModalProjectId === project.id)) ? 'animate-spin' : ''}`} />
                           {cn ? '从 Kickstarter 抓取' : 'Kickstarter'}
                         </button>
                         <button
@@ -1970,6 +2048,92 @@ export default function DataQualityPage() {
               >
                 {ktCommitting && <RefreshCw className="h-4 w-4 animate-spin" />}
                 {cn ? `确认入库（${(ktImportSummary ? 1 : 0) + (ktImportDaily ? 1 : 0)} 项）` : `Confirm import (${(ktImportSummary ? 1 : 0) + (ktImportDaily ? 1 : 0)})`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {ksModalProjectId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={closeKsModal}>
+          <div
+            className="max-h-[90vh] w-full max-w-2xl overflow-hidden rounded-xl bg-white shadow-xl flex flex-col"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-3 border-b border-gray-100 px-5 py-4">
+              <div className="min-w-0">
+                <h3 className="font-semibold text-gray-900">{cn ? 'Kickstarter 数据预览' : 'Kickstarter preview'}</h3>
+                <p className="mt-0.5 truncate text-xs text-gray-500">{ksPreview?.projectName ?? ''}</p>
+              </div>
+              <span className="flex-shrink-0 rounded-full bg-green-100 px-2.5 py-1 text-xs font-semibold text-green-700">{cn ? 'Kickstarter 官方' : 'KS official'}</span>
+            </div>
+
+            <div className="flex-1 overflow-y-auto px-5 py-4">
+              {ksPreviewLoading && (
+                <div className="flex items-center justify-center gap-2 py-12 text-sm text-gray-500">
+                  <RefreshCw className="h-4 w-4 animate-spin" />
+                  {cn ? '正在读取 Kickstarter 数据…' : 'Loading Kickstarter data…'}
+                </div>
+              )}
+              {!ksPreviewLoading && ksPreviewError && (
+                <div className="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{ksPreviewError}</div>
+              )}
+              {!ksPreviewLoading && ksPreview && (
+                <div className="space-y-4">
+                  {ksPreview.warning && (
+                    <div className="rounded-lg bg-amber-50 px-4 py-3 text-xs text-amber-700">{ksPreview.warning}</div>
+                  )}
+                  <div className="rounded-lg border border-ks-green/40 bg-green-50/30 p-4">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-semibold text-gray-800">{cn ? '汇总（筹款 / 支持者 / 目标 / 状态）' : 'Summary (pledged / backers / goal / state)'}</span>
+                      <span className="rounded bg-green-100 px-1.5 py-0.5 text-[10px] font-medium text-green-700">{cn ? '官方 JSON' : 'official JSON'}</span>
+                    </div>
+                    {ksPreview.summary.incoming ? (
+                      <div className="mt-3 grid grid-cols-[auto_1fr_1fr] gap-x-4 gap-y-1.5 text-sm">
+                        <span className="text-xs text-gray-400">{cn ? '字段' : 'Field'}</span>
+                        <span className="text-xs text-gray-400">{cn ? '现有' : 'Current'}</span>
+                        <span className="text-xs text-gray-400">{cn ? '即将入库' : 'Incoming'}</span>
+                        {([
+                          { label: cn ? '总筹款' : 'Pledged', cur: ksPreview.summary.current.pledged_usd, inc: ksPreview.summary.incoming.pledged_usd, money: true },
+                          { label: cn ? '支持者' : 'Backers', cur: ksPreview.summary.current.backers_count, inc: ksPreview.summary.incoming.backers_count, money: false },
+                          { label: cn ? '目标' : 'Goal', cur: ksPreview.summary.current.goal_usd, inc: ksPreview.summary.incoming.goal_usd, money: true },
+                        ]).map(row => {
+                          const changed = Math.round(row.cur) !== Math.round(row.inc);
+                          const fmt = (v: number) => (row.money ? fmtMoney(v) : fmtNum(v));
+                          return (
+                            <div key={row.label} className="contents">
+                              <span className="text-gray-600">{row.label}</span>
+                              <span className="tabular-nums text-gray-500">{fmt(row.cur)}</span>
+                              <span className={`tabular-nums font-semibold ${changed ? 'text-ks-green' : 'text-gray-400'}`}>{fmt(row.inc)}</span>
+                            </div>
+                          );
+                        })}
+                        <div className="contents">
+                          <span className="text-gray-600">{cn ? '状态' : 'State'}</span>
+                          <span className="tabular-nums text-gray-500">{ksPreview.summary.current.state ?? '—'}</span>
+                          <span className={`tabular-nums font-semibold ${(ksPreview.summary.current.state ?? '') !== (ksPreview.summary.incoming.state ?? '') ? 'text-ks-green' : 'text-gray-400'}`}>{ksPreview.summary.incoming.state ?? '—'}</span>
+                        </div>
+                      </div>
+                    ) : (
+                      <p className="mt-2 text-xs text-gray-400">{cn ? '未能预取到 Kickstarter 数据；确认后将走完整同步（含浏览器 / Kicktraq 兜底）。' : 'Could not pre-fetch Kickstarter data; confirm will run the full sync with fallbacks.'}</p>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-gray-400">{cn ? '确认后将从 Kickstarter 重新抓取并写入数据库（含 rewards / 评论 / 文本变更）。' : 'Confirm re-scrapes Kickstarter and writes to the DB (rewards / comments / text changes).'}</p>
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center justify-end gap-2 border-t border-gray-100 px-5 py-3">
+              <button onClick={closeKsModal} disabled={ksCommitting} className="rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50">
+                {cn ? '取消' : 'Cancel'}
+              </button>
+              <button
+                onClick={confirmKickstarterCommit}
+                disabled={ksCommitting || ksPreviewLoading}
+                className="inline-flex items-center gap-2 rounded-lg bg-ks-green px-4 py-2 text-sm font-semibold text-white hover:bg-ks-green-dark disabled:opacity-50"
+              >
+                {ksCommitting && <RefreshCw className="h-4 w-4 animate-spin" />}
+                {cn ? '确认抓取并入库' : 'Confirm & sync'}
               </button>
             </div>
           </div>

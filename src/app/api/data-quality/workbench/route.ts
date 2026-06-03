@@ -17,6 +17,7 @@ import {
   buildOcrAnchor,
   type KicktraqDay,
   type KicktraqSummary,
+  previewKickstarterSummary,
   previewKicktraqImport,
   scrapeAndStore,
   scrapeKicktraqDetailed,
@@ -112,6 +113,52 @@ async function runKickstarterBasicSync(projectId: string, action: string) {
       recentErrors,
     },
     status: result.ok ? 200 : 502,
+  };
+}
+
+// Read-only preview for the Kickstarter import (mirrors the Kicktraq preview flow):
+// fetch the live KS summary WITHOUT writing, so the modal can show current vs
+// incoming before the user confirms the full (writing) sync.
+async function runKickstarterPreview(projectId: string, action: string) {
+  const project = await getProjectById(projectId) as {
+    name?: string | null; source_url?: string | null; creator_slug?: string | null; slug?: string | null;
+    usd_pledged?: number | null; backers_count?: number | null; goal?: number | null; state?: string | null;
+  } | null;
+  if (!project) return { payload: { ok: false, action, error: 'Project not found' }, status: 404 };
+
+  const jsonUrl = buildProjectJsonUrl(project);
+  if (!jsonUrl) return { payload: { ok: false, action, error: 'No valid Kickstarter URL for this project' }, status: 422 };
+
+  let incoming: Awaited<ReturnType<typeof previewKickstarterSummary>> = null;
+  let warning: string | undefined;
+  try {
+    incoming = await previewKickstarterSummary(jsonUrl, projectId);
+  } catch (e) {
+    warning = `Could not pre-fetch Kickstarter data: ${String(e instanceof Error ? e.message : e).slice(0, 160)}`;
+  }
+  if (!incoming && !warning) {
+    warning = 'Kickstarter returned no data for the preview (it may be Cloudflare-blocked from this server). You can still confirm — the full sync uses additional fallbacks.';
+  }
+
+  return {
+    payload: {
+      ok: true,
+      action,
+      preview: {
+        projectName: project.name ?? '',
+        summary: {
+          incoming,
+          current: {
+            pledged_usd: Number(project.usd_pledged ?? 0),
+            backers_count: Number(project.backers_count ?? 0),
+            goal_usd: Number(project.goal ?? 0),
+            state: project.state ?? null,
+          },
+        },
+        warning,
+      },
+    },
+    status: 200,
   };
 }
 
@@ -587,6 +634,14 @@ export async function POST(req: NextRequest) {
   const projectId = body.projectId?.trim();
   if (!projectId) return NextResponse.json({ ok: false, error: 'projectId is required' }, { status: 400 });
 
+  if (action === 'kickstarter_preview') {
+    try {
+      const result = await runKickstarterPreview(projectId, action);
+      return NextResponse.json(result.payload, { status: result.status });
+    } catch (e) {
+      return NextResponse.json({ ok: false, action, error: `Preview crashed: ${String(e instanceof Error ? e.message : e).slice(0, 300)}` }, { status: 500 });
+    }
+  }
   if (action === 'kicktraq_preview') {
     try {
       const result = await runKicktraqPreview(projectId, action);

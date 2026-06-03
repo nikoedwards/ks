@@ -1176,6 +1176,30 @@ export interface ScrapeResult {
   message?: string;
 }
 
+// Read-only Kickstarter summary for the import preview: fetches + parses the KS
+// project JSON via scrapeKSJson WITHOUT writing anything, so the workbench can show
+// "current vs incoming" before the user confirms a full (writing) sync.
+export async function previewKickstarterSummary(
+  jsonUrl: string,
+  projectId?: string,
+): Promise<{ pledged_usd: number; backers_count: number; goal_usd: number; state: string | null; currency: string | null } | null> {
+  const p = await scrapeKSJson(jsonUrl, projectId, {
+    allowBrowserFallback: true,
+    directTimeoutMs: Number(getOptionalEnv('KICKSTARTER_PREVIEW_TIMEOUT_MS') || 45_000),
+    directAttempts: 2,
+  });
+  if (!p) return null;
+  const { pledgedUsd, goalUsd } = resolveUsdAmounts(p);
+  const cur = (p as { currency?: unknown }).currency;
+  return {
+    pledged_usd: Math.max(0, Math.round(pledgedUsd)),
+    backers_count: Math.max(0, Number(p.backers_count ?? p.backers ?? p.backer_count ?? 0) || 0),
+    goal_usd: Math.max(0, Math.round(goalUsd)),
+    state: typeof p.state === 'string' ? p.state : null,
+    currency: typeof cur === 'string' ? cur : null,
+  };
+}
+
 async function scrapeBasicFallback(projectId: string, jsonUrl: string, opts: ScrapeOptions = {}): Promise<ScrapeResult | null> {
   if (opts.allowHtmlFallback !== false && await scrapeKickstarterHtmlFallback(projectId, jsonUrl)) {
     return {
