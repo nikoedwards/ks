@@ -146,10 +146,10 @@ interface KicktraqPreviewPayload {
     current: { pledged_usd: number; backers_count: number; goal_usd: number };
   };
   daily: {
-    incoming: { days: KicktraqDayRow[]; count: number; sumPledged: number; sumBackers: number; dateFrom: string | null; dateTo: string | null };
+    incoming: { days: KicktraqDayRow[]; count: number; sumPledged: number; sumBackers: number; dateFrom: string | null; dateTo: string | null } | null;
     current: { snapshotCount: number; dateFrom: string | null; dateTo: string | null };
   };
-  validation: {
+  validation?: {
     pledgedMatchPct: number | null;
     backersMatchPct: number | null;
     negativeDays: number;
@@ -859,10 +859,12 @@ export default function DataQualityPage() {
   const [ktPreviewLoading, setKtPreviewLoading] = useState(false);
   const [ktPreviewError, setKtPreviewError] = useState<string | null>(null);
   const [ktImportSummary, setKtImportSummary] = useState(true);
-  const [ktImportDaily, setKtImportDaily] = useState(true);
+  const [ktImportDaily, setKtImportDaily] = useState(false);
   const [ktSummaryMode, setKtSummaryMode] = useState<SummaryMode>('overwrite');
   const [ktDailyMode, setKtDailyMode] = useState<DailyMode>('overwrite');
   const [ktCommitting, setKtCommitting] = useState(false);
+  const [ktDailyLoading, setKtDailyLoading] = useState(false);
+  const [ktDailyError, setKtDailyError] = useState<string | null>(null);
 
   const [ktBatchOpen, setKtBatchOpen] = useState(false);
   const [ktBatchSummaryImport, setKtBatchSummaryImport] = useState(true);
@@ -1015,23 +1017,29 @@ export default function DataQualityPage() {
     setKtModalProjectId(null);
     setKtPreview(null);
     setKtPreviewError(null);
+    setKtDailyError(null);
   };
 
   const openKicktraqPreview = async (projectId: string) => {
     setKtModalProjectId(projectId);
     setKtPreview(null);
     setKtPreviewError(null);
+    setKtDailyError(null);
     setKtPreviewLoading(true);
     setKtImportSummary(true);
-    setKtImportDaily(true);
+    setKtImportDaily(false);
     setKtSummaryMode('overwrite');
     setKtDailyMode('overwrite');
     try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 30_000);
       const res = await fetch('/api/data-quality/workbench', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ projectId, action: 'kicktraq_preview' }),
+        signal: ctrl.signal,
       });
+      clearTimeout(timer);
       const data = await res.json().catch(() => ({})) as { ok?: boolean; preview?: KicktraqPreviewPayload; error?: string; message?: string };
       if (!res.ok || !data.ok || !data.preview) {
         setKtPreviewError(data.error ?? data.message ?? (cn ? '抓取失败。' : 'Preview failed.'));
@@ -1040,14 +1048,60 @@ export default function DataQualityPage() {
       const preview = data.preview;
       setKtPreview(preview);
       setKtImportSummary(!!preview.summary.incoming);
-      setKtImportDaily(preview.daily.incoming.count > 0);
-      // Default existing data to overwrite; if daily already exists, default to merge (gap-fill).
+      setKtImportDaily(false);
       setKtSummaryMode('overwrite');
       setKtDailyMode(preview.daily.current.snapshotCount > 0 ? 'merge' : 'overwrite');
-    } catch {
-      setKtPreviewError(cn ? '网络错误。' : 'Network error.');
+    } catch (e) {
+      setKtPreviewError((e instanceof Error && e.name === 'AbortError')
+        ? (cn ? '读取汇总超时，请重试。' : 'Summary fetch timed out, please retry.')
+        : (cn ? '网络错误。' : 'Network error.'));
     } finally {
       setKtPreviewLoading(false);
+    }
+  };
+
+  // The slow, image-OCR daily layer is fetched on demand (own spinner + client timeout)
+  // so it never blocks the summary preview.
+  const fetchKicktraqDaily = async () => {
+    if (!ktModalProjectId || !ktPreview) return;
+    setKtDailyLoading(true);
+    setKtDailyError(null);
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 240_000);
+      const res = await fetch('/api/data-quality/workbench', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          projectId: ktModalProjectId,
+          action: 'kicktraq_daily',
+          summaryPledged: ktPreview.summary.incoming?.pledged_usd ?? 0,
+          summaryBackers: ktPreview.summary.incoming?.backers_count ?? 0,
+        }),
+        signal: ctrl.signal,
+      });
+      clearTimeout(timer);
+      const data = await res.json().catch(() => ({})) as {
+        ok?: boolean;
+        daily?: KicktraqPreviewPayload['daily']['incoming'];
+        validation?: KicktraqPreviewPayload['validation'];
+        message?: string;
+        error?: string;
+      };
+      if (!res.ok || !data.ok || !data.daily) {
+        setKtDailyError(data.error ?? data.message ?? (cn ? '每日曲线抓取失败。' : 'Daily fetch failed.'));
+        return;
+      }
+      const daily = data.daily;
+      setKtPreview(prev => prev ? { ...prev, daily: { ...prev.daily, incoming: daily }, validation: data.validation } : prev);
+      setKtImportDaily(daily.count > 0);
+      if (daily.count === 0 && data.message) setKtDailyError(data.message);
+    } catch (e) {
+      setKtDailyError((e instanceof Error && e.name === 'AbortError')
+        ? (cn ? 'OCR 抓取超时（>4 分钟），可能图表太大或模型太慢，请重试。' : 'OCR timed out (>4 min), please retry.')
+        : (cn ? '网络错误。' : 'Network error.'));
+    } finally {
+      setKtDailyLoading(false);
     }
   };
 
@@ -1068,7 +1122,7 @@ export default function DataQualityPage() {
           dailyMode: ktDailyMode,
           payload: {
             summary: ktImportSummary ? ktPreview.summary.incoming : undefined,
-            days: ktImportDaily ? ktPreview.daily.incoming.days : undefined,
+            days: ktImportDaily ? (ktPreview.daily.incoming?.days ?? []) : undefined,
           },
         }),
       });
@@ -1753,7 +1807,7 @@ export default function DataQualityPage() {
                 <h3 className="font-semibold text-gray-900">{cn ? 'Kicktraq 数据预览' : 'Kicktraq preview'}</h3>
                 <p className="mt-0.5 truncate text-xs text-gray-500">{ktPreview?.projectName ?? ''}</p>
               </div>
-              {ktPreview && (() => {
+              {ktPreview && ktPreview.validation && (() => {
                 const c = ktPreview.validation.confidence;
                 const map = {
                   high: { cls: 'bg-green-100 text-green-700', cn: '可靠', en: 'Reliable' },
@@ -1768,7 +1822,7 @@ export default function DataQualityPage() {
               {ktPreviewLoading && (
                 <div className="flex items-center justify-center gap-2 py-12 text-sm text-gray-500">
                   <RefreshCw className="h-4 w-4 animate-spin" />
-                  {cn ? '正在从 Kicktraq 抓取（含 OCR），请稍候…' : 'Fetching from Kicktraq (incl. OCR)…'}
+                  {cn ? '正在读取汇总…' : 'Loading summary…'}
                 </div>
               )}
               {!ktPreviewLoading && ktPreviewError && (
@@ -1826,13 +1880,13 @@ export default function DataQualityPage() {
                     )}
                   </div>
 
-                  {/* Layer 2: daily */}
+                  {/* Layer 2: daily (fetched on demand — OCR is slow) */}
                   <div className={`rounded-lg border p-4 ${ktImportDaily ? 'border-ks-green/40 bg-green-50/30' : 'border-gray-200 bg-gray-50/40'}`}>
                     <label className="flex items-center gap-2 cursor-pointer">
                       <input
                         type="checkbox"
                         checked={ktImportDaily}
-                        disabled={ktPreview.daily.incoming.count === 0}
+                        disabled={!ktPreview.daily.incoming || ktPreview.daily.incoming.count === 0}
                         onChange={e => setKtImportDaily(e.target.checked)}
                         className="h-4 w-4 rounded border-gray-300 text-ks-green focus:ring-ks-green"
                       />
@@ -1847,20 +1901,49 @@ export default function DataQualityPage() {
                       </div>
                       <div>
                         <p className="text-xs text-gray-400">{cn ? '即将入库' : 'Incoming'}</p>
-                        <p className="font-semibold text-gray-800">{cn ? `${fmtNum(ktPreview.daily.incoming.count)} 天` : `${fmtNum(ktPreview.daily.incoming.count)} days`}</p>
-                        {ktPreview.daily.incoming.dateFrom && <p className="text-xs text-gray-400">{ktPreview.daily.incoming.dateFrom} → {ktPreview.daily.incoming.dateTo}</p>}
+                        {ktPreview.daily.incoming ? (
+                          <>
+                            <p className="font-semibold text-gray-800">{cn ? `${fmtNum(ktPreview.daily.incoming.count)} 天` : `${fmtNum(ktPreview.daily.incoming.count)} days`}</p>
+                            {ktPreview.daily.incoming.dateFrom && <p className="text-xs text-gray-400">{ktPreview.daily.incoming.dateFrom} → {ktPreview.daily.incoming.dateTo}</p>}
+                          </>
+                        ) : (
+                          <p className="text-gray-400">{cn ? '尚未抓取' : 'Not fetched yet'}</p>
+                        )}
                       </div>
                     </div>
-                    <p className="mt-2 text-[11px] text-gray-400">
-                      {cn ? '自校验（仅供参考，汇总含结束后销售，差异正常）：' : 'Self-check (informational; summary includes post-campaign sales):'}
-                      {' '}
-                      {cn ? '筹款' : 'pledged'} {ktPreview.validation.pledgedMatchPct ?? '—'}% · {cn ? '支持者' : 'backers'} {ktPreview.validation.backersMatchPct ?? '—'}%
-                      {ktPreview.validation.negativeDays > 0 && <span className="text-amber-600"> · {cn ? `${ktPreview.validation.negativeDays} 天出现负增长` : `${ktPreview.validation.negativeDays} negative days`}</span>}
-                    </p>
-                    {ktPreview.validation.confidence === 'low' && (
-                      <p className="mt-1 text-[11px] font-medium text-amber-600">{cn ? '⚠ OCR 可能读取异常，请确认后再入库每日明细。' : '⚠ OCR may have mis-read; confirm before importing daily data.'}</p>
+
+                    {!ktPreview.daily.incoming && (
+                      <div className="mt-3">
+                        <button
+                          onClick={fetchKicktraqDaily}
+                          disabled={ktDailyLoading}
+                          className="inline-flex items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-700 hover:bg-amber-100 disabled:opacity-50"
+                        >
+                          {ktDailyLoading && <RefreshCw className="h-3.5 w-3.5 animate-spin" />}
+                          {ktDailyLoading
+                            ? (cn ? '正在 OCR 识别每日曲线…（可能 1-3 分钟）' : 'Running OCR on the daily chart… (1-3 min)')
+                            : (cn ? '抓取每日曲线（OCR，较慢）' : 'Fetch daily curve (OCR, slow)')}
+                        </button>
+                        {ktDailyError && <p className="mt-2 text-[11px] text-red-600 break-words">{ktDailyError}</p>}
+                      </div>
                     )}
-                    {ktImportDaily && ktPreview.daily.current.snapshotCount > 0 && (
+
+                    {ktPreview.daily.incoming && ktPreview.validation && (
+                      <>
+                        <p className="mt-2 text-[11px] text-gray-400">
+                          {cn ? '自校验（仅供参考，汇总含结束后销售，差异正常）：' : 'Self-check (informational; summary includes post-campaign sales):'}
+                          {' '}
+                          {cn ? '筹款' : 'pledged'} {ktPreview.validation.pledgedMatchPct ?? '—'}% · {cn ? '支持者' : 'backers'} {ktPreview.validation.backersMatchPct ?? '—'}%
+                          {ktPreview.validation.negativeDays > 0 && <span className="text-amber-600"> · {cn ? `${ktPreview.validation.negativeDays} 天出现负增长` : `${ktPreview.validation.negativeDays} negative days`}</span>}
+                        </p>
+                        {ktPreview.validation.confidence === 'low' && (
+                          <p className="mt-1 text-[11px] font-medium text-amber-600">{cn ? '⚠ OCR 可能读取异常，请确认后再入库每日明细。' : '⚠ OCR may have mis-read; confirm before importing daily data.'}</p>
+                        )}
+                        {ktDailyError && <p className="mt-1 text-[11px] text-amber-600 break-words">{ktDailyError}</p>}
+                      </>
+                    )}
+
+                    {ktImportDaily && ktPreview.daily.incoming && ktPreview.daily.current.snapshotCount > 0 && (
                       <div className="mt-3 flex items-center gap-3 text-xs">
                         <span className="text-gray-500">{cn ? '已有数据：' : 'Existing data:'}</span>
                         {(['overwrite', 'merge'] as DailyMode[]).map(m => (

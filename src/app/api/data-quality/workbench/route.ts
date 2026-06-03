@@ -19,6 +19,7 @@ import {
   previewKicktraqImport,
   scrapeAndStore,
   scrapeKicktraqDetailed,
+  scrapeKicktraqProjectSummary,
   storeKicktraqDays,
   storeKicktraqSummary,
 } from '@/lib/scraper';
@@ -266,6 +267,9 @@ function coerceDays(raw: unknown): KicktraqDay[] {
   return out;
 }
 
+// Preview is split in two so the modal never blocks on OCR: this step fetches ONLY the
+// fast, reliable summary layer (HTML text) plus current DB stats. The slow daily/OCR
+// layer is fetched on demand via runKicktraqDaily.
 async function runKicktraqPreview(projectId: string, action: string) {
   const project = await getProjectById(projectId) as {
     name?: string | null; source_url?: string | null; creator_slug?: string | null; slug?: string | null;
@@ -278,25 +282,13 @@ async function runKicktraqPreview(projectId: string, action: string) {
     return { payload: { ok: false, action, error: 'Cannot derive Kicktraq URL for this project.' }, status: 422 };
   }
 
-  const { summary, days, diagnostics } = await previewKicktraqImport(creatorSlug, projectSlug);
-  const stats = getKicktraqSnapshotStats(projectId);
-  const metrics = summarizeKicktraqDays(days, summary?.pledged_usd ?? 0, summary?.backers_count ?? 0);
-
-  if (!summary && !days.length) {
-    const hasOcr = Boolean(getOptionalEnv('QWEN_API_KEY') || getOptionalEnv('OPENAI_API_KEY') || getOptionalEnv('ANTHROPIC_API_KEY'));
-    return {
-      payload: {
-        ok: false,
-        action,
-        noData: true,
-        message: hasOcr
-          ? `No usable Kicktraq data parsed. page=${diagnostics.pageStatus ?? '-'}, json=${diagnostics.jsonStatus ?? '-'}, image=${diagnostics.imageStatus ?? '-'}, ocr=${diagnostics.ocrProvider ?? '-'} ${diagnostics.ocrStatus ?? '-'}.`
-          : 'OCR provider key is not available in this Railway service.',
-        diagnostics,
-      },
-      status: 422,
-    };
+  let summary: KicktraqSummary | null = null;
+  try {
+    summary = await scrapeKicktraqProjectSummary(creatorSlug, projectSlug);
+  } catch {
+    summary = null;
   }
+  const stats = getKicktraqSnapshotStats(projectId);
 
   return {
     payload: {
@@ -315,24 +307,69 @@ async function runKicktraqPreview(projectId: string, action: string) {
           },
         },
         daily: {
-          incoming: {
-            days,
-            count: metrics.count,
-            sumPledged: metrics.sumPledged,
-            sumBackers: metrics.sumBackers,
-            dateFrom: metrics.dateFrom,
-            dateTo: metrics.dateTo,
-          },
+          incoming: null,
           current: { snapshotCount: stats.count, dateFrom: stats.dateFrom, dateTo: stats.dateTo },
         },
-        validation: {
-          pledgedMatchPct: metrics.pledgedMatchPct,
-          backersMatchPct: metrics.backersMatchPct,
-          negativeDays: metrics.negativeDays,
-          confidence: metrics.confidence,
-        },
-        diagnostics,
       },
+    },
+    status: 200,
+  };
+}
+
+// On-demand daily/OCR fetch (the slow part). Triggered explicitly from the modal so the
+// user gets a dedicated, cancellable spinner instead of blocking the whole preview.
+async function runKicktraqDaily(
+  projectId: string,
+  action: string,
+  body: { summaryPledged?: number; summaryBackers?: number },
+) {
+  const project = await getProjectById(projectId) as {
+    source_url?: string | null; creator_slug?: string | null; slug?: string | null;
+  } | null;
+  if (!project) return { payload: { ok: false, action, error: 'Project not found' }, status: 404 };
+
+  const { creatorSlug, projectSlug } = deriveKicktraqSlugs(project);
+  if (!creatorSlug || !projectSlug) {
+    return { payload: { ok: false, action, error: 'Cannot derive Kicktraq URL for this project.' }, status: 422 };
+  }
+
+  let days: KicktraqDay[] = [];
+  let diagnostics: Awaited<ReturnType<typeof scrapeKicktraqDetailed>>['diagnostics'] = {};
+  try {
+    const detailed = await scrapeKicktraqDetailed(creatorSlug, projectSlug);
+    days = detailed.days;
+    diagnostics = detailed.diagnostics;
+  } catch (e) {
+    diagnostics = { reason: `Daily scrape failed: ${String(e instanceof Error ? e.message : e).slice(0, 200)}` };
+  }
+
+  const metrics = summarizeKicktraqDays(days, Number(body.summaryPledged ?? 0), Number(body.summaryBackers ?? 0));
+  const hasOcr = Boolean(getOptionalEnv('QWEN_API_KEY') || getOptionalEnv('OPENAI_API_KEY') || getOptionalEnv('ANTHROPIC_API_KEY'));
+
+  return {
+    payload: {
+      ok: true,
+      action,
+      daily: {
+        days,
+        count: metrics.count,
+        sumPledged: metrics.sumPledged,
+        sumBackers: metrics.sumBackers,
+        dateFrom: metrics.dateFrom,
+        dateTo: metrics.dateTo,
+      },
+      validation: {
+        pledgedMatchPct: metrics.pledgedMatchPct,
+        backersMatchPct: metrics.backersMatchPct,
+        negativeDays: metrics.negativeDays,
+        confidence: metrics.confidence,
+      },
+      message: metrics.count === 0
+        ? (hasOcr
+            ? `No daily rows parsed. page=${diagnostics.pageStatus ?? '-'}, json=${diagnostics.jsonStatus ?? '-'}, image=${diagnostics.imageStatus ?? '-'}, ocr=${diagnostics.ocrProvider ?? '-'} ${diagnostics.ocrStatus ?? '-'}.${diagnostics.reason ? ' ' + diagnostics.reason : ''}`
+            : 'No OCR provider key configured, so the image-only daily curve cannot be read.')
+        : undefined,
+      diagnostics,
     },
     status: 200,
   };
@@ -495,6 +532,8 @@ export async function POST(req: NextRequest) {
     summaryMode?: string;
     dailyMode?: string;
     payload?: { summary?: unknown; days?: unknown };
+    summaryPledged?: number;
+    summaryBackers?: number;
   };
   const action = body.action ?? '';
   const projectIds = Array.isArray(body.projectIds)
@@ -542,6 +581,14 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(result.payload, { status: result.status });
     } catch (e) {
       return NextResponse.json({ ok: false, action, error: `Preview crashed: ${String(e instanceof Error ? e.message : e).slice(0, 300)}` }, { status: 500 });
+    }
+  }
+  if (action === 'kicktraq_daily') {
+    try {
+      const result = await runKicktraqDaily(projectId, action, body as { summaryPledged?: number; summaryBackers?: number });
+      return NextResponse.json(result.payload, { status: result.status });
+    } catch (e) {
+      return NextResponse.json({ ok: false, action, error: `Daily scrape crashed: ${String(e instanceof Error ? e.message : e).slice(0, 300)}` }, { status: 500 });
     }
   }
   if (action === 'kicktraq_commit') {
