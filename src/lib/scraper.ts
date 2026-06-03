@@ -1444,6 +1444,7 @@ export interface KicktraqScrapeDiagnostics {
     }>;
     modelOutput?: string;
     structuredRows?: KicktraqDay[];
+    ocrElapsedMs?: number;
   };
   reason?: string;
 }
@@ -1911,12 +1912,17 @@ async function scrapeKicktraqViaQwen(pageUrl: string, cookieStr: string, diagnos
     }
 
     const estimatedRows = rowsFromOcrText(result.text);
+    const elapsedMs = Date.now() - qwenStartedAt;
+    console.log('[Qwen OCR] completed in ' + elapsedMs + 'ms, status=' + result.status + ', rows=' + estimatedRows.length);
     if (diagnostics) {
       diagnostics.ocrStatus = result.status;
       diagnostics.ocrPreview = result.text.slice(0, 200);
-      diagnostics.debug = { ...(diagnostics.debug ?? {}), modelOutput: result.text };
+      diagnostics.debug = { ...(diagnostics.debug ?? {}), modelOutput: result.text, ocrElapsedMs: elapsedMs };
       diagnostics.ocrFallbackRows = estimatedRows.length;
       diagnostics.ocrRows = estimatedRows.length;
+      if (estimatedRows.length === 0) {
+        diagnostics.ocrError = `Qwen returned status ${result.status} in ${Math.round(elapsedMs / 1000)}s but no parseable rows.`;
+      }
     }
     const days = usableKicktraqDays(estimatedRows, diagnostics);
     if (diagnostics) diagnostics.debug = { ...(diagnostics.debug ?? {}), structuredRows: days };
