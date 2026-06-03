@@ -1498,9 +1498,10 @@ export interface KicktraqScrapeDiagnostics {
     modelOutput?: string;
     structuredRows?: KicktraqDay[];
     ocrElapsedMs?: number;
-    perChart?: Record<string, string>;        // raw model text per chart (per-chart OCR)
-    barCounts?: Record<string, number | null>; // bars the model claims to have counted
-    anchor?: OcrAnchor;                         // anchor facts fed to the model
+    perChart?: Record<string, string>;          // raw model text per chart (per-chart OCR)
+    barCounts?: Record<string, number | null>;  // bars the model claims to have counted
+    xTicks?: Record<string, string[]>;           // x-axis tick labels the model read per chart
+    anchor?: OcrAnchor;                           // anchor facts fed to the model
   };
   reason?: string;
 }
@@ -1536,18 +1537,19 @@ function parseOcrNumber(value: number | string | undefined, integerOnly = false)
 // one consecutive day, (3) each bar's value is printed vertically on the bar.
 function dateAlignmentSteps(anchor?: OcrAnchor): string[] {
   const lines = [
-    'STEP 1 (dates): The x-axis has only a few MM-DD tick labels (NOT every bar is labeled). Read those labels first and pin each one to the bar directly above it as a fixed date anchor.',
-    'STEP 2 (one bar = one day): Each bar is exactly one consecutive calendar day, left to right, with NO skipped days. Assign a date to EVERY bar by counting one day per bar outward from the anchored tick labels.',
+    'STEP 1 (dates are ON the image): The printed MM-DD labels on the x-axis are the AUTHORITATIVE source of dates. Read EVERY visible tick label precisely (left to right) and pin each one to the bar directly above it. Note how many bars sit between two consecutive labeled ticks.',
+    'STEP 2 (one bar = one day): Each bar is exactly one consecutive calendar day, left to right, with NO skipped days. Fill in the dates of the unlabeled bars by counting one day per bar between the labeled ticks.',
     'STEP 3 (values): Every bar has its value printed VERTICALLY (text rotated 90°) on or just above the bar. Read that printed number for each bar. These are PER-DAY values (the new amount that day), NOT cumulative running totals.',
   ];
   if (anchor?.launchDate) {
     lines.push(
-      `ANCHOR: the campaign launched on ${anchor.launchDate}, so the FIRST (leftmost) bar is dated ${anchor.launchDate}.` +
-      (anchor.endDate ? ` The last bar is on or before ${anchor.endDate}.` : '') +
-      ' The x-axis tick labels must stay consistent with this; if a tick seems to conflict, trust this launch date for the first bar. Infer the year from this anchor.',
+      `CONTEXT (use for the YEAR and as a sanity range ONLY, not as a hard date): this campaign ran from ${anchor.launchDate}` +
+      (anchor.endDate ? ` to ${anchor.endDate}` : '') +
+      `, so every bar's date falls inside that window and the year is ${anchor.launchDate.slice(0, 4)}. ` +
+      'Do NOT force the first bar to the launch date — Kicktraq often starts tracking a few days AFTER launch, so the leftmost bar may be later than the launch date. Always trust the printed x-axis tick labels over this context if they disagree.',
     );
   } else {
-    lines.push('Infer the year from the copyright/header text.');
+    lines.push('Infer the year from the copyright/header text on the image.');
   }
   return lines;
 }
@@ -1587,15 +1589,15 @@ function kicktraqChartPrompt(metric: 'pledged' | 'backers' | 'comments', anchor?
   if (finalVal && finalVal > 0) {
     lines.push(`SANITY CHECK only (do NOT force it): the per-day values should sum to roughly ${Math.round(finalVal)}. Use this to catch gross mis-reads, not to fabricate numbers.`);
   }
-  lines.push('Return ONLY JSON: {"bar_count": <total bars you counted>, "rows": [{"date":"YYYY-MM-DD","value": <number>}]} with exactly one entry per bar, in ascending date order.');
+  lines.push('Return ONLY JSON: {"bar_count": <total bars you counted>, "x_ticks": ["MM-DD", ... the x-axis tick labels you actually read, left to right ...], "rows": [{"date":"YYYY-MM-DD","value": <number>}]} with exactly one entry per bar, in ascending date order.');
   if (mode === 'estimate') {
     lines.push('If a printed label is genuinely illegible, estimate that bar from its height relative to the y-axis ticks rather than dropping it. Never output 0 for a bar that clearly has height.');
   }
   return lines.join(' ');
 }
 
-// Parse the single-chart JSON ({bar_count, rows:[{date,value}]} or a bare array).
-function singleChartResult(text: string): { barCount: number | null; rows: Array<{ date: string; value: number | string }> } {
+// Parse the single-chart JSON ({bar_count, x_ticks, rows:[{date,value}]} or a bare array).
+function singleChartResult(text: string): { barCount: number | null; xTicks: string[]; rows: Array<{ date: string; value: number | string }> } {
   const cleaned = text.replace(/```(?:json)?/gi, '').replace(/```/g, '').trim();
   const tryParse = (s?: string): unknown => { if (!s) return null; try { return JSON.parse(s); } catch { return null; } };
   const normRows = (arr: unknown): Array<{ date: string; value: number | string }> =>
@@ -1604,14 +1606,20 @@ function singleChartResult(text: string): { barCount: number | null; rows: Array
           .filter((r): r is { date: string; value?: number | string } => !!r && typeof r === 'object' && typeof (r as { date?: unknown }).date === 'string')
           .map(r => ({ date: r.date, value: (r as { value?: number | string }).value ?? 0 }))
       : [];
+  const normTicks = (arr: unknown): string[] =>
+    Array.isArray(arr) ? arr.filter((t): t is string => typeof t === 'string').slice(0, 60) : [];
 
-  const obj = tryParse(cleaned.match(/\{[\s\S]*\}/)?.[0]) as { bar_count?: unknown; rows?: unknown } | null;
+  const obj = tryParse(cleaned.match(/\{[\s\S]*\}/)?.[0]) as { bar_count?: unknown; x_ticks?: unknown; rows?: unknown } | null;
   if (obj && Array.isArray(obj.rows)) {
-    return { barCount: Number.isFinite(Number(obj.bar_count)) ? Number(obj.bar_count) : null, rows: normRows(obj.rows) };
+    return {
+      barCount: Number.isFinite(Number(obj.bar_count)) ? Number(obj.bar_count) : null,
+      xTicks: normTicks(obj.x_ticks),
+      rows: normRows(obj.rows),
+    };
   }
   const arr = tryParse(cleaned.match(/\[[\s\S]*\]/)?.[0]);
-  if (Array.isArray(arr)) return { barCount: null, rows: normRows(arr) };
-  return { barCount: null, rows: [] };
+  if (Array.isArray(arr)) return { barCount: null, xTicks: [], rows: normRows(arr) };
+  return { barCount: null, xTicks: [], rows: [] };
 }
 
 async function fetchKicktraqChartImage(url: string, pageUrl: string, cookieStr: string, kind: KicktraqChartImage['kind']): Promise<KicktraqChartImage | null> {
@@ -2047,6 +2055,7 @@ async function scrapeKicktraqViaShuidi(pageUrl: string, cookieStr: string, diagn
     const byDate = new Map<string, KicktraqDay>();
     const perChart: Record<string, string> = {};
     const barCounts: Record<string, number | null> = {};
+    const xTicks: Record<string, string[]> = {};
     let lastStatus = 0;
     let anyOk = false;
     let lastError = '';
@@ -2058,6 +2067,7 @@ async function scrapeKicktraqViaShuidi(pageUrl: string, cookieStr: string, diagn
       anyOk = true;
       const parsed = singleChartResult(text);
       barCounts[image.kind] = parsed.barCount;
+      xTicks[image.kind] = parsed.xTicks;
       for (const row of parsed.rows) {
         const date = normalizeDate(row.date);
         if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
@@ -2077,7 +2087,7 @@ async function scrapeKicktraqViaShuidi(pageUrl: string, cookieStr: string, diagn
     if (diagnostics) {
       diagnostics.ocrStatus = lastStatus;
       diagnostics.ocrRows = ocrRows.length;
-      diagnostics.debug = { ...(diagnostics.debug ?? {}), perChart, barCounts };
+      diagnostics.debug = { ...(diagnostics.debug ?? {}), perChart, barCounts, xTicks };
       if (!anyOk) diagnostics.ocrError = lastError || 'Shuidi OCR returned no usable response.';
     }
     return usableKicktraqDays(ocrRows, diagnostics);
