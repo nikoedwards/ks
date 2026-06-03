@@ -1718,8 +1718,26 @@ export interface KicktraqPreviewResult {
  * storeKicktraqDays). Kept isolated from the KS Live discovery pipeline.
  */
 export async function previewKicktraqImport(creatorSlug: string, projectSlug: string): Promise<KicktraqPreviewResult> {
-  const summary = await scrapeKicktraqProjectSummary(creatorSlug, projectSlug);
-  const { days, diagnostics } = await scrapeKicktraqDetailed(creatorSlug, projectSlug);
+  // The two layers are fetched independently and each is allowed to fail on its own:
+  // the reliable summary layer must still surface even if the best-effort daily/OCR
+  // scrape throws, so the preview modal never collapses to a bare error.
+  let summary: KicktraqSummary | null = null;
+  try {
+    summary = await scrapeKicktraqProjectSummary(creatorSlug, projectSlug);
+  } catch {
+    summary = null;
+  }
+
+  let days: KicktraqDay[] = [];
+  let diagnostics: KicktraqScrapeDiagnostics = {};
+  try {
+    const detailed = await scrapeKicktraqDetailed(creatorSlug, projectSlug);
+    days = detailed.days;
+    diagnostics = detailed.diagnostics;
+  } catch (e) {
+    diagnostics = { reason: `Daily scrape failed: ${String(e instanceof Error ? e.message : e).slice(0, 200)}` };
+  }
+
   return { summary, days, diagnostics };
 }
 
@@ -2010,6 +2028,7 @@ function parseKicktraqHtml(html: string): KicktraqDay[] {
     const backers = backerMatch ? backerMatch[1].split(',').map(s => parseInt(s.trim()) || 0) : [];
     const comments = commentMatch ? commentMatch[1].split(',').map(s => parseInt(s.trim()) || 0) : [];
     const start = new Date(startMatch[1]);
+    if (Number.isNaN(start.getTime())) return days;
     for (let i = 0; i < pledged.length; i++) {
       const d = new Date(start);
       d.setDate(d.getDate() + i);
@@ -2029,6 +2048,7 @@ function parseKicktraqHtml(html: string): KicktraqDay[] {
       const backerVals = backersArr ? backersArr[1].split(',').map(Number) : [];
       const commentVals = commentsArr ? commentsArr[1].split(',').map(Number) : [];
       const start = new Date(startDateM[1]);
+      if (Number.isNaN(start.getTime())) return days;
       for (let i = 0; i < pledged.length; i++) {
         const d = new Date(start);
         d.setDate(d.getDate() + i);

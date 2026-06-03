@@ -537,12 +537,20 @@ export async function POST(req: NextRequest) {
   if (!projectId) return NextResponse.json({ ok: false, error: 'projectId is required' }, { status: 400 });
 
   if (action === 'kicktraq_preview') {
-    const result = await runKicktraqPreview(projectId, action);
-    return NextResponse.json(result.payload, { status: result.status });
+    try {
+      const result = await runKicktraqPreview(projectId, action);
+      return NextResponse.json(result.payload, { status: result.status });
+    } catch (e) {
+      return NextResponse.json({ ok: false, action, error: `Preview crashed: ${String(e instanceof Error ? e.message : e).slice(0, 300)}` }, { status: 500 });
+    }
   }
   if (action === 'kicktraq_commit') {
-    const result = await runKicktraqCommit(projectId, action, body);
-    return NextResponse.json(result.payload, { status: result.status });
+    try {
+      const result = await runKicktraqCommit(projectId, action, body);
+      return NextResponse.json(result.payload, { status: result.status });
+    } catch (e) {
+      return NextResponse.json({ ok: false, action, error: `Commit crashed: ${String(e instanceof Error ? e.message : e).slice(0, 300)}` }, { status: 500 });
+    }
   }
 
   const runner = SCRAPE_RUNNERS[action];
