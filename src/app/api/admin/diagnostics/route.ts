@@ -100,9 +100,9 @@ interface OcrPingResult {
 
 // Minimal text-only probe of the Qwen endpoint to isolate "is the key/endpoint
 // reachable and fast" from "is the big chart image too slow". No images, 5 tokens.
-async function probeQwen(timeoutMs: number): Promise<OcrPingResult> {
+async function probeQwen(timeoutMs: number, modelOverride?: string): Promise<OcrPingResult> {
   const key = process.env.QWEN_API_KEY?.trim();
-  const model = process.env.QWEN_VISION_MODEL?.trim() || 'qwen-vl-plus';
+  const model = modelOverride?.trim() || process.env.QWEN_VISION_MODEL?.trim() || 'qwen-vl-plus';
   const baseUrl = (process.env.QWEN_BASE_URL?.trim() || 'https://dashscope.aliyuncs.com/compatible-mode/v1').replace(/\/+$/, '');
   const endpoint = `${baseUrl}/chat/completions`;
   if (!key) {
@@ -149,7 +149,8 @@ export async function GET(req: NextRequest) {
   const ocrPing = req.nextUrl.searchParams.get('ocrPing') === '1';
   if (ocrPing) {
     const timeoutMs = Math.min(120_000, Math.max(5_000, Number(req.nextUrl.searchParams.get('timeoutMs')) || 30_000));
-    const qwenPing = await probeQwen(timeoutMs);
+    const modelOverride = req.nextUrl.searchParams.get('model') ?? undefined;
+    const qwenPing = await probeQwen(timeoutMs, modelOverride);
     return NextResponse.json({ qwenPing });
   }
   const probeWorker = req.nextUrl.searchParams.get('probeWorker') !== '0';
