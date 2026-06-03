@@ -9,6 +9,7 @@ import {
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, LineChart, Line, Legend, ReferenceLine,
+  BarChart, Bar,
 } from 'recharts';
 import DataSource from '@/components/DataSource';
 import ImagePreview from '@/components/ImagePreview';
@@ -125,6 +126,7 @@ const TAB_IDS = ['overview', 'curve', 'rewards', 'changes', 'collaborators', 'si
 type TabId = typeof TAB_IDS[number];
 type CurveMetric = 'pledged' | 'backers' | 'comments';
 type CurveMode = 'daily' | 'cumulative';
+type CurveChartType = 'line' | 'bar';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -373,6 +375,11 @@ export default function ProjectDetailPage() {
     pledged: 'daily',
     backers: 'daily',
     comments: 'daily',
+  });
+  const [curveChartTypes, setCurveChartTypes] = useState<Record<CurveMetric, CurveChartType>>({
+    pledged: 'line',
+    backers: 'line',
+    comments: 'line',
   });
 
   // Snapshot data
@@ -681,6 +688,16 @@ export default function ProjectDetailPage() {
     mode === 'daily'
       ? (lang === 'cn' ? '新增数据' : 'New')
       : (lang === 'cn' ? '加总数据' : 'Cumulative')
+  );
+
+  const setCurveChartType = (metric: CurveMetric, type: CurveChartType) => {
+    setCurveChartTypes(prev => ({ ...prev, [metric]: type }));
+  };
+
+  const curveChartTypeLabel = (type: CurveChartType) => (
+    type === 'line'
+      ? (lang === 'cn' ? '折线' : 'Line')
+      : (lang === 'cn' ? '柱状' : 'Bar')
   );
 
   // Table data: most recent first, delta columns
@@ -1108,32 +1125,55 @@ export default function ProjectDetailPage() {
                           : `Daily pledged change · Avg ${fmtMoney(avgPledgedDaily, displayCurrency)}`)
                         : (lang === 'cn' ? '累计众筹金额' : 'Cumulative pledged')}
                     </p>
-                    <div className="rounded-lg bg-gray-100 p-1">
-                      {(['daily', 'cumulative'] as const).map(mode => (
-                        <button key={mode} onClick={() => setCurveMode('pledged', mode)}
-                          className={`px-3 py-1 rounded-md text-xs font-semibold transition-colors ${curveModes.pledged === mode ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-800'}`}>
-                          {curveModeLabel(mode)}
-                        </button>
-                      ))}
+                    <div className="flex items-center gap-2">
+                      <div className="rounded-lg bg-gray-100 p-1">
+                        {(['daily', 'cumulative'] as const).map(mode => (
+                          <button key={mode} onClick={() => setCurveMode('pledged', mode)}
+                            className={`px-3 py-1 rounded-md text-xs font-semibold transition-colors ${curveModes.pledged === mode ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-800'}`}>
+                            {curveModeLabel(mode)}
+                          </button>
+                        ))}
+                      </div>
+                      <div className="rounded-lg bg-gray-100 p-1">
+                        {(['line', 'bar'] as const).map(t => (
+                          <button key={t} onClick={() => setCurveChartType('pledged', t)}
+                            className={`px-3 py-1 rounded-md text-xs font-semibold transition-colors ${curveChartTypes.pledged === t ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-800'}`}>
+                            {curveChartTypeLabel(t)}
+                          </button>
+                        ))}
+                      </div>
                     </div>
                   </div>
                   <ResponsiveContainer width="100%" height={220}>
-                    <AreaChart data={chartData} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
-                      <defs>
-                        <linearGradient id="gPledged" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="5%" stopColor="#05CE78" stopOpacity={0.3} />
-                          <stop offset="95%" stopColor="#05CE78" stopOpacity={0} />
-                        </linearGradient>
-                      </defs>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                      <XAxis dataKey="date" tick={{ fontSize: 10 }} interval="preserveStartEnd" />
-                      <YAxis tick={{ fontSize: 10 }} tickFormatter={v => fmtMoney(v as number, displayCurrency)} width={65} />
-                      <Tooltip formatter={(v: number) => [fmtMoney(v, displayCurrency), curveModes.pledged === 'daily' ? (lang === 'cn' ? '金额增量' : 'Pledged Change') : (lang === 'cn' ? '累计金额' : 'Total Pledged')]} />
-                      {curveModes.pledged === 'daily' && (
-                        <ReferenceLine y={avgPledgedDaily} stroke="#64748b" strokeDasharray="5 5" label={{ value: lang === 'cn' ? '平均' : 'Avg', fontSize: 10, fill: '#64748b' }} />
-                      )}
-                      <Area type="monotone" dataKey={curveModes.pledged === 'daily' ? 'pledgedDaily' : 'pledgedTotal'} stroke="#05CE78" strokeWidth={2} fill="url(#gPledged)" />
-                    </AreaChart>
+                    {curveChartTypes.pledged === 'bar' ? (
+                      <BarChart data={chartData} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                        <XAxis dataKey="date" tick={{ fontSize: 10 }} interval="preserveStartEnd" />
+                        <YAxis tick={{ fontSize: 10 }} tickFormatter={v => fmtMoney(v as number, displayCurrency)} width={65} />
+                        <Tooltip formatter={(v: number) => [fmtMoney(v, displayCurrency), curveModes.pledged === 'daily' ? (lang === 'cn' ? '金额增量' : 'Pledged Change') : (lang === 'cn' ? '累计金额' : 'Total Pledged')]} />
+                        {curveModes.pledged === 'daily' && (
+                          <ReferenceLine y={avgPledgedDaily} stroke="#64748b" strokeDasharray="5 5" label={{ value: lang === 'cn' ? '平均' : 'Avg', fontSize: 10, fill: '#64748b' }} />
+                        )}
+                        <Bar dataKey={curveModes.pledged === 'daily' ? 'pledgedDaily' : 'pledgedTotal'} fill="#05CE78" radius={[2, 2, 0, 0]} />
+                      </BarChart>
+                    ) : (
+                      <AreaChart data={chartData} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
+                        <defs>
+                          <linearGradient id="gPledged" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor="#05CE78" stopOpacity={0.3} />
+                            <stop offset="95%" stopColor="#05CE78" stopOpacity={0} />
+                          </linearGradient>
+                        </defs>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                        <XAxis dataKey="date" tick={{ fontSize: 10 }} interval="preserveStartEnd" />
+                        <YAxis tick={{ fontSize: 10 }} tickFormatter={v => fmtMoney(v as number, displayCurrency)} width={65} />
+                        <Tooltip formatter={(v: number) => [fmtMoney(v, displayCurrency), curveModes.pledged === 'daily' ? (lang === 'cn' ? '金额增量' : 'Pledged Change') : (lang === 'cn' ? '累计金额' : 'Total Pledged')]} />
+                        {curveModes.pledged === 'daily' && (
+                          <ReferenceLine y={avgPledgedDaily} stroke="#64748b" strokeDasharray="5 5" label={{ value: lang === 'cn' ? '平均' : 'Avg', fontSize: 10, fill: '#64748b' }} />
+                        )}
+                        <Area type="monotone" dataKey={curveModes.pledged === 'daily' ? 'pledgedDaily' : 'pledgedTotal'} stroke="#05CE78" strokeWidth={2} fill="url(#gPledged)" />
+                      </AreaChart>
+                    )}
                   </ResponsiveContainer>
                 </div>
 
@@ -1147,26 +1187,49 @@ export default function ProjectDetailPage() {
                           : `Daily backer change · Avg ${Math.round(avgBackersDaily).toLocaleString()}`)
                         : (lang === 'cn' ? '累计支持者' : 'Cumulative backers')}
                     </p>
-                    <div className="rounded-lg bg-gray-100 p-1">
-                      {(['daily', 'cumulative'] as const).map(mode => (
-                        <button key={mode} onClick={() => setCurveMode('backers', mode)}
-                          className={`px-3 py-1 rounded-md text-xs font-semibold transition-colors ${curveModes.backers === mode ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-800'}`}>
-                          {curveModeLabel(mode)}
-                        </button>
-                      ))}
+                    <div className="flex items-center gap-2">
+                      <div className="rounded-lg bg-gray-100 p-1">
+                        {(['daily', 'cumulative'] as const).map(mode => (
+                          <button key={mode} onClick={() => setCurveMode('backers', mode)}
+                            className={`px-3 py-1 rounded-md text-xs font-semibold transition-colors ${curveModes.backers === mode ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-800'}`}>
+                            {curveModeLabel(mode)}
+                          </button>
+                        ))}
+                      </div>
+                      <div className="rounded-lg bg-gray-100 p-1">
+                        {(['line', 'bar'] as const).map(t => (
+                          <button key={t} onClick={() => setCurveChartType('backers', t)}
+                            className={`px-3 py-1 rounded-md text-xs font-semibold transition-colors ${curveChartTypes.backers === t ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-800'}`}>
+                            {curveChartTypeLabel(t)}
+                          </button>
+                        ))}
+                      </div>
                     </div>
                   </div>
                   <ResponsiveContainer width="100%" height={200}>
-                    <LineChart data={chartData} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                      <XAxis dataKey="date" tick={{ fontSize: 10 }} interval="preserveStartEnd" />
-                      <YAxis tick={{ fontSize: 10 }} width={45} />
-                      <Tooltip formatter={(v: number) => [Number(v).toLocaleString(), curveModes.backers === 'daily' ? (lang === 'cn' ? '支持者增量' : 'Backer Change') : (lang === 'cn' ? '累计支持者' : 'Total Backers')]} />
-                      {curveModes.backers === 'daily' && (
-                        <ReferenceLine y={avgBackersDaily} stroke="#6366f1" strokeDasharray="5 5" label={{ value: lang === 'cn' ? '平均' : 'Avg', fontSize: 10, fill: '#6366f1' }} />
-                      )}
-                      <Line type="monotone" dataKey={curveModes.backers === 'daily' ? 'backersDaily' : 'backersTotal'} stroke="#6366f1" strokeWidth={2} dot={false} name={curveModes.backers === 'daily' ? (lang === 'cn' ? '支持者增量' : 'Backer Change') : (lang === 'cn' ? '累计支持者' : 'Total Backers')} />
-                    </LineChart>
+                    {curveChartTypes.backers === 'bar' ? (
+                      <BarChart data={chartData} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                        <XAxis dataKey="date" tick={{ fontSize: 10 }} interval="preserveStartEnd" />
+                        <YAxis tick={{ fontSize: 10 }} width={45} />
+                        <Tooltip formatter={(v: number) => [Number(v).toLocaleString(), curveModes.backers === 'daily' ? (lang === 'cn' ? '支持者增量' : 'Backer Change') : (lang === 'cn' ? '累计支持者' : 'Total Backers')]} />
+                        {curveModes.backers === 'daily' && (
+                          <ReferenceLine y={avgBackersDaily} stroke="#6366f1" strokeDasharray="5 5" label={{ value: lang === 'cn' ? '平均' : 'Avg', fontSize: 10, fill: '#6366f1' }} />
+                        )}
+                        <Bar dataKey={curveModes.backers === 'daily' ? 'backersDaily' : 'backersTotal'} fill="#6366f1" radius={[2, 2, 0, 0]} name={curveModes.backers === 'daily' ? (lang === 'cn' ? '支持者增量' : 'Backer Change') : (lang === 'cn' ? '累计支持者' : 'Total Backers')} />
+                      </BarChart>
+                    ) : (
+                      <LineChart data={chartData} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                        <XAxis dataKey="date" tick={{ fontSize: 10 }} interval="preserveStartEnd" />
+                        <YAxis tick={{ fontSize: 10 }} width={45} />
+                        <Tooltip formatter={(v: number) => [Number(v).toLocaleString(), curveModes.backers === 'daily' ? (lang === 'cn' ? '支持者增量' : 'Backer Change') : (lang === 'cn' ? '累计支持者' : 'Total Backers')]} />
+                        {curveModes.backers === 'daily' && (
+                          <ReferenceLine y={avgBackersDaily} stroke="#6366f1" strokeDasharray="5 5" label={{ value: lang === 'cn' ? '平均' : 'Avg', fontSize: 10, fill: '#6366f1' }} />
+                        )}
+                        <Line type="monotone" dataKey={curveModes.backers === 'daily' ? 'backersDaily' : 'backersTotal'} stroke="#6366f1" strokeWidth={2} dot={false} name={curveModes.backers === 'daily' ? (lang === 'cn' ? '支持者增量' : 'Backer Change') : (lang === 'cn' ? '累计支持者' : 'Total Backers')} />
+                      </LineChart>
+                    )}
                   </ResponsiveContainer>
                 </div>
 
@@ -1180,26 +1243,49 @@ export default function ProjectDetailPage() {
                           : `Daily comment change · Avg ${Math.round(avgCommentsDaily).toLocaleString()}`)
                         : (lang === 'cn' ? '累计评论数' : 'Cumulative comments')}
                     </p>
-                    <div className="rounded-lg bg-gray-100 p-1">
-                      {(['daily', 'cumulative'] as const).map(mode => (
-                        <button key={mode} onClick={() => setCurveMode('comments', mode)}
-                          className={`px-3 py-1 rounded-md text-xs font-semibold transition-colors ${curveModes.comments === mode ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-800'}`}>
-                          {curveModeLabel(mode)}
-                        </button>
-                      ))}
+                    <div className="flex items-center gap-2">
+                      <div className="rounded-lg bg-gray-100 p-1">
+                        {(['daily', 'cumulative'] as const).map(mode => (
+                          <button key={mode} onClick={() => setCurveMode('comments', mode)}
+                            className={`px-3 py-1 rounded-md text-xs font-semibold transition-colors ${curveModes.comments === mode ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-800'}`}>
+                            {curveModeLabel(mode)}
+                          </button>
+                        ))}
+                      </div>
+                      <div className="rounded-lg bg-gray-100 p-1">
+                        {(['line', 'bar'] as const).map(t => (
+                          <button key={t} onClick={() => setCurveChartType('comments', t)}
+                            className={`px-3 py-1 rounded-md text-xs font-semibold transition-colors ${curveChartTypes.comments === t ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-800'}`}>
+                            {curveChartTypeLabel(t)}
+                          </button>
+                        ))}
+                      </div>
                     </div>
                   </div>
                   <ResponsiveContainer width="100%" height={200}>
-                    <LineChart data={chartData} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                      <XAxis dataKey="date" tick={{ fontSize: 10 }} interval="preserveStartEnd" />
-                      <YAxis tick={{ fontSize: 10 }} width={45} />
-                      <Tooltip formatter={(v: number) => [Number(v).toLocaleString(), curveModes.comments === 'daily' ? (lang === 'cn' ? '评论增量' : 'Comment Change') : (lang === 'cn' ? '累计评论' : 'Total Comments')]} />
-                      {curveModes.comments === 'daily' && (
-                        <ReferenceLine y={avgCommentsDaily} stroke="#f59e0b" strokeDasharray="5 5" label={{ value: lang === 'cn' ? '平均' : 'Avg', fontSize: 10, fill: '#f59e0b' }} />
-                      )}
-                      <Line type="monotone" dataKey={curveModes.comments === 'daily' ? 'commentsDaily' : 'commentsTotal'} stroke="#f59e0b" strokeWidth={2} dot={false} name={curveModes.comments === 'daily' ? (lang === 'cn' ? '评论增量' : 'Comment Change') : (lang === 'cn' ? '累计评论' : 'Total Comments')} />
-                    </LineChart>
+                    {curveChartTypes.comments === 'bar' ? (
+                      <BarChart data={chartData} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                        <XAxis dataKey="date" tick={{ fontSize: 10 }} interval="preserveStartEnd" />
+                        <YAxis tick={{ fontSize: 10 }} width={45} />
+                        <Tooltip formatter={(v: number) => [Number(v).toLocaleString(), curveModes.comments === 'daily' ? (lang === 'cn' ? '评论增量' : 'Comment Change') : (lang === 'cn' ? '累计评论' : 'Total Comments')]} />
+                        {curveModes.comments === 'daily' && (
+                          <ReferenceLine y={avgCommentsDaily} stroke="#f59e0b" strokeDasharray="5 5" label={{ value: lang === 'cn' ? '平均' : 'Avg', fontSize: 10, fill: '#f59e0b' }} />
+                        )}
+                        <Bar dataKey={curveModes.comments === 'daily' ? 'commentsDaily' : 'commentsTotal'} fill="#f59e0b" radius={[2, 2, 0, 0]} name={curveModes.comments === 'daily' ? (lang === 'cn' ? '评论增量' : 'Comment Change') : (lang === 'cn' ? '累计评论' : 'Total Comments')} />
+                      </BarChart>
+                    ) : (
+                      <LineChart data={chartData} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                        <XAxis dataKey="date" tick={{ fontSize: 10 }} interval="preserveStartEnd" />
+                        <YAxis tick={{ fontSize: 10 }} width={45} />
+                        <Tooltip formatter={(v: number) => [Number(v).toLocaleString(), curveModes.comments === 'daily' ? (lang === 'cn' ? '评论增量' : 'Comment Change') : (lang === 'cn' ? '累计评论' : 'Total Comments')]} />
+                        {curveModes.comments === 'daily' && (
+                          <ReferenceLine y={avgCommentsDaily} stroke="#f59e0b" strokeDasharray="5 5" label={{ value: lang === 'cn' ? '平均' : 'Avg', fontSize: 10, fill: '#f59e0b' }} />
+                        )}
+                        <Line type="monotone" dataKey={curveModes.comments === 'daily' ? 'commentsDaily' : 'commentsTotal'} stroke="#f59e0b" strokeWidth={2} dot={false} name={curveModes.comments === 'daily' ? (lang === 'cn' ? '评论增量' : 'Comment Change') : (lang === 'cn' ? '累计评论' : 'Total Comments')} />
+                      </LineChart>
+                    )}
                   </ResponsiveContainer>
                 </div>
 
