@@ -635,7 +635,7 @@ function TrackingSection({ report, cn }: { report: QualityReport; cn: boolean })
       <div className="flex items-center gap-2 mb-4">
         <RadioTower className="w-4 h-4 text-ks-green" />
         <h2 className="font-semibold text-gray-800">{cn ? '追踪覆盖与排期' : 'Tracking Coverage & Schedule'}</h2>
-      </div>
+          </div>
 
       {/* Coverage breakdown — explains why "tracking now" < total live projects.
           Rendered as one stacked bar + compact legend so we don't repeat the
@@ -647,7 +647,7 @@ function TrackingSection({ report, cn }: { report: QualityReport; cn: boolean })
           { key: 'pending', label: cn ? '待纳入' : 'Pending', value: t.untrackedLive, color: 'bg-amber-400', text: 'text-amber-700' },
           { key: 'untrackable', label: cn ? '不可追踪' : 'Untrackable', value: untrackable, color: 'bg-gray-300', text: 'text-gray-500' },
         ];
-        return (
+                return (
           <div>
             <div className="flex items-baseline justify-between">
               <p className="text-sm text-gray-500">{cn ? '进行中项目' : 'Live projects'}</p>
@@ -746,8 +746,8 @@ function TrackingSection({ report, cn }: { report: QualityReport; cn: boolean })
                     </span>
                   </div>
                 </div>
-              );
-            })}
+                );
+              })}
           </div>
         </div>
       )}
@@ -1286,16 +1286,16 @@ export default function DataQualityPage() {
 
       <section className="bg-white border border-gray-100 rounded-lg overflow-hidden">
         <div className="px-5 py-4 border-b border-gray-100">
-          <div className="flex items-center gap-2">
-            <Database className="w-4 h-4 text-ks-green" />
-            <h2 className="font-semibold text-gray-800">{cn ? '项目数据工作台' : 'Project Data Workbench'}</h2>
-          </div>
-          <p className="text-xs text-gray-400 mt-1">
+            <div className="flex items-center gap-2">
+              <Database className="w-4 h-4 text-ks-green" />
+              <h2 className="font-semibold text-gray-800">{cn ? '项目数据工作台' : 'Project Data Workbench'}</h2>
+            </div>
+            <p className="text-xs text-gray-400 mt-1">
             {cn
               ? '与项目列表口径一致。可单条或批量手动重新抓取：从 Kickstarter 拉取最新金额/支持者，或从 Kicktraq 导入历史曲线，并直接写入数据库；也可批量删除脏数据。'
               : 'Same figures as the project list. Manually re-scrape one or many: pull the latest pledged/backers from Kickstarter, or import the history curve from Kicktraq, written straight to the DB. Bulk delete is available too.'}
-          </p>
-        </div>
+            </p>
+          </div>
 
         <div className="px-5 py-4 border-b border-gray-100 space-y-3">
           <div className="flex flex-wrap items-center gap-2">
@@ -1373,11 +1373,11 @@ export default function DataQualityPage() {
             </button>
             <button
               type="button"
-              onClick={toggleVisibleSelection}
+            onClick={toggleVisibleSelection}
               className="ml-auto rounded-lg border border-gray-200 px-3 py-2 text-xs font-semibold text-gray-600 hover:bg-gray-50"
-            >
+          >
               {allVisibleSelected ? (cn ? '取消选择本页' : 'Clear page') : (cn ? '选择本页' : 'Select page')}
-            </button>
+          </button>
           </form>
         </div>
 
@@ -1454,12 +1454,12 @@ export default function DataQualityPage() {
                 return (
                   <tr key={project.id} className="align-middle hover:bg-gray-50/60">
                     <td className="px-5 py-4">
-                      <input
-                        type="checkbox"
-                        checked={selectedProjectIds.includes(project.id)}
-                        onChange={() => toggleProjectSelection(project.id)}
+                        <input
+                          type="checkbox"
+                          checked={selectedProjectIds.includes(project.id)}
+                          onChange={() => toggleProjectSelection(project.id)}
                         className="h-4 w-4 rounded border-gray-300 text-ks-green focus:ring-ks-green"
-                      />
+                        />
                     </td>
                     <td className="px-2 py-4">
                       <div className="flex gap-3">

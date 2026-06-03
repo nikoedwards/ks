@@ -1,11 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSyncState } from '@/lib/syncState';
 import { runKicktraqFullScan, abortFullScan, KICKTRAQ_CATEGORIES } from '@/lib/kicktraqFullScan';
+import { requireAdmin } from '@/lib/apiAuth';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export async function POST(req: NextRequest) {
+  if (!requireAdmin(req)) return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   const body = await req.json().catch(() => ({})) as {
     delayMs?: number;
     maxPagesPerCategory?: number;

@@ -1,13 +1,28 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getProjects, getCategoryList, getCountryList, getLeaderboardCategoryOptions } from '@/lib/db';
+import { guardApi } from '@/lib/apiAuth';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export async function GET(req: NextRequest) {
   try {
+    const { isGuest, limited } = guardApi(req);
+    if (limited) return limited;
     const sp = req.nextUrl.searchParams;
-    const result = await getProjects({
+    // Guests only get the default first page, or a small capped search teaser
+    // (powers the public landing-page search box). No category/country/sort/
+    // date filters and no deep pagination — the server backstop for the
+    // client-side gate so the list can't be scraped or bulk-exported via the API.
+    const guestSearch = (sp.get('search') ?? '').trim().slice(0, 80);
+    const result = await getProjects(isGuest ? {
+      search: guestSearch || undefined,
+      state: guestSearch ? undefined : 'live',
+      sort: 'usd_pledged',
+      sortDir: 'desc',
+      page: 1,
+      limit: guestSearch ? 5 : 20,
+    } : {
       state: sp.get('state') ?? undefined,
       category: sp.get('category') ?? undefined,
       categoryName: sp.get('categoryName') ?? undefined,

@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { Activity, ArrowUpRight, Clock3, Filter, Flame, Gauge, RefreshCw, Rocket, TrendingUp, Users, type LucideIcon } from 'lucide-react';
 import { useLanguage } from '@/hooks/useLanguage';
 import ImagePreview from '@/components/ImagePreview';
+import { LockedSection, useAuthGate } from '@/components/AuthGate';
 
 interface LiveProject {
   id: string;
@@ -189,6 +190,7 @@ export default function LiveIntelPage() {
   const [loading, setLoading] = useState(true);
   const [categoryParent, setCategoryParent] = useState('');
   const [categoryOptions, setCategoryOptions] = useState<string[]>([]);
+  const gate = useAuthGate();
 
   const load = async () => {
     setLoading(true);
@@ -253,7 +255,7 @@ export default function LiveIntelPage() {
             <Filter className="h-4 w-4 text-gray-400" />
             <select
               value={categoryParent}
-              onChange={(e) => setCategoryParent(e.target.value)}
+              onChange={(e) => { const v = e.target.value; gate(() => setCategoryParent(v)); }}
               className="bg-transparent text-sm font-semibold outline-none"
             >
               <option value="">{cn ? '全部类目' : 'All categories'}</option>
@@ -263,7 +265,7 @@ export default function LiveIntelPage() {
             </select>
           </label>
           <button
-            onClick={load}
+            onClick={() => gate(load)}
             disabled={loading}
             className="inline-flex items-center gap-2 rounded-lg bg-gray-900 px-4 py-2 text-sm font-semibold text-white hover:bg-gray-800 disabled:opacity-50"
           >
@@ -318,6 +320,7 @@ export default function LiveIntelPage() {
         </section>
       )}
 
+      <LockedSection minHeight={420}>
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
         <Section title={cn ? '24h 筹资增长最快' : 'Fastest Funding Growth'} icon={TrendingUp}>
           <div className="grid gap-3">
@@ -392,6 +395,7 @@ export default function LiveIntelPage() {
           </div>
         </section>
       </div>
+      </LockedSection>
     </div>
   );
 }

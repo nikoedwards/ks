@@ -29,6 +29,7 @@ function generateToken(): string {
 function ensureAuthMigrations(db: BetterSqlite3.Database) {
   try { db.exec('ALTER TABLE users ADD COLUMN email_verified INTEGER DEFAULT 1'); } catch { /* already exists */ }
   try { db.exec("ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'"); } catch { /* already exists */ }
+  try { db.exec('ALTER TABLE users ADD COLUMN last_login_at INTEGER'); } catch { /* already exists */ }
   db.exec(`
     CREATE TABLE IF NOT EXISTS pending_registrations (
       email TEXT PRIMARY KEY,
@@ -194,6 +195,9 @@ export function createSession(userId: number): string {
   const token = generateToken();
   const expiresAt = Math.floor(Date.now() / 1000) + SESSION_DAYS * 86400;
   db.prepare(`INSERT OR REPLACE INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)`).run(token, userId, expiresAt);
+  // Record last login here so it covers both password login and OTP/verify flows
+  // (both create a session through this function).
+  try { db.prepare('UPDATE users SET last_login_at = ? WHERE id = ?').run(Math.floor(Date.now() / 1000), userId); } catch { /* column added by ensureAuthMigrations */ }
   return token;
 }
 

@@ -486,6 +486,7 @@ function ensureRuntimeMigrations(db: Database) {
   reconcileMissingLiveFields(db);
   try { db.exec('ALTER TABLE users ADD COLUMN email_verified INTEGER DEFAULT 1'); } catch { /* already exists */ }
   try { db.exec("ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'"); } catch { /* already exists */ }
+  try { db.exec('ALTER TABLE users ADD COLUMN last_login_at INTEGER'); } catch { /* already exists */ }
   try { db.exec('ALTER TABLE projects ADD COLUMN creator_slug TEXT'); } catch { /* already exists */ }
   try { db.exec('ALTER TABLE projects ADD COLUMN creator_url TEXT'); } catch { /* already exists */ }
   db.exec(`
@@ -589,11 +590,143 @@ function ensureRuntimeMigrations(db: Database) {
   ensureAnnouncementTables(db);
   ensureKicktraqDebugTables(db);
   ensureAwardTables(db);
+  ensureAnalyticsTables(db);
   ensurePerformanceIndexes(db);
   const adminEmail = process.env.ADMIN_EMAIL?.trim().toLowerCase();
   if (adminEmail) db.prepare("UPDATE users SET role = 'admin' WHERE lower(email) = ?").run(adminEmail);
   const admin = db.prepare("SELECT id FROM users WHERE role = 'admin' LIMIT 1").get();
   if (!admin) db.prepare("UPDATE users SET role = 'admin' WHERE id = (SELECT id FROM users ORDER BY id ASC LIMIT 1)").run();
+}
+
+// ─── Site analytics (pageviews / project clicks / user behavior) ──────────────
+
+function ensureAnalyticsTables(db: Database) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS analytics_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      event_type TEXT NOT NULL,
+      path TEXT,
+      project_id TEXT,
+      user_id INTEGER,
+      ip_hash TEXT,
+      session_id TEXT,
+      metadata_json TEXT,
+      created_at INTEGER DEFAULT (unixepoch())
+    );
+    CREATE INDEX IF NOT EXISTS idx_analytics_type_time ON analytics_events(event_type, created_at);
+    CREATE INDEX IF NOT EXISTS idx_analytics_project ON analytics_events(project_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_analytics_user ON analytics_events(user_id, created_at);
+  `);
+}
+
+const ANALYTICS_RETENTION_DAYS = Math.max(7, Number(process.env.ANALYTICS_RETENTION_DAYS ?? 90));
+
+function hashIp(ip?: string | null): string | null {
+  if (!ip) return null;
+  return createHash('sha256').update(`ks-analytics:${ip}`).digest('hex').slice(0, 32);
+}
+
+export function recordAnalyticsEvent(e: {
+  event_type: string;
+  path?: string | null;
+  project_id?: string | null;
+  user_id?: number | null;
+  ip?: string | null;
+  session_id?: string | null;
+  metadata?: unknown;
+}): void {
+  try {
+    const db = getDB();
+    db.prepare(`
+      INSERT INTO analytics_events (event_type, path, project_id, user_id, ip_hash, session_id, metadata_json, created_at)
+      VALUES (@event_type, @path, @project_id, @user_id, @ip_hash, @session_id, @metadata_json, @created_at)
+    `).run({
+      event_type: e.event_type,
+      path: e.path ?? null,
+      project_id: e.project_id ?? null,
+      user_id: e.user_id ?? null,
+      ip_hash: hashIp(e.ip),
+      session_id: e.session_id ?? null,
+      metadata_json: e.metadata != null ? JSON.stringify(e.metadata) : null,
+      created_at: Math.floor(Date.now() / 1000),
+    });
+    // Lazy retention prune (~0.3% of writes) so the table can't grow forever.
+    if (Math.random() < 0.003) {
+      db.prepare('DELETE FROM analytics_events WHERE created_at < ?')
+        .run(Math.floor(Date.now() / 1000) - ANALYTICS_RETENTION_DAYS * 86400);
+    }
+  } catch { /* analytics must never break a request */ }
+}
+
+export interface AnalyticsOverview {
+  generatedAt: number;
+  totals: { pageviews: number; projectViews: number; rateLimited: number };
+  windows: { today: number; last7d: number; last30d: number };
+  uniques: { users7d: number; guests7d: number; users30d: number };
+  daily: { day: string; pageviews: number; projectViews: number; visitors: number }[];
+  topProjects: { project_id: string; name: string | null; views: number }[];
+  topPages: { path: string; views: number }[];
+  activeUsers: { user_id: number; username: string | null; events: number; last_seen: number }[];
+  recent: { event_type: string; path: string | null; project_id: string | null; project_name: string | null; username: string | null; created_at: number }[];
+}
+
+export function getAnalyticsOverview(days = 30): AnalyticsOverview {
+  const db = getDB();
+  const now = Math.floor(Date.now() / 1000);
+  const since = now - days * 86400;
+  const num = (row: unknown) => Number((row as { c?: number } | undefined)?.c ?? 0);
+
+  const viewTypes = `('pageview','project_view')`;
+  const totals = {
+    pageviews: num(db.prepare(`SELECT COUNT(*) c FROM analytics_events WHERE event_type='pageview' AND created_at>=?`).get(since)),
+    projectViews: num(db.prepare(`SELECT COUNT(*) c FROM analytics_events WHERE event_type='project_view' AND created_at>=?`).get(since)),
+    rateLimited: num(db.prepare(`SELECT COUNT(*) c FROM analytics_events WHERE event_type='rate_limited' AND created_at>=?`).get(since)),
+  };
+  const windows = {
+    today: num(db.prepare(`SELECT COUNT(*) c FROM analytics_events WHERE event_type IN ${viewTypes} AND created_at>=?`).get(now - 86400)),
+    last7d: num(db.prepare(`SELECT COUNT(*) c FROM analytics_events WHERE event_type IN ${viewTypes} AND created_at>=?`).get(now - 7 * 86400)),
+    last30d: num(db.prepare(`SELECT COUNT(*) c FROM analytics_events WHERE event_type IN ${viewTypes} AND created_at>=?`).get(now - 30 * 86400)),
+  };
+  const uniques = {
+    users7d: num(db.prepare(`SELECT COUNT(DISTINCT user_id) c FROM analytics_events WHERE user_id IS NOT NULL AND created_at>=?`).get(now - 7 * 86400)),
+    guests7d: num(db.prepare(`SELECT COUNT(DISTINCT ip_hash) c FROM analytics_events WHERE user_id IS NULL AND ip_hash IS NOT NULL AND created_at>=?`).get(now - 7 * 86400)),
+    users30d: num(db.prepare(`SELECT COUNT(DISTINCT user_id) c FROM analytics_events WHERE user_id IS NOT NULL AND created_at>=?`).get(now - 30 * 86400)),
+  };
+  const daily = db.prepare(`
+    SELECT strftime('%Y-%m-%d', created_at, 'unixepoch') AS day,
+           SUM(CASE WHEN event_type='pageview' THEN 1 ELSE 0 END) AS pageviews,
+           SUM(CASE WHEN event_type='project_view' THEN 1 ELSE 0 END) AS projectViews,
+           COUNT(DISTINCT COALESCE(CAST(user_id AS TEXT), ip_hash)) AS visitors
+    FROM analytics_events
+    WHERE event_type IN ${viewTypes} AND created_at>=?
+    GROUP BY day ORDER BY day ASC
+  `).all(since) as AnalyticsOverview['daily'];
+  const topProjects = db.prepare(`
+    SELECT a.project_id, p.name, COUNT(*) AS views
+    FROM analytics_events a LEFT JOIN projects p ON p.id = a.project_id
+    WHERE a.event_type='project_view' AND a.project_id IS NOT NULL AND a.created_at>=?
+    GROUP BY a.project_id ORDER BY views DESC LIMIT 25
+  `).all(since) as AnalyticsOverview['topProjects'];
+  const topPages = db.prepare(`
+    SELECT path, COUNT(*) AS views
+    FROM analytics_events WHERE event_type='pageview' AND path IS NOT NULL AND created_at>=?
+    GROUP BY path ORDER BY views DESC LIMIT 25
+  `).all(since) as AnalyticsOverview['topPages'];
+  const activeUsers = db.prepare(`
+    SELECT a.user_id, u.username, COUNT(*) AS events, MAX(a.created_at) AS last_seen
+    FROM analytics_events a LEFT JOIN users u ON u.id = a.user_id
+    WHERE a.user_id IS NOT NULL AND a.created_at>=?
+    GROUP BY a.user_id ORDER BY events DESC LIMIT 25
+  `).all(since) as AnalyticsOverview['activeUsers'];
+  const recent = db.prepare(`
+    SELECT a.event_type, a.path, a.project_id, p.name AS project_name, u.username, a.created_at
+    FROM analytics_events a
+    LEFT JOIN projects p ON p.id = a.project_id
+    LEFT JOIN users u ON u.id = a.user_id
+    ORDER BY a.id DESC LIMIT 60
+  `).all() as AnalyticsOverview['recent'];
+
+  return { generatedAt: now, totals, windows, uniques, daily, topProjects, topPages, activeUsers, recent };
 }
 
 export type PushSegment = 'favorites' | 'digest' | 'new_users';
@@ -2689,6 +2822,7 @@ export const DEFAULT_NAV_ITEMS = [
   'predict',
   'favorites',
   'data-quality',
+  'admin-analytics',
   'admin-users',
   'admin-updates',
   'admin-nav',
@@ -2698,6 +2832,7 @@ export type NavKey = typeof DEFAULT_NAV_ITEMS[number];
 
 const ADMIN_ONLY_NAV_ITEMS = new Set<NavKey>([
   'data-quality',
+  'admin-analytics',
   'admin-users',
   'admin-updates',
   'admin-nav',
@@ -2723,7 +2858,7 @@ export function ensureDefaultNavSettings() {
     db.prepare(`
       UPDATE nav_settings
       SET user_visible = 0
-      WHERE nav_key IN ('data-quality', 'admin-users', 'admin-updates', 'admin-nav')
+      WHERE nav_key IN ('data-quality', 'admin-analytics', 'admin-users', 'admin-updates', 'admin-nav')
     `).run();
     // Obsolete: the standalone "数据同步" page was merged into data-quality.
     db.prepare(`DELETE FROM nav_settings WHERE nav_key = 'settings'`).run();
@@ -2791,6 +2926,7 @@ export function getUserAdminDashboard() {
   const users = db.prepare(`
     SELECT
       u.id, u.username, u.email, COALESCE(u.role, 'user') as role, u.email_verified, u.created_at,
+      u.last_login_at,
       COUNT(DISTINCT f.project_id) as favorites_count,
       COUNT(DISTINCT s.project_id) as subscriptions_count,
       MAX(sess.expires_at) as session_expires_at
@@ -4619,6 +4755,39 @@ export function getSnapshots(projectId: string, limitRows = 500): Snapshot[] {
       )
     ORDER BY s.captured_at ASC LIMIT ?
   `).all(projectId, limitRows) as Snapshot[];
+}
+
+// ─── Funding-prediction training data ─────────────────────────────────────────
+
+export interface PacingSample {
+  cat: string | null;
+  tau: number;   // campaign progress 0..1 (elapsed / total duration)
+  frac: number;  // cumulative pledged / final pledged at that point
+}
+
+/**
+ * Raw (progress, fraction-of-final) samples from COMPLETED campaigns, used to
+ * learn the typical Kickstarter funding "pacing curve" (launch surge → mid
+ * plateau → end spike). One row per usable snapshot of every ended project with
+ * a known final total. The model layer (src/lib/prediction.ts) buckets these
+ * into a median curve; this just returns the bounded raw set.
+ */
+export function getPacingSamples(maxRows = 400000): PacingSample[] {
+  return getDB().prepare(`
+    SELECT p.category_parent AS cat,
+           (ps.captured_at - p.launched_at) * 1.0 / (p.deadline - p.launched_at) AS tau,
+           ps.pledged_usd * 1.0 / p.usd_pledged AS frac
+    FROM project_snapshots ps
+    JOIN projects p ON p.id = ps.project_id
+    WHERE p.state IN ('successful', 'failed')
+      AND p.launched_at > 0 AND p.deadline > p.launched_at
+      AND p.usd_pledged > 0
+      AND ps.pledged_usd > 0
+      AND ps.source <> 'kicktraq_active'
+      AND ps.captured_at >= p.launched_at
+      AND ps.captured_at <= p.deadline
+    LIMIT @maxRows
+  `).all({ maxRows }) as PacingSample[];
 }
 
 // ─── Rewards ─────────────────────────────────────────────────────────────────

@@ -84,13 +84,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       const hasOpenAI = !!getOptionalEnv('OPENAI_API_KEY');
       const hasQwen = !!getOptionalEnv('QWEN_API_KEY');
       const hasAnthropic = !!getOptionalEnv('ANTHROPIC_API_KEY');
-      const hasOcr = hasQwen || hasOpenAI || hasAnthropic;
+      const hasShuidi = !!getOptionalEnv('SHUIDI_API_KEY'); // #shuidi
+      const hasOcr = hasShuidi || hasQwen || hasOpenAI || hasAnthropic;
       const ocrHint = diagnostics.ocrStatus === 429
         ? `${diagnostics.ocrProvider ?? 'OCR'} returned 429, which means the API key is rate-limited or has insufficient quota/billing. Check provider usage, billing, and project limits, then retry.`
         : '';
       const message = hasOcr
         ? `OCR is enabled, but no usable Daily Data rows were parsed. ${ocrHint} Diagnostics: page=${diagnostics.pageStatus ?? '-'}, json=${diagnostics.jsonStatus ?? '-'}, htmlRows=${diagnostics.htmlRows ?? 0}, image=${diagnostics.imageStatus ?? '-'} ${diagnostics.imageContentType ?? ''}, imageBytes=${diagnostics.imageBytes ?? '-'}, ocr=${diagnostics.ocrProvider ?? '-'} ${diagnostics.ocrStatus ?? '-'}, endpoint=${diagnostics.ocrEndpoint ?? '-'}, timeoutMs=${diagnostics.ocrTimeoutMs ?? '-'}, ocrRows=${diagnostics.ocrRows ?? 0}, fallbackRows=${diagnostics.ocrFallbackRows ?? 0}, zeroRowsRejected=${diagnostics.zeroRowsRejected ?? 0}. ${diagnostics.ocrError ? `OCR error: ${diagnostics.ocrError}.` : ''}${diagnostics.ocrPreview ? ` OCR preview: ${diagnostics.ocrPreview}.` : ''} ${diagnostics.reason ?? ''}`
-        : 'The running Railway service cannot read QWEN_API_KEY, OPENAI_API_KEY, or ANTHROPIC_API_KEY. If you already added it in Railway, redeploy or restart this same service/environment, then import again.';
+        : 'The running Railway service cannot read SHUIDI_API_KEY, QWEN_API_KEY, OPENAI_API_KEY, or ANTHROPIC_API_KEY. If you already added it in Railway, redeploy or restart this same service/environment, then import again.';
       cacheKicktraqDebug(id, {
         ok: false,
         status: 'failed',

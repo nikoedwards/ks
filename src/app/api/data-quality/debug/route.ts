@@ -553,6 +553,7 @@ async function runKicktraqStep(projectId: string, project: ProjectForDebug, step
         project: { id: projectId, name: project.name, sourceUrl: project.source_url, creatorSlug, projectSlug },
         urls: pageUrl ? { pageUrl, dailyChartJson: `${pageUrl}dailychart.json`, dailyPledgesImage: `${pageUrl}dailypledges.png` } : {},
         env: {
+          hasShuidi: Boolean(getOptionalEnv('SHUIDI_API_KEY')), // #shuidi
           hasQwen: Boolean(getOptionalEnv('QWEN_API_KEY')),
           hasOpenAI: Boolean(getOptionalEnv('OPENAI_API_KEY')),
           hasAnthropic: Boolean(getOptionalEnv('ANTHROPIC_API_KEY')),

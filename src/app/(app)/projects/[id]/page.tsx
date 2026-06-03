@@ -15,6 +15,7 @@ import ImagePreview from '@/components/ImagePreview';
 import { useLanguage } from '@/hooks/useLanguage';
 import { t } from '@/lib/i18n';
 import { useAuth } from '@/contexts/AuthContext';
+import type { FundingPrediction, DeviationPoint } from '@/lib/prediction';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -379,6 +380,8 @@ export default function ProjectDetailPage() {
   const [rewards, setRewards] = useState<Reward[]>([]);
   const [textHistory, setTextHistory] = useState<TextChange[]>([]);
   const [collaborators, setCollaborators] = useState<Collaborator[]>([]);
+  const [prediction, setPrediction] = useState<FundingPrediction | null>(null);
+  const [deviationSeries, setDeviationSeries] = useState<DeviationPoint[]>([]);
 
   const [ktDebug, setKtDebug] = useState<KicktraqDebug | null>(null);
 
@@ -447,6 +450,8 @@ export default function ProjectDetailPage() {
       setRewards(d.rewards ?? []);
       setTextHistory(d.textHistory ?? []);
       setCollaborators(d.collaborators ?? []);
+      setPrediction(d.prediction ?? null);
+      setDeviationSeries(d.deviationSeries ?? []);
     } catch {}
   }, [id]);
 
@@ -656,6 +661,17 @@ export default function ProjectDetailPage() {
   const avgPledgedDaily = avg(chartData.map(d => d.pledgedDaily));
   const avgBackersDaily = avg(chartData.map(d => d.backersDaily));
   const avgCommentsDaily = avg(chartData.map(d => d.commentsDaily));
+
+  // Prediction deviation: actual cumulative vs the model's one-step-ahead pace
+  // expectation at each snapshot, plus the signed deviation curve.
+  const deviationChartData = deviationSeries.map(d => ({
+    date: fmtDate(d.ts, lang),
+    ts: d.ts,
+    actual: d.actualUsd,
+    expected: d.expectedUsd,
+    deviation: d.deviationUsd,
+    deviationPct: d.deviationPct,
+  }));
 
   const setCurveMode = (metric: CurveMetric, mode: CurveMode) => {
     setCurveModes(prev => ({ ...prev, [metric]: mode }));
@@ -870,6 +886,22 @@ export default function ProjectDetailPage() {
             <div className="shrink-0">
               <p className="text-3xl font-black text-white">{fmtMoney(avgDailyPledged, displayCurrency)}</p>
               <p className="text-xs text-gray-500">{tr.avgPerDay}</p>
+            </div>
+          )}
+          {prediction && project.state === 'live' && (
+            <div className="shrink-0" title={tr.predictionHint}>
+              <div className="flex items-center gap-2">
+                <p className="text-3xl font-black text-ks-green">{fmtMoney(prediction.predictedFinalUsd, 'USD')}</p>
+                <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${
+                  prediction.confidenceLabel === 'high' ? 'bg-ks-green/20 text-ks-green'
+                    : prediction.confidenceLabel === 'medium' ? 'bg-amber-400/20 text-amber-300'
+                    : 'bg-gray-600/40 text-gray-300'
+                }`}>{tr.confidenceLevels[prediction.confidenceLabel]}</span>
+              </div>
+              <p className="text-xs text-gray-500">
+                {tr.predictedFinal}
+                {inferredGoalUsd > 0 && <> · {tr.predictedOfGoal((prediction.predictedFinalUsd / inferredGoalUsd * 100).toFixed(0))}</>}
+              </p>
             </div>
           )}
         </div>
@@ -1170,6 +1202,45 @@ export default function ProjectDetailPage() {
                     </LineChart>
                   </ResponsiveContainer>
                 </div>
+
+                {/* Prediction deviation chart */}
+                {deviationChartData.length > 1 && (
+                  <div className="border-t border-gray-100 pt-5">
+                    <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                      <p className="text-xs text-gray-400 font-semibold uppercase tracking-wide">{tr.predictionDeviation}</p>
+                    </div>
+                    {/* Actual cumulative vs. learned-pace expectation */}
+                    <ResponsiveContainer width="100%" height={200}>
+                      <LineChart data={deviationChartData} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                        <XAxis dataKey="date" tick={{ fontSize: 10 }} interval="preserveStartEnd" />
+                        <YAxis tick={{ fontSize: 10 }} tickFormatter={v => fmtMoney(v as number, 'USD')} width={65} />
+                        <Tooltip formatter={(v: number, n) => [fmtMoney(v, 'USD'), n]} />
+                        <Legend wrapperStyle={{ fontSize: 11 }} />
+                        <Line type="monotone" dataKey="actual" stroke="#05CE78" strokeWidth={2} dot={false} name={tr.predictionActual} />
+                        <Line type="monotone" dataKey="expected" stroke="#94a3b8" strokeWidth={2} strokeDasharray="5 5" dot={false} name={tr.predictionExpected} />
+                      </LineChart>
+                    </ResponsiveContainer>
+                    {/* Signed deviation curve (actual − expected) */}
+                    <ResponsiveContainer width="100%" height={160}>
+                      <AreaChart data={deviationChartData} margin={{ top: 8, right: 10, left: 0, bottom: 0 }}>
+                        <defs>
+                          <linearGradient id="gDeviation" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor="#6366f1" stopOpacity={0.3} />
+                            <stop offset="95%" stopColor="#6366f1" stopOpacity={0} />
+                          </linearGradient>
+                        </defs>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                        <XAxis dataKey="date" tick={{ fontSize: 10 }} interval="preserveStartEnd" />
+                        <YAxis tick={{ fontSize: 10 }} tickFormatter={v => fmtMoney(v as number, 'USD')} width={65} />
+                        <Tooltip formatter={(v: number) => [fmtMoney(v, 'USD'), tr.predictionDeviationLabel]} />
+                        <ReferenceLine y={0} stroke="#94a3b8" />
+                        <Area type="monotone" dataKey="deviation" stroke="#6366f1" strokeWidth={2} fill="url(#gDeviation)" name={tr.predictionDeviationLabel} />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                    <p className="mt-2 text-[11px] text-gray-400">{tr.predictionHint}</p>
+                  </div>
+                )}
               </div>
             ) : (
               <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6 text-center">
