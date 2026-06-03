@@ -1407,6 +1407,35 @@ type KicktraqOcrRow = {
   comments?: number | string;
 };
 
+// Known facts pulled from Kickstarter, fed into the OCR prompt so the model does
+// not have to *guess* the date axis. The launch date pins the first bar; the final
+// totals are used only as a sanity bound. This is the single biggest lever on
+// Kicktraq OCR accuracy — see scrapeKicktraqViaShuidi / kicktraqChartPrompt.
+export type OcrAnchor = {
+  launchDate?: string;       // YYYY-MM-DD — the first (leftmost) bar
+  endDate?: string;          // YYYY-MM-DD — the last possible bar
+  finalPledgedUsd?: number;  // in-campaign cumulative, sanity bound only
+  finalBackers?: number;     // in-campaign cumulative, sanity bound only
+};
+
+// Build an OcrAnchor from raw project fields (unix seconds + final totals).
+export function buildOcrAnchor(input: {
+  launchedAt?: number | null;
+  deadline?: number | null;
+  finalPledgedUsd?: number | null;
+  finalBackers?: number | null;
+}): OcrAnchor | undefined {
+  const toDate = (sec?: number | null) =>
+    sec && Number.isFinite(sec) ? new Date(sec * 1000).toISOString().slice(0, 10) : undefined;
+  const anchor: OcrAnchor = {
+    launchDate: toDate(input.launchedAt),
+    endDate: toDate(input.deadline),
+    finalPledgedUsd: input.finalPledgedUsd && input.finalPledgedUsd > 0 ? input.finalPledgedUsd : undefined,
+    finalBackers: input.finalBackers && input.finalBackers > 0 ? input.finalBackers : undefined,
+  };
+  return anchor.launchDate || anchor.endDate || anchor.finalPledgedUsd || anchor.finalBackers ? anchor : undefined;
+}
+
 type KicktraqChartImage = {
   kind: 'pledges' | 'backers' | 'comments';
   url: string;
@@ -1445,6 +1474,9 @@ export interface KicktraqScrapeDiagnostics {
     modelOutput?: string;
     structuredRows?: KicktraqDay[];
     ocrElapsedMs?: number;
+    perChart?: Record<string, string>;        // raw model text per chart (per-chart OCR)
+    barCounts?: Record<string, number | null>; // bars the model claims to have counted
+    anchor?: OcrAnchor;                         // anchor facts fed to the model
   };
   reason?: string;
 }
@@ -1475,18 +1507,87 @@ function parseOcrNumber(value: number | string | undefined, integerOnly = false)
   return integerOnly ? Math.round(result) : result;
 }
 
-function kicktraqVisionPrompt(mode: 'exact' | 'estimate' = 'exact') {
-  const base = 'You are reading Kicktraq Daily Data tab chart images for a Kickstarter project. This is a vision chart extraction task, not plain text OCR. The images are provided in this order when available: Pledges Per Day, Backers Per Day, Comments Per Day. ' +
-    'Extract the per-day values printed vertically on each bar. Do NOT extract the Funding Progress cumulative line chart. ' +
-    'Use the x-axis MM-DD labels to assign dates to bars. Infer missing dates between visible tick labels sequentially and infer the year from the copyright/header context. ' +
-    'Normalize money labels such as $6.7m, $469k, $20,249 into numeric USD amounts. ' +
-    'Return ONLY a JSON array. Each item must be {"date":"YYYY-MM-DD","pledged_usd":number,"backers":number,"comments":number}. ';
-  if (mode === 'estimate') {
-    return base +
-      'If the tiny vertical bar labels are unreadable, estimate the values from the bar heights, y-axis tick labels, and any visible Average Per Day value. Include approximate values for every visible daily bar. Do not return an empty array when bars are visible. Do not use zero unless a bar visibly has zero height.';
+// Shared, explicit date-alignment instructions. The three numbered steps mirror how
+// a human reads these charts: (1) anchor on the sparse x-axis labels, (2) one bar =
+// one consecutive day, (3) each bar's value is printed vertically on the bar.
+function dateAlignmentSteps(anchor?: OcrAnchor): string[] {
+  const lines = [
+    'STEP 1 (dates): The x-axis has only a few MM-DD tick labels (NOT every bar is labeled). Read those labels first and pin each one to the bar directly above it as a fixed date anchor.',
+    'STEP 2 (one bar = one day): Each bar is exactly one consecutive calendar day, left to right, with NO skipped days. Assign a date to EVERY bar by counting one day per bar outward from the anchored tick labels.',
+    'STEP 3 (values): Every bar has its value printed VERTICALLY (text rotated 90°) on or just above the bar. Read that printed number for each bar. These are PER-DAY values (the new amount that day), NOT cumulative running totals.',
+  ];
+  if (anchor?.launchDate) {
+    lines.push(
+      `ANCHOR: the campaign launched on ${anchor.launchDate}, so the FIRST (leftmost) bar is dated ${anchor.launchDate}.` +
+      (anchor.endDate ? ` The last bar is on or before ${anchor.endDate}.` : '') +
+      ' The x-axis tick labels must stay consistent with this; if a tick seems to conflict, trust this launch date for the first bar. Infer the year from this anchor.',
+    );
+  } else {
+    lines.push('Infer the year from the copyright/header text.');
   }
-  return base +
-    'Only include dates where you can read at least one numeric value from a bar. Omit any unreadable date or unreadable field; do not invent zeros. If no bar values are readable, return [].';
+  return lines;
+}
+
+// Multi-image prompt (one call, all charts). Used by the qwen/openai/anthropic
+// fallbacks. Old output schema (one row per date with all three metrics).
+function kicktraqVisionPrompt(mode: 'exact' | 'estimate' = 'exact', anchor?: OcrAnchor) {
+  const lines = [
+    'You are reading Kicktraq "Per Day" bar-chart images for a Kickstarter project (provided in order: Pledges Per Day, Backers Per Day, Comments Per Day when available). This is a vision chart-extraction task, not plain-text OCR. Do NOT read the cumulative Funding Progress line chart.',
+    ...dateAlignmentSteps(anchor),
+    'All charts share the SAME date axis, so align them by date.',
+    'Normalize money labels such as $6.7m, $469k, $20,249 into numeric USD amounts.',
+    'Return ONLY a JSON array. Each item must be {"date":"YYYY-MM-DD","pledged_usd":number,"backers":number,"comments":number}.',
+  ];
+  if (mode === 'estimate') {
+    lines.push('If the tiny vertical labels are unreadable, estimate from bar heights and y-axis ticks; include every visible bar; do not return an empty array when bars are visible; never use zero unless a bar visibly has zero height.');
+  } else {
+    lines.push('Only include dates where you can read at least one numeric value from a bar. Omit any unreadable field; do not invent zeros. If no bar values are readable, return [].');
+  }
+  return lines.join(' ');
+}
+
+// Single-chart prompt (one call per metric). Lets the model focus on one chart so
+// the vertical labels read cleanly; we align the charts by date ourselves afterward.
+function kicktraqChartPrompt(metric: 'pledged' | 'backers' | 'comments', anchor?: OcrAnchor, mode: 'exact' | 'estimate' = 'estimate') {
+  const label = metric === 'pledged' ? 'Pledges Per Day (daily new USD pledged)'
+    : metric === 'backers' ? 'Backers Per Day (daily new backer count)'
+    : 'Comments Per Day (daily new comment count)';
+  const lines = [
+    `You are reading ONE Kicktraq "${label}" bar chart for a Kickstarter campaign. This is a vision chart-extraction task, not plain-text OCR.`,
+    ...dateAlignmentSteps(anchor),
+  ];
+  if (metric === 'pledged') {
+    lines.push('Normalize money labels such as $6.7m, $469k, $20,249 into plain integer USD (6700000, 469000, 20249).');
+  }
+  const finalVal = metric === 'pledged' ? anchor?.finalPledgedUsd : metric === 'backers' ? anchor?.finalBackers : undefined;
+  if (finalVal && finalVal > 0) {
+    lines.push(`SANITY CHECK only (do NOT force it): the per-day values should sum to roughly ${Math.round(finalVal)}. Use this to catch gross mis-reads, not to fabricate numbers.`);
+  }
+  lines.push('Return ONLY JSON: {"bar_count": <total bars you counted>, "rows": [{"date":"YYYY-MM-DD","value": <number>}]} with exactly one entry per bar, in ascending date order.');
+  if (mode === 'estimate') {
+    lines.push('If a printed label is genuinely illegible, estimate that bar from its height relative to the y-axis ticks rather than dropping it. Never output 0 for a bar that clearly has height.');
+  }
+  return lines.join(' ');
+}
+
+// Parse the single-chart JSON ({bar_count, rows:[{date,value}]} or a bare array).
+function singleChartResult(text: string): { barCount: number | null; rows: Array<{ date: string; value: number | string }> } {
+  const cleaned = text.replace(/```(?:json)?/gi, '').replace(/```/g, '').trim();
+  const tryParse = (s?: string): unknown => { if (!s) return null; try { return JSON.parse(s); } catch { return null; } };
+  const normRows = (arr: unknown): Array<{ date: string; value: number | string }> =>
+    Array.isArray(arr)
+      ? arr
+          .filter((r): r is { date: string; value?: number | string } => !!r && typeof r === 'object' && typeof (r as { date?: unknown }).date === 'string')
+          .map(r => ({ date: r.date, value: (r as { value?: number | string }).value ?? 0 }))
+      : [];
+
+  const obj = tryParse(cleaned.match(/\{[\s\S]*\}/)?.[0]) as { bar_count?: unknown; rows?: unknown } | null;
+  if (obj && Array.isArray(obj.rows)) {
+    return { barCount: Number.isFinite(Number(obj.bar_count)) ? Number(obj.bar_count) : null, rows: normRows(obj.rows) };
+  }
+  const arr = tryParse(cleaned.match(/\[[\s\S]*\]/)?.[0]);
+  if (Array.isArray(arr)) return { barCount: null, rows: normRows(arr) };
+  return { barCount: null, rows: [] };
 }
 
 async function fetchKicktraqChartImage(url: string, pageUrl: string, cookieStr: string, kind: KicktraqChartImage['kind']): Promise<KicktraqChartImage | null> {
@@ -1625,9 +1726,11 @@ function parseDailyChartJson(json: DailyChartJson): KicktraqDay[] | null {
   return null;
 }
 
-export async function scrapeKicktraqDetailed(creatorSlug: string, projectSlug: string): Promise<{ days: KicktraqDay[]; diagnostics: KicktraqScrapeDiagnostics }> {
+export async function scrapeKicktraqDetailed(creatorSlug: string, projectSlug: string, anchor?: OcrAnchor): Promise<{ days: KicktraqDay[]; diagnostics: KicktraqScrapeDiagnostics }> {
   const pageUrl = 'https://www.kicktraq.com/projects/' + creatorSlug + '/' + projectSlug + '/';
   const diagnostics: KicktraqScrapeDiagnostics = {};
+  if (anchor && diagnostics.debug !== undefined) diagnostics.debug.anchor = anchor;
+  else if (anchor) diagnostics.debug = { anchor };
 
   // Step 1: fetch main page for session cookie + HTML fallback
   let html = '';
@@ -1689,22 +1792,22 @@ export async function scrapeKicktraqDetailed(creatorSlug: string, projectSlug: s
   // Step 4: OCR the dailychart.png via vision models.
   // #shuidi — preferred provider: Claude via Shuidi's OpenAI-compatible relay.
   if (getOptionalEnv('SHUIDI_API_KEY')) {
-    const ocrDays = await scrapeKicktraqViaShuidi(pageUrl, cookieStr, diagnostics);
+    const ocrDays = await scrapeKicktraqViaShuidi(pageUrl, cookieStr, diagnostics, anchor);
     if (ocrDays.length) return { days: ocrDays, diagnostics };
   }
 
   if (getOptionalEnv('QWEN_API_KEY')) {
-    const ocrDays = await scrapeKicktraqViaQwen(pageUrl, cookieStr, diagnostics);
+    const ocrDays = await scrapeKicktraqViaQwen(pageUrl, cookieStr, diagnostics, anchor);
     if (ocrDays.length) return { days: ocrDays, diagnostics };
   }
 
   if (getOptionalEnv('OPENAI_API_KEY')) {
-    const ocrDays = await scrapeKicktraqViaOpenAI(pageUrl, cookieStr, diagnostics);
+    const ocrDays = await scrapeKicktraqViaOpenAI(pageUrl, cookieStr, diagnostics, anchor);
     if (ocrDays.length) return { days: ocrDays, diagnostics };
   }
 
   if (getOptionalEnv('ANTHROPIC_API_KEY')) {
-    const ocrDays = await scrapeKicktraqViaOCR(pageUrl, cookieStr, diagnostics);
+    const ocrDays = await scrapeKicktraqViaOCR(pageUrl, cookieStr, diagnostics, anchor);
     if (ocrDays.length) return { days: ocrDays, diagnostics };
   }
 
@@ -1754,7 +1857,7 @@ export async function previewKicktraqImport(creatorSlug: string, projectSlug: st
 
 // ─── OCR fallback via Claude Vision ──────────────────────────────────────────
 
-async function scrapeKicktraqViaOCR(pageUrl: string, cookieStr: string, diagnostics?: KicktraqScrapeDiagnostics): Promise<KicktraqDay[]> {
+async function scrapeKicktraqViaOCR(pageUrl: string, cookieStr: string, diagnostics?: KicktraqScrapeDiagnostics, anchor?: OcrAnchor): Promise<KicktraqDay[]> {
   const imgUrl = pageUrl + 'dailychart.png';
   const anthropicKey = getOptionalEnv('ANTHROPIC_API_KEY');
   if (diagnostics) diagnostics.ocrProvider = 'anthropic';
@@ -1787,7 +1890,7 @@ async function scrapeKicktraqViaOCR(pageUrl: string, cookieStr: string, diagnost
     if (diagnostics) diagnostics.imageBytes = imgBuffer.byteLength;
     const base64 = Buffer.from(imgBuffer).toString('base64');
 
-    const ocrPrompt = kicktraqVisionPrompt();
+    const ocrPrompt = kicktraqVisionPrompt('exact', anchor);
 
     const claudeBody = JSON.stringify({
       model: 'claude-sonnet-4-6',
@@ -1843,7 +1946,7 @@ async function scrapeKicktraqViaOCR(pageUrl: string, cookieStr: string, diagnost
 // relay. Same chat/completions + image_url shape as the Qwen path, but the relay
 // additionally requires the X-WP-Title header. Key/model/base are env-driven
 // (SHUIDI_API_KEY is the only required one); never hardcode the key in source.
-async function scrapeKicktraqViaShuidi(pageUrl: string, cookieStr: string, diagnostics?: KicktraqScrapeDiagnostics): Promise<KicktraqDay[]> {
+async function scrapeKicktraqViaShuidi(pageUrl: string, cookieStr: string, diagnostics?: KicktraqScrapeDiagnostics, anchor?: OcrAnchor): Promise<KicktraqDay[]> {
   const apiKey = getOptionalEnv('SHUIDI_API_KEY');
   const model = getOptionalEnv('SHUIDI_VISION_MODEL') || 'claude-sonnet-4.6-wangsu';
   const baseUrl = (getOptionalEnv('SHUIDI_BASE_URL') || 'https://agent-api.shuiditech.com/api/v1').replace(/\/+$/, '');
@@ -1856,10 +1959,9 @@ async function scrapeKicktraqViaShuidi(pageUrl: string, cookieStr: string, diagn
     diagnostics.ocrTimeoutMs = timeoutMs;
   }
 
-  try {
-    const images = await fetchKicktraqDailyImages(pageUrl, cookieStr, diagnostics);
-    if (!images.length) return [];
-
+  // One image -> one model call, with retry on transient errors / 429. #shuidi relay
+  // requires the X-WP-Title header.
+  const callOnce = async (prompt: string, base64: string): Promise<{ ok: boolean; status: number; text: string }> => {
     const body = JSON.stringify({
       model,
       temperature: 0,
@@ -1867,15 +1969,11 @@ async function scrapeKicktraqViaShuidi(pageUrl: string, cookieStr: string, diagn
       messages: [{
         role: 'user',
         content: [
-          { type: 'text', text: kicktraqVisionPrompt('estimate') },
-          ...images.flatMap(image => [
-            { type: 'text', text: `Image: ${image.kind}` },
-            { type: 'image_url', image_url: { url: `data:image/png;base64,${image.base64}` } },
-          ]),
+          { type: 'text', text: prompt },
+          { type: 'image_url', image_url: { url: `data:image/png;base64,${base64}` } },
         ],
       }],
     });
-
     let res: Response | null = null;
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
@@ -1898,29 +1996,67 @@ async function scrapeKicktraqViaShuidi(pageUrl: string, cookieStr: string, diagn
       const retryAfter = Number(res.headers.get('retry-after') ?? 0);
       await sleep(retryAfter > 0 ? retryAfter * 1000 : 1500 * (attempt + 1));
     }
-
-    if (!res) return [];
-    if (!res.ok) {
-      const errText = await res.text().catch(() => '');
-      console.log('[Shuidi OCR] error status=' + res.status + ' body=' + errText.slice(0, 300));
-      if (diagnostics) {
-        diagnostics.ocrStatus = res.status;
-        diagnostics.ocrPreview = errText.slice(0, 200);
-        diagnostics.ocrError = extractOpenAIErrorMessage(errText);
-      }
-      return [];
-    }
-
+    if (!res) return { ok: false, status: 0, text: '' };
+    if (!res.ok) { const t = await res.text().catch(() => ''); return { ok: false, status: res.status, text: t }; }
     const data = await res.json() as { choices?: Array<{ message?: { content?: string } }> };
-    const text = data.choices?.[0]?.message?.content ?? '';
-    const rows = rowsFromOcrText(text);
-    if (diagnostics) {
-      diagnostics.ocrStatus = res.status;
-      diagnostics.ocrPreview = text.slice(0, 200);
-      diagnostics.ocrRows = rows.length;
-      diagnostics.debug = { ...(diagnostics.debug ?? {}), modelOutput: text };
+    return { ok: true, status: res.status, text: data.choices?.[0]?.message?.content ?? '' };
+  };
+
+  try {
+    const images = await fetchKicktraqDailyImages(pageUrl, cookieStr, diagnostics);
+    if (!images.length) return [];
+
+    // P1: OCR each chart in its own call so the model can focus on a single set of
+    // vertical bar labels, then align the charts by date ourselves (the launch-date
+    // anchor keeps every chart on the same calendar). This avoids the cross-chart
+    // date drift that happens when one call has to juggle all three images at once.
+    const results = await Promise.all(images.map(async (image) => {
+      const metric = image.kind === 'pledges' ? 'pledged' as const : image.kind === 'backers' ? 'backers' as const : 'comments' as const;
+      try {
+        const r = await callOnce(kicktraqChartPrompt(metric, anchor, 'estimate'), image.base64);
+        return { image, metric, ...r };
+      } catch (e) {
+        return { image, metric, ok: false, status: 0, text: String(e) };
+      }
+    }));
+
+    const byDate = new Map<string, KicktraqDay>();
+    const perChart: Record<string, string> = {};
+    const barCounts: Record<string, number | null> = {};
+    let lastStatus = 0;
+    let anyOk = false;
+    let lastError = '';
+
+    for (const { image, metric, ok, status, text } of results) {
+      lastStatus = status || lastStatus;
+      perChart[image.kind] = text.slice(0, 500);
+      if (!ok) { lastError = extractOpenAIErrorMessage(text) || lastError; continue; }
+      anyOk = true;
+      const parsed = singleChartResult(text);
+      barCounts[image.kind] = parsed.barCount;
+      for (const row of parsed.rows) {
+        const date = normalizeDate(row.date);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+        const entry = byDate.get(date) ?? { date, pledged_usd: 0, backers: 0, comments: 0 };
+        const val = parseOcrNumber(row.value, metric !== 'pledged');
+        if (metric === 'pledged') entry.pledged_usd = val;
+        else if (metric === 'backers') entry.backers = val;
+        else entry.comments = val;
+        byDate.set(date, entry);
+      }
     }
-    return usableKicktraqDays(rows, diagnostics);
+
+    const ocrRows: KicktraqOcrRow[] = [...byDate.values()]
+      .sort((a, b) => a.date.localeCompare(b.date))
+      .map(d => ({ date: d.date, pledged_usd: d.pledged_usd, backers: d.backers, comments: d.comments }));
+
+    if (diagnostics) {
+      diagnostics.ocrStatus = lastStatus;
+      diagnostics.ocrRows = ocrRows.length;
+      diagnostics.debug = { ...(diagnostics.debug ?? {}), perChart, barCounts };
+      if (!anyOk) diagnostics.ocrError = lastError || 'Shuidi OCR returned no usable response.';
+    }
+    return usableKicktraqDays(ocrRows, diagnostics);
   } catch (e) {
     console.log('[Shuidi OCR] exception: ' + String(e));
     if (diagnostics) diagnostics.ocrError = String(e);
@@ -1928,7 +2064,7 @@ async function scrapeKicktraqViaShuidi(pageUrl: string, cookieStr: string, diagn
   }
 }
 
-async function scrapeKicktraqViaQwen(pageUrl: string, cookieStr: string, diagnostics?: KicktraqScrapeDiagnostics): Promise<KicktraqDay[]> {
+async function scrapeKicktraqViaQwen(pageUrl: string, cookieStr: string, diagnostics?: KicktraqScrapeDiagnostics, anchor?: OcrAnchor): Promise<KicktraqDay[]> {
   const qwenKey = getOptionalEnv('QWEN_API_KEY');
   const qwenModel = getOptionalEnv('QWEN_VISION_MODEL') || 'qwen-vl-plus';
   const qwenBaseUrl = (getOptionalEnv('QWEN_BASE_URL') || 'https://dashscope.aliyuncs.com/compatible-mode/v1').replace(/\/+$/, '');
@@ -1999,7 +2135,7 @@ async function scrapeKicktraqViaQwen(pageUrl: string, cookieStr: string, diagnos
       return { ok: true, status: res.status, text: data.choices?.[0]?.message?.content ?? '' };
     };
 
-    const result = await callQwen(kicktraqVisionPrompt('estimate'));
+    const result = await callQwen(kicktraqVisionPrompt('estimate', anchor));
     if (!result.ok) {
     if (diagnostics) {
       diagnostics.ocrStatus = result.status;
@@ -2041,7 +2177,7 @@ async function scrapeKicktraqViaQwen(pageUrl: string, cookieStr: string, diagnos
   }
 }
 
-async function scrapeKicktraqViaOpenAI(pageUrl: string, cookieStr: string, diagnostics?: KicktraqScrapeDiagnostics): Promise<KicktraqDay[]> {
+async function scrapeKicktraqViaOpenAI(pageUrl: string, cookieStr: string, diagnostics?: KicktraqScrapeDiagnostics, anchor?: OcrAnchor): Promise<KicktraqDay[]> {
   const imgUrl = pageUrl + 'dailychart.png';
   const openAIKey = getOptionalEnv('OPENAI_API_KEY');
   const openAIModel = getOptionalEnv('OPENAI_VISION_MODEL') || 'gpt-4o-mini';
@@ -2068,7 +2204,7 @@ async function scrapeKicktraqViaOpenAI(pageUrl: string, cookieStr: string, diagn
     const imgBuffer = await imgRes.arrayBuffer();
     if (diagnostics) diagnostics.imageBytes = imgBuffer.byteLength;
     const base64 = Buffer.from(imgBuffer).toString('base64');
-    const prompt = kicktraqVisionPrompt();
+    const prompt = kicktraqVisionPrompt('exact', anchor);
 
     const body = JSON.stringify({
       model: openAIModel,

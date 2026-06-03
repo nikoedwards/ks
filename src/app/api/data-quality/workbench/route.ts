@@ -14,6 +14,7 @@ import {
   extractCreatorSlug,
   extractProjectSlug,
   getOptionalEnv,
+  buildOcrAnchor,
   type KicktraqDay,
   type KicktraqSummary,
   previewKicktraqImport,
@@ -325,6 +326,7 @@ async function runKicktraqDaily(
 ) {
   const project = await getProjectById(projectId) as {
     source_url?: string | null; creator_slug?: string | null; slug?: string | null;
+    launched_at?: number | null; deadline?: number | null;
   } | null;
   if (!project) return { payload: { ok: false, action, error: 'Project not found' }, status: 404 };
 
@@ -333,10 +335,20 @@ async function runKicktraqDaily(
     return { payload: { ok: false, action, error: 'Cannot derive Kicktraq URL for this project.' }, status: 422 };
   }
 
+  // Anchor the OCR with the campaign's real launch/deadline + the reliable summary
+  // totals so the model does not have to guess the date axis. This is the biggest
+  // lever on accuracy — see scrapeKicktraqViaShuidi / kicktraqChartPrompt.
+  const anchor = buildOcrAnchor({
+    launchedAt: project.launched_at ?? null,
+    deadline: project.deadline ?? null,
+    finalPledgedUsd: Number(body.summaryPledged ?? 0) || null,
+    finalBackers: Number(body.summaryBackers ?? 0) || null,
+  });
+
   let days: KicktraqDay[] = [];
   let diagnostics: Awaited<ReturnType<typeof scrapeKicktraqDetailed>>['diagnostics'] = {};
   try {
-    const detailed = await scrapeKicktraqDetailed(creatorSlug, projectSlug);
+    const detailed = await scrapeKicktraqDetailed(creatorSlug, projectSlug, anchor);
     days = detailed.days;
     diagnostics = detailed.diagnostics;
   } catch (e) {
@@ -344,7 +356,7 @@ async function runKicktraqDaily(
   }
 
   const metrics = summarizeKicktraqDays(days, Number(body.summaryPledged ?? 0), Number(body.summaryBackers ?? 0));
-  const hasOcr = Boolean(getOptionalEnv('QWEN_API_KEY') || getOptionalEnv('OPENAI_API_KEY') || getOptionalEnv('ANTHROPIC_API_KEY'));
+  const hasOcr = Boolean(getOptionalEnv('SHUIDI_API_KEY') || getOptionalEnv('QWEN_API_KEY') || getOptionalEnv('OPENAI_API_KEY') || getOptionalEnv('ANTHROPIC_API_KEY')); // #shuidi
 
   return {
     payload: {
