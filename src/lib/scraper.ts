@@ -1513,11 +1513,10 @@ async function fetchKicktraqChartImage(url: string, pageUrl: string, cookieStr: 
 }
 
 async function fetchKicktraqDailyImages(pageUrl: string, cookieStr: string, diagnostics?: KicktraqScrapeDiagnostics): Promise<KicktraqChartImage[]> {
-  // Comments-per-day is the least useful metric and adding its (often large) image
-  // roughly triples the model's vision workload. The core need is the in-campaign
-  // pledges/backers nodes, so by default we only OCR those two charts. Set
-  // KICKTRAQ_OCR_COMMENTS=1 to include the comments chart again.
-  const includeComments = getOptionalEnv('KICKTRAQ_OCR_COMMENTS') === '1';
+  // We OCR pledges/backers/comments by default so the daily curve is complete.
+  // The comments image adds vision workload (~1.5x), so set KICKTRAQ_OCR_COMMENTS=0
+  // to skip it and only OCR the pledges/backers charts.
+  const includeComments = getOptionalEnv('KICKTRAQ_OCR_COMMENTS') !== '0';
   const specs: Array<{ kind: KicktraqChartImage['kind']; file: string }> = [
     { kind: 'pledges', file: 'dailypledges.png' },
     { kind: 'backers', file: 'dailybackers.png' },
