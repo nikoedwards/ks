@@ -13,6 +13,7 @@ interface UserRow {
   favorites_count: number;
   subscriptions_count: number;
   session_expires_at: number | null;
+  last_login_at: number | null;
 }
 
 interface UsersData {
@@ -165,6 +166,7 @@ export default function AdminUsersPage() {
                 <th className="px-5 py-3 text-right">收藏</th>
                 <th className="px-5 py-3 text-right">追踪</th>
                 <th className="px-5 py-3 text-left">注册时间</th>
+                <th className="px-5 py-3 text-left">上次登录</th>
                 <th className="px-5 py-3 text-left">会话过期</th>
                 <th className="px-5 py-3 text-right">操作</th>
               </tr>
@@ -188,6 +190,7 @@ export default function AdminUsersPage() {
                   <td className="px-5 py-3 text-right">{user.favorites_count}</td>
                   <td className="px-5 py-3 text-right">{user.subscriptions_count}</td>
                   <td className="px-5 py-3 text-gray-500">{fmtDate(user.created_at)}</td>
+                  <td className="px-5 py-3 text-gray-500">{fmtDate(user.last_login_at)}</td>
                   <td className="px-5 py-3 text-gray-500">{fmtDate(user.session_expires_at)}</td>
                   <td className="px-5 py-3">
                     <div className="flex items-center justify-end gap-2">

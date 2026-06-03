@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { Menu } from 'lucide-react';
 import Sidebar from '@/components/Sidebar';
+import PageviewBeacon from '@/components/PageviewBeacon';
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
@@ -18,6 +19,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="flex h-screen overflow-hidden">
+      <PageviewBeacon />
       <Sidebar mobileOpen={mobileNavOpen} onNavigate={closeNav} onClose={closeNav} />
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
         {/* Mobile top bar — only visible below the lg breakpoint. */}

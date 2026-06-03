@@ -1419,7 +1419,7 @@ export interface KicktraqScrapeDiagnostics {
   imageStatus?: number;
   imageContentType?: string;
   imageBytes?: number;
-  ocrProvider?: 'qwen' | 'anthropic' | 'openai';
+  ocrProvider?: 'qwen' | 'anthropic' | 'openai' | 'shuidi'; // #shuidi
   ocrStatus?: number;
   ocrRows?: number;
   ocrPreview?: string;
@@ -1677,6 +1677,12 @@ export async function scrapeKicktraqDetailed(creatorSlug: string, projectSlug: s
   if (htmlDays.length) return { days: htmlDays, diagnostics };
 
   // Step 4: OCR the dailychart.png via vision models.
+  // #shuidi — preferred provider: Claude via Shuidi's OpenAI-compatible relay.
+  if (getOptionalEnv('SHUIDI_API_KEY')) {
+    const ocrDays = await scrapeKicktraqViaShuidi(pageUrl, cookieStr, diagnostics);
+    if (ocrDays.length) return { days: ocrDays, diagnostics };
+  }
+
   if (getOptionalEnv('QWEN_API_KEY')) {
     const ocrDays = await scrapeKicktraqViaQwen(pageUrl, cookieStr, diagnostics);
     if (ocrDays.length) return { days: ocrDays, diagnostics };
@@ -1782,6 +1788,95 @@ async function scrapeKicktraqViaOCR(pageUrl: string, cookieStr: string, diagnost
     return usableKicktraqDays(rows, diagnostics);
   } catch (e) {
     console.log('[OCR] exception: ' + String(e));
+    return [];
+  }
+}
+
+// #shuidi — OCR via Claude (claude-sonnet-4.6) behind Shuidi's OpenAI-compatible
+// relay. Same chat/completions + image_url shape as the Qwen path, but the relay
+// additionally requires the X-WP-Title header. Key/model/base are env-driven
+// (SHUIDI_API_KEY is the only required one); never hardcode the key in source.
+async function scrapeKicktraqViaShuidi(pageUrl: string, cookieStr: string, diagnostics?: KicktraqScrapeDiagnostics): Promise<KicktraqDay[]> {
+  const apiKey = getOptionalEnv('SHUIDI_API_KEY');
+  const model = getOptionalEnv('SHUIDI_VISION_MODEL') || 'claude-sonnet-4.6-wangsu';
+  const baseUrl = (getOptionalEnv('SHUIDI_BASE_URL') || 'https://agent-api.shuiditech.com/api/v1').replace(/\/+$/, '');
+  const endpoint = `${baseUrl}/chat/completions`;
+  const wpTitle = getOptionalEnv('SHUIDI_WP_TITLE') || 'kicksonar';
+  const timeoutMs = Math.max(60_000, Number(getOptionalEnv('SHUIDI_TIMEOUT_MS') || 120_000));
+  if (diagnostics) {
+    diagnostics.ocrProvider = 'shuidi';
+    diagnostics.ocrEndpoint = endpoint;
+    diagnostics.ocrTimeoutMs = timeoutMs;
+  }
+
+  try {
+    const images = await fetchKicktraqDailyImages(pageUrl, cookieStr, diagnostics);
+    if (!images.length) return [];
+
+    const body = JSON.stringify({
+      model,
+      temperature: 0,
+      max_tokens: 8192,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'text', text: kicktraqVisionPrompt('estimate') },
+          ...images.flatMap(image => [
+            { type: 'text', text: `Image: ${image.kind}` },
+            { type: 'image_url', image_url: { url: `data:image/png;base64,${image.base64}` } },
+          ]),
+        ],
+      }],
+    });
+
+    let res: Response | null = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        res = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`,
+            'X-WP-Title': wpTitle, // #shuidi — relay requires this header
+          },
+          body,
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+      } catch (e) {
+        if (attempt === 2) throw e;
+        await sleep(1500 * (attempt + 1));
+        continue;
+      }
+      if (res.status !== 429 || attempt === 2) break;
+      const retryAfter = Number(res.headers.get('retry-after') ?? 0);
+      await sleep(retryAfter > 0 ? retryAfter * 1000 : 1500 * (attempt + 1));
+    }
+
+    if (!res) return [];
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '');
+      console.log('[Shuidi OCR] error status=' + res.status + ' body=' + errText.slice(0, 300));
+      if (diagnostics) {
+        diagnostics.ocrStatus = res.status;
+        diagnostics.ocrPreview = errText.slice(0, 200);
+        diagnostics.ocrError = extractOpenAIErrorMessage(errText);
+      }
+      return [];
+    }
+
+    const data = await res.json() as { choices?: Array<{ message?: { content?: string } }> };
+    const text = data.choices?.[0]?.message?.content ?? '';
+    const rows = rowsFromOcrText(text);
+    if (diagnostics) {
+      diagnostics.ocrStatus = res.status;
+      diagnostics.ocrPreview = text.slice(0, 200);
+      diagnostics.ocrRows = rows.length;
+      diagnostics.debug = { ...(diagnostics.debug ?? {}), modelOutput: text };
+    }
+    return usableKicktraqDays(rows, diagnostics);
+  } catch (e) {
+    console.log('[Shuidi OCR] exception: ' + String(e));
+    if (diagnostics) diagnostics.ocrError = String(e);
     return [];
   }
 }

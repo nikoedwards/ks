@@ -1,11 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSyncState } from '@/lib/syncState';
 import { runKickstarterLiveSync, type LiveSyncOptions } from '@/lib/kickstarterLive';
+import { requireAdmin } from '@/lib/apiAuth';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export async function POST(req: NextRequest) {
+  if (!requireAdmin(req)) return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   const current = getSyncState();
   if (current.status === 'running') {
     return NextResponse.json({ error: 'Sync already running' }, { status: 409 });

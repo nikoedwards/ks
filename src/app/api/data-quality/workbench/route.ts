@@ -157,7 +157,7 @@ async function runKicktraqImport(projectId: string, action: string) {
   const { days, diagnostics } = await scrapeKicktraqDetailed(creatorSlug, projectSlug);
   if (!days.length) {
     if ((diagnostics.zeroRowsRejected ?? 0) > 0) deleteKicktraqSnapshots(projectId);
-    const hasOcr = Boolean(getOptionalEnv('QWEN_API_KEY') || getOptionalEnv('OPENAI_API_KEY') || getOptionalEnv('ANTHROPIC_API_KEY'));
+    const hasOcr = Boolean(getOptionalEnv('SHUIDI_API_KEY') || getOptionalEnv('QWEN_API_KEY') || getOptionalEnv('OPENAI_API_KEY') || getOptionalEnv('ANTHROPIC_API_KEY')); // #shuidi
     return {
       payload: {
         ok: false,

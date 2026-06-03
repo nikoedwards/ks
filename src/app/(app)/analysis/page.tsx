@@ -254,7 +254,7 @@ export default function AnalysisPage() {
       {tabs.map(({ key, label }) => (
         <button
           key={key}
-          onClick={() => setTab(key)}
+          onClick={() => (key === 'overview' ? setTab(key) : gate(() => setTab(key)))}
           className={`shrink-0 whitespace-nowrap px-3 py-3 text-sm font-semibold transition-all border-b-2 -mb-px sm:px-5 ${
             tab === key
               ? 'border-ks-green text-ks-green'

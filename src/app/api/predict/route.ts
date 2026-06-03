@@ -1,4 +1,5 @@
-import { NextRequest } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
+import { guardApi } from '@/lib/apiAuth';
 
 const MODEL = 'claude-sonnet-4-6';
 
@@ -27,6 +28,11 @@ function htmlToText(html: string): string {
 }
 
 export async function POST(req: NextRequest) {
+  // This endpoint calls a paid LLM + scrapes Kickstarter — require login and
+  // apply a tight per-user budget to prevent cost abuse.
+  const { isGuest, limited } = guardApi(req, { bucket: 'predict', perMin: 6, perHour: 60 });
+  if (limited) return limited;
+  if (isGuest) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   const body = await req.json().catch(() => ({}));
   const { url, lang = 'cn' } = body as { url?: string; lang?: string };
 

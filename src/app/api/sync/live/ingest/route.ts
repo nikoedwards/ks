@@ -1,10 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { ingestKickstarterLiveProjects, type KSDiscoverProject } from '@/lib/kickstarterLive';
+import { requireAdmin } from '@/lib/apiAuth';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export async function POST(req: NextRequest) {
+  if (!requireAdmin(req)) return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   const body = await req.json().catch(() => null) as
     | { projects?: KSDiscoverProject[]; project?: KSDiscoverProject }
     | KSDiscoverProject[]

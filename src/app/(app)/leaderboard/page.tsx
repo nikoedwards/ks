@@ -19,6 +19,8 @@ import {
 } from 'lucide-react';
 import { useLanguage } from '@/hooks/useLanguage';
 import ImagePreview from '@/components/ImagePreview';
+import { useAuthGate } from '@/components/AuthGate';
+import { useAuth } from '@/contexts/AuthContext';
 
 interface LeaderboardProject {
   id: string;
@@ -194,6 +196,7 @@ function TrendMark({ state }: { state: string }) {
 export default function LeaderboardPage() {
   const [lang] = useLanguage();
   const cn = lang === 'cn';
+  const { user, isLoading: authLoading } = useAuth();
   const yearNow = currentYear();
   const defaultRange = yearRange(yearNow);
   const [dateFrom, setDateFrom] = useState(defaultRange.from);
@@ -225,6 +228,10 @@ export default function LeaderboardPage() {
   }, []);
 
   useEffect(() => {
+    if (initialized || authLoading) return;
+    // Guests get the default first view only; gated deep-link params (metric,
+    // year, range, category) are ignored so a shared URL can't bypass the gate.
+    if (!user) { setInitialized(true); return; }
     const params = new URLSearchParams(window.location.search);
     const metricParam = params.get('metric');
     const yearParam = params.get('year');
@@ -259,7 +266,7 @@ export default function LeaderboardPage() {
     setCategoryParent(params.get('categoryParent') ?? '');
     setCategoryName(params.get('categoryName') ?? '');
     setInitialized(true);
-  }, []);
+  }, [authLoading, user]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const parentOptions = useMemo(() => {
     const parents = new Map<string, number>();
@@ -325,25 +332,32 @@ export default function LeaderboardPage() {
     if (initialized) load();
   }, [initialized, dateFrom, dateTo, categoryParent, categoryName]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const applyYear = (year: number) => {
+  const gate = useAuthGate();
+
+  // Internal (ungated) primitives so gated handlers can compose them.
+  const applyYearRaw = (year: number) => {
     const range = yearRange(year);
     setActiveYear(year);
     setDateFrom(range.from);
     setDateTo(range.to);
   };
-
-  const applyLifetime = () => {
+  const applyLifetimeRaw = () => {
     setActiveYear('lifetime');
     setDateFrom('');
     setDateTo('');
   };
 
-  const switchMetric = (next: Metric) => {
-    if (next === 'creator' || next === 'agency') applyLifetime();
-    if (next !== 'creator' && next !== 'agency' && activeYear === 'lifetime') applyYear(yearNow);
+  // Leaderboard browsing beyond the default first view is gated: changing year,
+  // range, category, metric dimension, or page requires login.
+  const applyYear = (year: number) => gate(() => applyYearRaw(year));
+  const applyLifetime = () => gate(() => applyLifetimeRaw());
+
+  const switchMetric = (next: Metric) => gate(() => {
+    if (next === 'creator' || next === 'agency') applyLifetimeRaw();
+    if (next !== 'creator' && next !== 'agency' && activeYear === 'lifetime') applyYearRaw(yearNow);
     setMetric(next);
     setPage(1);
-  };
+  });
 
   const shareUrl = () => {
     const url = new URL(window.location.href);
@@ -782,7 +796,7 @@ export default function LeaderboardPage() {
               </button>
             ))}
             <button
-              onClick={() => setActiveYear('custom')}
+              onClick={() => gate(() => setActiveYear('custom'))}
               className={`rounded-full px-4 py-2 text-sm font-semibold transition-colors ${
                 activeYear === 'custom' ? 'bg-gray-900 text-white' : 'bg-gray-100/80 text-gray-500 hover:bg-gray-200'
               }`}
@@ -798,7 +812,7 @@ export default function LeaderboardPage() {
               {cn ? '历史至今' : 'Lifetime'}
             </button>
           </div>
-          <button onClick={load} className="rounded-lg bg-ks-green px-3 py-2 text-sm font-semibold text-white hover:bg-ks-green-dark">
+          <button onClick={() => gate(load)} className="rounded-lg bg-ks-green px-3 py-2 text-sm font-semibold text-white hover:bg-ks-green-dark">
             {cn ? '应用筛选' : 'Apply'}
           </button>
         </div>
@@ -806,22 +820,22 @@ export default function LeaderboardPage() {
         <div className="mt-4 grid grid-cols-1 gap-3 text-sm lg:grid-cols-4">
           <label className="space-y-1">
             <span className="flex items-center gap-1 text-xs font-semibold text-gray-400"><Calendar className="h-3.5 w-3.5" />{cn ? '开始日期' : 'From'}</span>
-            <input type="date" value={dateFrom} onChange={e => { setActiveYear('custom'); setDateFrom(e.target.value); }} className="w-full rounded-md border border-gray-200 bg-white px-3 py-2" />
+            <input type="date" value={dateFrom} onChange={e => { const v = e.target.value; gate(() => { setActiveYear('custom'); setDateFrom(v); }); }} className="w-full rounded-md border border-gray-200 bg-white px-3 py-2" />
           </label>
           <label className="space-y-1">
             <span className="flex items-center gap-1 text-xs font-semibold text-gray-400"><Calendar className="h-3.5 w-3.5" />{cn ? '结束日期' : 'To'}</span>
-            <input type="date" value={dateTo} onChange={e => { setActiveYear('custom'); setDateTo(e.target.value); }} className="w-full rounded-md border border-gray-200 bg-white px-3 py-2" />
+            <input type="date" value={dateTo} onChange={e => { const v = e.target.value; gate(() => { setActiveYear('custom'); setDateTo(v); }); }} className="w-full rounded-md border border-gray-200 bg-white px-3 py-2" />
           </label>
           <label className="space-y-1">
             <span className="flex items-center gap-1 text-xs font-semibold text-gray-400"><Filter className="h-3.5 w-3.5" />{cn ? '大类' : 'Parent Category'}</span>
-            <select value={categoryParent} onChange={e => { setCategoryParent(e.target.value); setCategoryName(''); }} className="w-full rounded-md border border-gray-200 bg-white px-3 py-2">
+            <select value={categoryParent} onChange={e => { const v = e.target.value; gate(() => { setCategoryParent(v); setCategoryName(''); }); }} className="w-full rounded-md border border-gray-200 bg-white px-3 py-2">
               <option value="">{cn ? '全部大类' : 'All parent categories'}</option>
               {parentOptions.map(([parent, total]) => <option key={parent} value={parent}>{parent} ({total})</option>)}
             </select>
           </label>
           <label className="space-y-1">
             <span className="flex items-center gap-1 text-xs font-semibold text-gray-400"><Filter className="h-3.5 w-3.5" />{cn ? '二级类目' : 'Subcategory'}</span>
-            <select value={categoryName} onChange={e => setCategoryName(e.target.value)} className="w-full rounded-md border border-gray-200 bg-white px-3 py-2">
+            <select value={categoryName} onChange={e => { const v = e.target.value; gate(() => setCategoryName(v)); }} className="w-full rounded-md border border-gray-200 bg-white px-3 py-2">
               <option value="">{cn ? '全部二级类目' : 'All subcategories'}</option>
               {childOptions.map(c => <option key={`${c.category_parent}-${c.category_name}`} value={c.category_name ?? ''}>{c.category_name ?? '-'} ({c.total})</option>)}
             </select>
@@ -878,7 +892,7 @@ export default function LeaderboardPage() {
               ] as [CreatorMetric, string, string][]).map(([key, label, hint]) => (
                 <button
                   key={key}
-                  onClick={() => { setCreatorMetric(key); setPage(1); }}
+                  onClick={() => gate(() => { setCreatorMetric(key); setPage(1); })}
                   className={`rounded-lg border p-4 text-left transition-all ${creatorMetric === key ? 'border-ks-green bg-ks-green-light/60 shadow-sm' : 'border-gray-100 bg-gray-50/70 hover:bg-gray-100'}`}
                 >
                   <p className="text-sm font-black text-gray-900">{label}</p>
@@ -970,10 +984,10 @@ export default function LeaderboardPage() {
             {cn ? `第 ${page} / ${totalPages} 页` : `Page ${page} of ${totalPages}`}
           </p>
           <div className="flex gap-2">
-            <button disabled={page <= 1} onClick={() => setPage(p => Math.max(1, p - 1))} className="rounded-md border border-gray-200 p-2 text-gray-500 disabled:opacity-40">
+            <button disabled={page <= 1} onClick={() => gate(() => setPage(p => Math.max(1, p - 1)))} className="rounded-md border border-gray-200 p-2 text-gray-500 disabled:opacity-40">
               <ChevronLeft className="h-4 w-4" />
             </button>
-            <button disabled={page >= totalPages} onClick={() => setPage(p => Math.min(totalPages, p + 1))} className="rounded-md border border-gray-200 p-2 text-gray-500 disabled:opacity-40">
+            <button disabled={page >= totalPages} onClick={() => gate(() => setPage(p => Math.min(totalPages, p + 1)))} className="rounded-md border border-gray-200 p-2 text-gray-500 disabled:opacity-40">
               <ChevronRight className="h-4 w-4" />
             </button>
           </div>

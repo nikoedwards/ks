@@ -180,7 +180,7 @@ export default function ProjectsPage() {
   const [lang] = useLanguage();
   const tr = t[lang].projects;
   const stateTr = t[lang].states;
-  const { user, showLogin } = useAuth();
+  const { user, isLoading: authLoading, showLogin } = useAuth();
 
   const [data, setData] = useState<{ total: number; rows: Project[]; categories: string[]; categoryOptions?: { category_parent: string; category_name: string | null; total: number }[]; countries: { country: string; country_name: string }[] } | null>(null);
   const [loading, setLoading] = useState(true);
@@ -220,24 +220,30 @@ export default function ProjectsPage() {
     try { window.localStorage.setItem('kicksonar.projectColumns', JSON.stringify(visibleCols)); } catch { /* ignore */ }
   }, [visibleCols]);
 
-  // URL state persistence — read on mount
+  // URL state persistence — read once auth is resolved. For guests we ignore
+  // gated params (filters, sort, page 2+) so a direct ?page=2 / ?state=… link
+  // can't bypass the login gate; logged-in users get the full deep link.
   const urlInitDone = useRef(false);
   useEffect(() => {
+    if (urlInitDone.current || authLoading) return;
     const sp = new URLSearchParams(window.location.search);
-    if (sp.get('search')) setSearch(sp.get('search')!);
-    if (sp.get('state')) setState(sp.get('state')!);
-    if (sp.get('category')) setCategory(sp.get('category')!);
-    if (sp.get('categoryName')) setCategoryName(sp.get('categoryName')!);
-    if (sp.get('country')) setCountry(sp.get('country')!);
-    if (sp.get('serviceAgency')) setServiceAgency(sp.get('serviceAgency')!);
-    if (sp.get('sort')) setSort(sp.get('sort')!);
-    if (sp.get('sortDir')) setSortDir(sp.get('sortDir') as SortDir);
-    if (sp.get('page')) setPage(Number(sp.get('page')));
-    if (sp.get('timePeriod')) setTimePeriod(sp.get('timePeriod') as TimePeriod);
-    if (sp.get('dateFrom')) setDateFrom(sp.get('dateFrom')!);
-    if (sp.get('dateTo')) setDateTo(sp.get('dateTo')!);
+    const guest = !user;
+    if (!guest) {
+      if (sp.get('search')) setSearch(sp.get('search')!);
+      if (sp.get('state')) setState(sp.get('state')!);
+      if (sp.get('category')) setCategory(sp.get('category')!);
+      if (sp.get('categoryName')) setCategoryName(sp.get('categoryName')!);
+      if (sp.get('country')) setCountry(sp.get('country')!);
+      if (sp.get('serviceAgency')) setServiceAgency(sp.get('serviceAgency')!);
+      if (sp.get('sort')) setSort(sp.get('sort')!);
+      if (sp.get('sortDir')) setSortDir(sp.get('sortDir') as SortDir);
+      if (sp.get('page')) setPage(Number(sp.get('page')));
+      if (sp.get('timePeriod')) setTimePeriod(sp.get('timePeriod') as TimePeriod);
+      if (sp.get('dateFrom')) setDateFrom(sp.get('dateFrom')!);
+      if (sp.get('dateTo')) setDateTo(sp.get('dateTo')!);
+    }
     urlInitDone.current = true;
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [authLoading, user]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // URL state persistence — write on change
   useEffect(() => {
@@ -332,7 +338,7 @@ export default function ProjectsPage() {
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
-  const handleSearch = (e: React.FormEvent) => { e.preventDefault(); setPage(1); fetchData(); };
+  const handleSearch = (e: React.FormEvent) => { e.preventDefault(); gate(() => { setPage(1); fetchData(); }); };
   const resetFilters = () => {
     setSearch('');
     setState('all');

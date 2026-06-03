@@ -16,6 +16,7 @@ import {
   Sparkles,
   Heart,
   RadioTower,
+  Activity,
   Users,
   Megaphone,
   LogOut,
@@ -52,6 +53,7 @@ export default function Sidebar({
     predict: { href: '/predict', label: tr.predict, icon: Sparkles, adminOnly: false },
     favorites: { href: '/favorites', label: lang === 'cn' ? '收藏夹' : 'Favorites', icon: Heart, adminOnly: false },
     'data-quality': { href: '/data-quality', label: lang === 'cn' ? '数据质量' : 'Data Quality', icon: RadioTower, adminOnly: true },
+    'admin-analytics': { href: '/admin/analytics', label: lang === 'cn' ? '站点分析' : 'Analytics', icon: Activity, adminOnly: true },
     'admin-users': { href: '/admin/users', label: lang === 'cn' ? '用户看板' : 'Users', icon: Users, adminOnly: true },
     'admin-updates': { href: '/admin/updates', label: lang === 'cn' ? '更新推送' : 'Updates', icon: Megaphone, adminOnly: true },
     'admin-nav': { href: '/admin/nav', label: lang === 'cn' ? '全局配置' : 'Global Config', icon: SlidersHorizontal, adminOnly: true },
@@ -73,6 +75,7 @@ export default function Sidebar({
     { nav_key: 'predict' },
     { nav_key: 'favorites' },
     { nav_key: 'data-quality' },
+    { nav_key: 'admin-analytics' },
     { nav_key: 'admin-updates' },
   ]).map(item => {
     const entry = navMap[item.nav_key as keyof typeof navMap];
