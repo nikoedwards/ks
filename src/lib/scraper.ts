@@ -274,7 +274,12 @@ function parseMoney(raw: string | undefined): { amount: number; currency: string
 function parseKicktraqSummary(html: string): KicktraqSummary | null {
   const details = stripTags(html.match(/<div class="project-details">([\s\S]*?)<\/div>/i)?.[1] ?? html);
   const backers = parseInt(details.match(/Backers:\s*([\d,]+)/i)?.[1]?.replace(/,/g, '') ?? '0') || 0;
-  const fundingMatch = details.match(/Funding:\s*([^<]+?)\s+of\s+([^<(]+)\s*\(/i);
+  // Kicktraq's infobox line is "Funded: $X of $Y" on current pages (older pages used
+  // "Funding: $X of $Y (NN%)"). Capture both amounts as tight currency tokens so the
+  // trailing "Dates:" text can never bleed into the goal value. Works with/without the
+  // trailing percentage paren.
+  const MONEY = String.raw`(?:US|HK|A|C|CA|NZ|S|R)?[$£€¥]\s?\d[\d.,]*\s?(?:million|thousand|billion|m|k|bn)?`;
+  const fundingMatch = details.match(new RegExp(`Fund(?:ed|ing):\\s*(${MONEY})\\s+of\\s+(${MONEY})`, 'i'));
   const pledged = parseMoney(fundingMatch?.[1]);
   const goal = parseMoney(fundingMatch?.[2]);
   if (pledged.amount <= 0 && backers <= 0) return null;
