@@ -1974,13 +1974,14 @@ async function scrapeKicktraqViaOCR(pageUrl: string, cookieStr: string, diagnost
   }
 }
 
-// #shuidi — OCR via Claude (claude-sonnet-4.6) behind Shuidi's OpenAI-compatible
+// #shuidi — OCR via GPT (openai/gpt-5.5) behind Shuidi's OpenAI-compatible
 // relay. Same chat/completions + image_url shape as the Qwen path, but the relay
 // additionally requires the X-WP-Title header. Key/model/base are env-driven
 // (SHUIDI_API_KEY is the only required one); never hardcode the key in source.
+// Switch models with SHUIDI_VISION_MODEL (e.g. claude-sonnet-4.6-wangsu) without code changes.
 async function scrapeKicktraqViaShuidi(pageUrl: string, cookieStr: string, diagnostics?: KicktraqScrapeDiagnostics, anchor?: OcrAnchor): Promise<KicktraqDay[]> {
   const apiKey = getOptionalEnv('SHUIDI_API_KEY');
-  const model = getOptionalEnv('SHUIDI_VISION_MODEL') || 'claude-sonnet-4.6-wangsu';
+  const model = getOptionalEnv('SHUIDI_VISION_MODEL') || 'openai/gpt-5.5';
   const baseUrl = (getOptionalEnv('SHUIDI_BASE_URL') || 'https://agent-api.shuiditech.com/api/v1').replace(/\/+$/, '');
   const endpoint = `${baseUrl}/chat/completions`;
   const wpTitle = getOptionalEnv('SHUIDI_WP_TITLE') || 'kicksonar';
@@ -1993,10 +1994,14 @@ async function scrapeKicktraqViaShuidi(pageUrl: string, cookieStr: string, diagn
 
   // One image -> one model call, with retry on transient errors / 429. #shuidi relay
   // requires the X-WP-Title header.
+  // OpenAI gpt-5 family only accepts the default temperature (=1); sending 0 is a
+  // hard 400. Claude/qwen are fine with 0. Omit temperature for gpt-5* so the
+  // model picks its default; keep deterministic 0 for everyone else. #shuidi
+  const isGpt5 = /(^|\/)gpt-5/i.test(model);
   const callOnce = async (prompt: string, base64: string): Promise<{ ok: boolean; status: number; text: string }> => {
     const body = JSON.stringify({
       model,
-      temperature: 0,
+      ...(isGpt5 ? {} : { temperature: 0 }),
       max_tokens: 8192,
       messages: [{
         role: 'user',
