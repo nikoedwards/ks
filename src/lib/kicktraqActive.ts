@@ -11,7 +11,7 @@ import {
   mergeKicktraqIntoProject,
 } from './db';
 import { updateSyncState } from './syncState';
-import { resolveUsdAmounts } from './money';
+import { resolveUsdAmounts, plausiblePledgedUsdOrZero } from './money';
 
 const KICKTRAQ_ACTIVE_URL = 'https://www.kicktraq.com/projects/';
 
@@ -215,13 +215,16 @@ function inferProjectState(project: KicktraqListProject, now: number): string {
 function toProjectRows(projects: KicktraqListProject[], now: number): Record<string, unknown>[] {
   return projects.map(project => {
     const { pledgedUsd, goalUsd } = ktUsd(project);
+    // Guard against a parse/scale artifact (implausible pledged for the backer count)
+    // ever being stored / MAX-locked into the row.
+    const safePledgedUsd = plausiblePledgedUsdOrZero(pledgedUsd, project.backers_count);
     return {
     id: project.id,
     name: project.name,
     blurb: project.blurb,
     goal: goalUsd,
     pledged: project.pledged,
-    usd_pledged: pledgedUsd,
+    usd_pledged: safePledgedUsd,
     state: inferProjectState(project, now),
     country: null,
     country_name: null,

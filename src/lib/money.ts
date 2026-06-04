@@ -29,6 +29,41 @@ export const MAX_FX_RATE = 10;
 // Treated as invalid so it never gets stored and MAX-locked into the row.
 export const MAX_PLAUSIBLE_PLEDGED_USD = 60_000_000;
 
+// Per-backer plausibility guard. A real Kickstarter average pledge is tens to a few
+// thousand USD; even the priciest hardware/enterprise campaigns stay well under this.
+// A pledged total implying a higher average-per-backer is therefore a parse/scale
+// artifact (a since-fixed million/thousand-multiplier mis-read, a raw-local amount,
+// etc.) that the monotonic MAX-lock would otherwise freeze forever. The absolute
+// MAX_PLAUSIBLE_PLEDGED_USD ceiling only catches > $60M; many artifacts (e.g. a GBP
+// campaign mis-scaled to ~$44M) sit under it and are caught only by this ratio.
+export const MAX_USD_PER_BACKER = 25_000;
+
+// Only scrutinise sizeable totals. Small rows cannot be inflated in a way that matters
+// and we never want to touch ordinary projects or low-backer test rows.
+export const PLEDGED_SCRUTINY_FLOOR_USD = 1_000_000;
+
+/**
+ * True when `pledgedUsd` is implausible for the given backer count — i.e. it exceeds
+ * the absolute ceiling, or (for sizeable totals with a known backer count) implies an
+ * average pledge above MAX_USD_PER_BACKER. Backer count of 0/unknown is intentionally
+ * NOT flagged here: we can't compute a ratio and don't want to zero a legitimate big
+ * campaign whose backer count is merely missing — those are left to a re-fetch.
+ */
+export function isImplausiblePledgedUsd(pledgedUsd: number, backers: number): boolean {
+  if (!Number.isFinite(pledgedUsd) || pledgedUsd <= 0) return false;
+  if (pledgedUsd > MAX_PLAUSIBLE_PLEDGED_USD) return true;
+  if (pledgedUsd < PLEDGED_SCRUTINY_FLOOR_USD) return false;
+  const b = Number.isFinite(backers) && backers > 0 ? backers : 0;
+  if (b <= 0) return false;
+  return pledgedUsd / b > MAX_USD_PER_BACKER;
+}
+
+/** Returns `pledgedUsd` when plausible for `backers`, otherwise 0 (so a bad value is
+ *  never stored / MAX-locked into a project row or snapshot). */
+export function plausiblePledgedUsdOrZero(pledgedUsd: number, backers: number): number {
+  return isImplausiblePledgedUsd(pledgedUsd, backers) ? 0 : pledgedUsd;
+}
+
 // Static currency→USD fallback rates for every currency Kickstarter supports. Used
 // when a payload carries neither an FX rate nor a trustworthy converted-USD figure,
 // so we always apply a real conversion instead of storing the local amount as USD

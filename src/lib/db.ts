@@ -3,6 +3,7 @@ import type { Database } from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
 import { createHash } from 'crypto';
+import { MAX_USD_PER_BACKER, PLEDGED_SCRUTINY_FLOOR_USD, MAX_PLAUSIBLE_PLEDGED_USD, isImplausiblePledgedUsd } from './money';
 
 const DATA_DIR = process.env.DATA_DIR ?? path.join(process.cwd(), 'data');
 const DB_PATH = path.join(DATA_DIR, 'kickstarter.db');
@@ -119,6 +120,7 @@ let projectStatesReconciled = false;
 let inflatedPledgedReconciled = false;
 let regressedPledgedReconciled = false;
 let unconvertedPledgedReconciled = false;
+let implausiblePledgedReconciled = false;
 let missingLiveFieldsReconciled = false;
 
 // Static currency→USD rate as a SQL CASE, for in-place repair of amounts that were
@@ -378,6 +380,72 @@ function reconcileInflatedPledged(db: Database) {
 }
 
 /**
+ * One-time-per-process repair of pledged totals that are inflated *below* the absolute
+ * $60M ceiling and so slip past reconcileInflatedPledged, but are still impossible for
+ * their backer count (e.g. a GBP campaign mis-scaled to ~$44M against ~100 backers, a
+ * since-fixed million/thousand-multiplier mis-read frozen by the monotonic MAX-lock).
+ *
+ * Detection uses a principled invariant — average pledge per backer. Real campaigns sit
+ * at tens to a few thousand USD/backer; anything above MAX_USD_PER_BACKER (with a
+ * sizeable absolute total) is an artifact. We only touch rows with a known backer count
+ * so a legitimate large campaign with merely-missing backers is never zeroed. Mirrors
+ * reconcileInflatedPledged: null the bad snapshots (so MAX/regressed can't re-lift),
+ * reset the row to its best surviving plausible snapshot (else 0), and queue a re-fetch.
+ * The go-forward write-time guard (isImplausiblePledgedUsd in the snapshot/row writers)
+ * prevents new occurrences.
+ */
+function reconcileImplausiblePledged(db: Database) {
+  if (implausiblePledgedReconciled) return;
+  implausiblePledgedReconciled = true;
+  try {
+    const now = Math.floor(Date.now() / 1000);
+    const bad = {
+      perBacker: MAX_USD_PER_BACKER,
+      floor: PLEDGED_SCRUTINY_FLOOR_USD,
+      ceiling: MAX_PLAUSIBLE_PLEDGED_USD,
+    };
+    // A row/snapshot is implausible when its pledged exceeds the absolute ceiling, OR
+    // (for sizeable totals with known backers) implies > MAX_USD_PER_BACKER average.
+    const PROJ_BAD =
+      '(COALESCE(usd_pledged,0) > @ceiling OR (COALESCE(usd_pledged,0) >= @floor AND COALESCE(backers_count,0) > 0 AND usd_pledged > backers_count * @perBacker))';
+    const SNAP_BAD =
+      '(COALESCE(pledged_usd,0) > @ceiling OR (COALESCE(pledged_usd,0) >= @floor AND COALESCE(backers_count,0) > 0 AND pledged_usd > backers_count * @perBacker))';
+
+    // 1) Queue an authoritative re-fetch for the affected tracked projects first.
+    const queued = db.prepare(
+      `UPDATE tracking_settings SET next_fetch = @now
+       WHERE is_tracking = 1 AND project_id IN (SELECT id FROM projects WHERE ${PROJ_BAD})`,
+    ).run({ ...bad, now }).changes;
+
+    // 2) Null implausible snapshots so reconcileRegressedPledged can't re-lift the row.
+    const snapsNulled = db.prepare(
+      `UPDATE project_snapshots SET pledged_usd = NULL WHERE ${SNAP_BAD}`,
+    ).run(bad).changes;
+
+    // 3) Reset each implausible project row to its best surviving plausible snapshot
+    //    (one that is itself within the per-backer bound), else 0.
+    const projFixed = db.prepare(
+      `UPDATE projects
+       SET usd_pledged = COALESCE((
+         SELECT MAX(ps.pledged_usd) FROM project_snapshots ps
+         WHERE ps.project_id = projects.id
+           AND COALESCE(ps.pledged_usd,0) > 0
+           AND ps.pledged_usd <= @ceiling
+           AND (COALESCE(ps.backers_count,0) = 0 OR ps.pledged_usd <= ps.backers_count * @perBacker)
+       ), 0)
+       WHERE ${PROJ_BAD}`,
+    ).run(bad).changes;
+
+    if (projFixed > 0 || snapsNulled > 0) {
+      invalidateAnalyticsCaches();
+      console.log(`[db] corrected ${projFixed} implausible pledged row(s) + ${snapsNulled} snapshot(s); queued ${queued} for authoritative re-fetch`);
+    }
+  } catch (e) {
+    console.error('[db] reconcileImplausiblePledged failed:', e);
+  }
+}
+
+/**
  * One-time-per-process repair of pledged amounts that were stored as raw LOCAL
  * currency instead of USD. The old money.ts fell back to the local amount when a
  * feed row carried no converted/explicit USD pledged, so e.g. a ¥15.6M JPY campaign
@@ -482,6 +550,7 @@ function ensureRuntimeMigrations(db: Database) {
   reconcileProjectStates(db);
   reconcileUnconvertedPledged(db);
   reconcileInflatedPledged(db);
+  reconcileImplausiblePledged(db);
   reconcileRegressedPledged(db);
   reconcileMissingLiveFields(db);
   try { db.exec('ALTER TABLE users ADD COLUMN email_verified INTEGER DEFAULT 1'); } catch { /* already exists */ }
@@ -2785,6 +2854,12 @@ export function updateProjectLiveMetadata(projectId: string, data: {
   image_url?: string | null;
   image_thumb_url?: string | null;
 }) {
+  // Guard: reject an incoming pledged that is implausible for the incoming backer count
+  // before it can be MAX-locked into the row. Null falls through to "keep existing".
+  const incomingPledged =
+    data.pledged_usd != null && isImplausiblePledgedUsd(Number(data.pledged_usd), Number(data.backers_count ?? 0))
+      ? null
+      : data.pledged_usd ?? null;
   getDB().prepare(`
     UPDATE projects SET
       name = COALESCE(@name, name),
@@ -2812,7 +2887,7 @@ export function updateProjectLiveMetadata(projectId: string, data: {
     launched_at: data.launched_at ?? null,
     deadline: data.deadline ?? null,
     goal_usd: data.goal_usd ?? null,
-    pledged_usd: data.pledged_usd ?? null,
+    pledged_usd: incomingPledged,
     backers_count: data.backers_count ?? null,
     creator_name: data.creator_name ?? null,
     creator_slug: data.creator_slug ?? null,
@@ -4056,6 +4131,11 @@ export function mergeKicktraqIntoProject(canonicalId: string, ktData: {
 }) {
   const db = getDB();
   const now = Math.floor(Date.now() / 1000);
+  // Guard: don't MAX-lock a pledged that is implausible for the kicktraq backer count.
+  const safePledgedUsd =
+    ktData.pledged_usd != null && isImplausiblePledgedUsd(Number(ktData.pledged_usd), Number(ktData.backers_count ?? 0))
+      ? null
+      : ktData.pledged_usd ?? null;
   db.prepare(`
     UPDATE projects SET
       backers_count = MAX(backers_count, @backers_count),
@@ -4076,7 +4156,7 @@ export function mergeKicktraqIntoProject(canonicalId: string, ktData: {
   `).run({
     id: canonicalId,
     backers_count: ktData.backers_count ?? 0,
-    pledged_usd: ktData.pledged_usd ?? null,
+    pledged_usd: safePledgedUsd,
     launched_at: ktData.launched_at ?? null,
     deadline: ktData.deadline ?? null,
     category_parent: ktData.category_parent ?? null,
@@ -4623,11 +4703,16 @@ export interface Snapshot {
 }
 
 export function insertSnapshot(snap: Omit<Snapshot, 'source'> & { project_id: string; source?: string }) {
+  // Guard: never persist a pledged total that is implausible for its backer count
+  // (a parse/scale artifact). Storing 0 keeps it out of the MAX(snapshot, row) headline.
+  const safePledgedUsd = isImplausiblePledgedUsd(Number(snap.pledged_usd ?? 0), Number(snap.backers_count ?? 0))
+    ? 0
+    : snap.pledged_usd;
   getDB().prepare(`
     INSERT OR IGNORE INTO project_snapshots
       (project_id, captured_at, pledged_usd, backers_count, days_to_go, comments_count, updates_count, state, source)
     VALUES (@project_id, @captured_at, @pledged_usd, @backers_count, @days_to_go, @comments_count, @updates_count, @state, @source)
-  `).run({ source: 'ks', ...snap });
+  `).run({ source: 'ks', ...snap, pledged_usd: safePledgedUsd });
 }
 
 export function deleteKicktraqSnapshots(projectId: string) {
