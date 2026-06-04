@@ -141,12 +141,13 @@ interface KicktraqDayRow {
 
 interface KicktraqPreviewPayload {
   projectName: string;
+  images?: { cachedCount: number; kinds: string[]; bytes: number; fetchedAt: number | null };
   summary: {
     incoming: { pledged_usd: number; backers_count: number; goal_usd: number; currency: string | null } | null;
     current: { pledged_usd: number; backers_count: number; goal_usd: number };
   };
   daily: {
-    incoming: { days: KicktraqDayRow[]; count: number; sumPledged: number; sumBackers: number; dateFrom: string | null; dateTo: string | null } | null;
+    incoming: { days: KicktraqDayRow[]; count: number; sumPledged: number; sumBackers: number; dateFrom: string | null; dateTo: string | null; imageSource?: 'cache' | 'network' | null } | null;
     current: { snapshotCount: number; dateFrom: string | null; dateTo: string | null };
   };
   validation?: {
@@ -874,6 +875,9 @@ export default function DataQualityPage() {
   const [ktCommitting, setKtCommitting] = useState(false);
   const [ktDailyLoading, setKtDailyLoading] = useState(false);
   const [ktDailyError, setKtDailyError] = useState<string | null>(null);
+  // When the DB already has cached chart images, default to reusing them; the user can
+  // opt in to re-fetching from Kicktraq (overwrites the cache) before OCR.
+  const [ktImageRefresh, setKtImageRefresh] = useState(false);
 
   // ─── Kickstarter import (manual preview/confirm) ───────────────────────────
   const [ksModalProjectId, setKsModalProjectId] = useState<string | null>(null);
@@ -1046,6 +1050,7 @@ export default function DataQualityPage() {
     setKtImportDaily(false);
     setKtSummaryMode('overwrite');
     setKtDailyMode('overwrite');
+    setKtImageRefresh(false);
     try {
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), 30_000);
@@ -1093,6 +1098,7 @@ export default function DataQualityPage() {
           action: 'kicktraq_daily',
           summaryPledged: ktPreview.summary.incoming?.pledged_usd ?? 0,
           summaryBackers: ktPreview.summary.incoming?.backers_count ?? 0,
+          imageMode: ktImageRefresh ? 'refresh' : 'cache',
         }),
         signal: ctrl.signal,
       });
@@ -1992,6 +1998,29 @@ export default function DataQualityPage() {
 
                     {!ktPreview.daily.incoming && (
                       <div className="mt-3">
+                        {ktPreview.images && ktPreview.images.cachedCount > 0 && (
+                          <div className="mb-2 rounded-lg border border-blue-200 bg-blue-50/60 px-3 py-2 text-[11px] text-blue-800">
+                            <p>
+                              {cn
+                                ? `数据库已缓存 ${ktPreview.images.cachedCount} 张图表原图`
+                                : `${ktPreview.images.cachedCount} chart image(s) cached in DB`}
+                              {ktPreview.images.fetchedAt
+                                ? `（${new Date(ktPreview.images.fetchedAt * 1000).toLocaleString()}）`
+                                : ''}
+                              。
+                            </p>
+                            <label className="mt-1.5 flex items-center gap-1.5 cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={ktImageRefresh}
+                                disabled={ktDailyLoading}
+                                onChange={e => setKtImageRefresh(e.target.checked)}
+                                className="h-3.5 w-3.5 rounded border-gray-300 text-ks-green focus:ring-ks-green"
+                              />
+                              <span>{cn ? '重新从 Kicktraq 抓取并覆盖图片（否则用库内图做 OCR）' : 'Re-fetch from Kicktraq & overwrite images (otherwise OCR the cached images)'}</span>
+                            </label>
+                          </div>
+                        )}
                         <button
                           onClick={fetchKicktraqDaily}
                           disabled={ktDailyLoading}
@@ -2000,10 +2029,21 @@ export default function DataQualityPage() {
                           {ktDailyLoading && <RefreshCw className="h-3.5 w-3.5 animate-spin" />}
                           {ktDailyLoading
                             ? (cn ? '正在 OCR 识别每日曲线…（可能 1-3 分钟）' : 'Running OCR on the daily chart… (1-3 min)')
-                            : (cn ? '抓取每日曲线（OCR，较慢）' : 'Fetch daily curve (OCR, slow)')}
+                            : (ktPreview.images && ktPreview.images.cachedCount > 0 && !ktImageRefresh)
+                              ? (cn ? '用库内图片做 OCR（较慢）' : 'OCR cached images (slow)')
+                              : (cn ? '抓取每日曲线（OCR，较慢）' : 'Fetch daily curve (OCR, slow)')}
                         </button>
                         {ktDailyError && <p className="mt-2 text-[11px] text-red-600 break-words">{ktDailyError}</p>}
                       </div>
+                    )}
+
+                    {ktPreview.daily.incoming?.imageSource && (
+                      <p className="mt-2 text-[11px] text-gray-400">
+                        {cn ? '图片来源：' : 'Image source: '}
+                        {ktPreview.daily.incoming.imageSource === 'cache'
+                          ? (cn ? '数据库缓存' : 'DB cache')
+                          : (cn ? 'Kicktraq（已缓存到库）' : 'Kicktraq (now cached)')}
+                      </p>
                     )}
 
                     {ktPreview.daily.incoming && ktPreview.validation && (

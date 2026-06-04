@@ -11,6 +11,8 @@ import {
   recordScrapeFailure,
   recordCrawlerError,
   updateProjectLiveMetadata,
+  storeKicktraqChartImage,
+  getKicktraqChartImages,
   type ProjectCollaborator,
   type RewardSnapshot,
 } from './db';
@@ -1469,6 +1471,18 @@ type KicktraqChartImage = {
   status: number;
 };
 
+// Controls where the daily-chart images come from:
+//  - 'cache'  : reuse the raw PNGs stored in the DB if present; only hit Kicktraq
+//               (and persist the result) on a cache miss. This is the default for
+//               re-runs so OCR can be retried without re-downloading.
+//  - 'refresh': always re-fetch from Kicktraq and overwrite the cached images.
+// projectId is required to read/write the cache; without it we always go to network.
+export type KicktraqImageMode = 'cache' | 'refresh';
+export interface KicktraqImageOptions {
+  projectId?: string | null;
+  mode?: KicktraqImageMode;
+}
+
 export interface KicktraqScrapeDiagnostics {
   pageStatus?: number;
   jsonStatus?: number;
@@ -1477,6 +1491,7 @@ export interface KicktraqScrapeDiagnostics {
   imageStatus?: number;
   imageContentType?: string;
   imageBytes?: number;
+  imageSource?: 'cache' | 'network'; // where the daily-chart PNGs came from
   ocrProvider?: 'qwen' | 'anthropic' | 'openai' | 'shuidi'; // #shuidi
   ocrStatus?: number;
   ocrRows?: number;
@@ -1645,11 +1660,57 @@ async function fetchKicktraqChartImage(url: string, pageUrl: string, cookieStr: 
   };
 }
 
-async function fetchKicktraqDailyImages(pageUrl: string, cookieStr: string, diagnostics?: KicktraqScrapeDiagnostics): Promise<KicktraqChartImage[]> {
+function recordImageDiagnostics(images: KicktraqChartImage[], source: 'cache' | 'network', diagnostics?: KicktraqScrapeDiagnostics) {
+  if (!diagnostics || !images.length) return;
+  diagnostics.imageStatus = images.every(img => img.status === 200) ? 200 : images[0].status;
+  diagnostics.imageContentType = images.map(img => `${img.kind}:${img.contentType}`).join(',');
+  diagnostics.imageBytes = images.reduce((sum, img) => sum + img.bytes, 0);
+  diagnostics.imageSource = source;
+  diagnostics.debug = {
+    ...(diagnostics.debug ?? {}),
+    images: images.map(img => ({
+      kind: img.kind,
+      url: img.url,
+      status: img.status,
+      contentType: img.contentType,
+      bytes: img.bytes,
+      dataUrl: `data:${img.contentType};base64,${img.base64}`,
+    })),
+  };
+}
+
+async function fetchKicktraqDailyImages(
+  pageUrl: string,
+  cookieStr: string,
+  diagnostics?: KicktraqScrapeDiagnostics,
+  imageOpts?: KicktraqImageOptions,
+): Promise<KicktraqChartImage[]> {
   // We OCR pledges/backers/comments by default so the daily curve is complete.
   // The comments image adds vision workload (~1.5x), so set KICKTRAQ_OCR_COMMENTS=0
   // to skip it and only OCR the pledges/backers charts.
   const includeComments = getOptionalEnv('KICKTRAQ_OCR_COMMENTS') !== '0';
+  const projectId = imageOpts?.projectId ?? null;
+  const mode: KicktraqImageMode = imageOpts?.mode ?? 'cache';
+
+  // Cache hit: reuse the raw PNGs stored in the DB (no Kicktraq round-trip). Only
+  // honoured when mode!=='refresh' and the project actually has cached images.
+  if (projectId && mode !== 'refresh') {
+    const cached = getKicktraqChartImages(projectId)
+      .filter(img => includeComments || img.kind !== 'comments');
+    if (cached.length) {
+      const images: KicktraqChartImage[] = cached.map(img => ({
+        kind: img.kind,
+        url: img.url ?? `${pageUrl}daily${img.kind}.png`,
+        base64: img.base64,
+        bytes: img.bytes ?? Buffer.from(img.base64, 'base64').byteLength,
+        contentType: img.contentType ?? 'image/png',
+        status: 200,
+      }));
+      recordImageDiagnostics(images, 'cache', diagnostics);
+      return images;
+    }
+  }
+
   const specs: Array<{ kind: KicktraqChartImage['kind']; file: string }> = [
     { kind: 'pledges', file: 'dailypledges.png' },
     { kind: 'backers', file: 'dailybackers.png' },
@@ -1659,23 +1720,26 @@ async function fetchKicktraqDailyImages(pageUrl: string, cookieStr: string, diag
     specs.map(spec => fetchKicktraqChartImage(pageUrl + spec.file, pageUrl, cookieStr, spec.kind).catch(() => null))
   )).filter(Boolean) as KicktraqChartImage[];
 
-  if (diagnostics && images.length) {
-    diagnostics.imageStatus = images.every(img => img.status === 200) ? 200 : images[0].status;
-    diagnostics.imageContentType = images.map(img => `${img.kind}:${img.contentType}`).join(',');
-    diagnostics.imageBytes = images.reduce((sum, img) => sum + img.bytes, 0);
-    diagnostics.debug = {
-      ...(diagnostics.debug ?? {}),
-      images: images.map(img => ({
-        kind: img.kind,
-        url: img.url,
-        status: img.status,
-        contentType: img.contentType,
-        bytes: img.bytes,
-        dataUrl: `data:${img.contentType};base64,${img.base64}`,
-      })),
-    };
+  // Persist the freshly fetched raw bytes so future runs can OCR from the DB. This
+  // covers both first-time fetch (cache miss) and an explicit refresh/overwrite.
+  if (projectId && images.length) {
+    for (const img of images) {
+      try {
+        storeKicktraqChartImage({
+          projectId,
+          kind: img.kind,
+          base64: img.base64,
+          contentType: img.contentType,
+          bytes: img.bytes,
+          url: img.url,
+        });
+      } catch (e) {
+        console.log('[Kicktraq images] failed to cache ' + img.kind + ': ' + String(e));
+      }
+    }
   }
 
+  recordImageDiagnostics(images, 'network', diagnostics);
   return images;
 }
 
@@ -1758,7 +1822,7 @@ function parseDailyChartJson(json: DailyChartJson): KicktraqDay[] | null {
   return null;
 }
 
-export async function scrapeKicktraqDetailed(creatorSlug: string, projectSlug: string, anchor?: OcrAnchor): Promise<{ days: KicktraqDay[]; diagnostics: KicktraqScrapeDiagnostics }> {
+export async function scrapeKicktraqDetailed(creatorSlug: string, projectSlug: string, anchor?: OcrAnchor, imageOpts?: KicktraqImageOptions): Promise<{ days: KicktraqDay[]; diagnostics: KicktraqScrapeDiagnostics }> {
   const pageUrl = 'https://www.kicktraq.com/projects/' + creatorSlug + '/' + projectSlug + '/';
   const diagnostics: KicktraqScrapeDiagnostics = {};
   if (anchor && diagnostics.debug !== undefined) diagnostics.debug.anchor = anchor;
@@ -1821,15 +1885,15 @@ export async function scrapeKicktraqDetailed(creatorSlug: string, projectSlug: s
   diagnostics.htmlRows = htmlDays.length;
   if (htmlDays.length) return { days: htmlDays, diagnostics };
 
-  // Step 4: OCR the dailychart.png via vision models.
-  // #shuidi — preferred provider: Claude via Shuidi's OpenAI-compatible relay.
+  // Step 4: OCR the daily charts via vision models.
+  // #shuidi — preferred provider: GPT/Claude via Shuidi's OpenAI-compatible relay.
   if (getOptionalEnv('SHUIDI_API_KEY')) {
-    const ocrDays = await scrapeKicktraqViaShuidi(pageUrl, cookieStr, diagnostics, anchor);
+    const ocrDays = await scrapeKicktraqViaShuidi(pageUrl, cookieStr, diagnostics, anchor, imageOpts);
     if (ocrDays.length) return { days: ocrDays, diagnostics };
   }
 
   if (getOptionalEnv('QWEN_API_KEY')) {
-    const ocrDays = await scrapeKicktraqViaQwen(pageUrl, cookieStr, diagnostics, anchor);
+    const ocrDays = await scrapeKicktraqViaQwen(pageUrl, cookieStr, diagnostics, anchor, imageOpts);
     if (ocrDays.length) return { days: ocrDays, diagnostics };
   }
 
@@ -1979,7 +2043,7 @@ async function scrapeKicktraqViaOCR(pageUrl: string, cookieStr: string, diagnost
 // additionally requires the X-WP-Title header. Key/model/base are env-driven
 // (SHUIDI_API_KEY is the only required one); never hardcode the key in source.
 // Switch models with SHUIDI_VISION_MODEL (e.g. claude-sonnet-4.6-wangsu) without code changes.
-async function scrapeKicktraqViaShuidi(pageUrl: string, cookieStr: string, diagnostics?: KicktraqScrapeDiagnostics, anchor?: OcrAnchor): Promise<KicktraqDay[]> {
+async function scrapeKicktraqViaShuidi(pageUrl: string, cookieStr: string, diagnostics?: KicktraqScrapeDiagnostics, anchor?: OcrAnchor, imageOpts?: KicktraqImageOptions): Promise<KicktraqDay[]> {
   const apiKey = getOptionalEnv('SHUIDI_API_KEY');
   const model = getOptionalEnv('SHUIDI_VISION_MODEL') || 'openai/gpt-5.5';
   const baseUrl = (getOptionalEnv('SHUIDI_BASE_URL') || 'https://agent-api.shuiditech.com/api/v1').replace(/\/+$/, '');
@@ -2040,7 +2104,7 @@ async function scrapeKicktraqViaShuidi(pageUrl: string, cookieStr: string, diagn
   };
 
   try {
-    const images = await fetchKicktraqDailyImages(pageUrl, cookieStr, diagnostics);
+    const images = await fetchKicktraqDailyImages(pageUrl, cookieStr, diagnostics, imageOpts);
     if (!images.length) return [];
 
     // P1: OCR each chart in its own call so the model can focus on a single set of
@@ -2103,7 +2167,7 @@ async function scrapeKicktraqViaShuidi(pageUrl: string, cookieStr: string, diagn
   }
 }
 
-async function scrapeKicktraqViaQwen(pageUrl: string, cookieStr: string, diagnostics?: KicktraqScrapeDiagnostics, anchor?: OcrAnchor): Promise<KicktraqDay[]> {
+async function scrapeKicktraqViaQwen(pageUrl: string, cookieStr: string, diagnostics?: KicktraqScrapeDiagnostics, anchor?: OcrAnchor, imageOpts?: KicktraqImageOptions): Promise<KicktraqDay[]> {
   const qwenKey = getOptionalEnv('QWEN_API_KEY');
   const qwenModel = getOptionalEnv('QWEN_VISION_MODEL') || 'qwen-vl-plus';
   const qwenBaseUrl = (getOptionalEnv('QWEN_BASE_URL') || 'https://dashscope.aliyuncs.com/compatible-mode/v1').replace(/\/+$/, '');
@@ -2115,7 +2179,7 @@ async function scrapeKicktraqViaQwen(pageUrl: string, cookieStr: string, diagnos
   if (diagnostics) diagnostics.ocrTimeoutMs = qwenTimeoutMs;
 
   try {
-    const images = await fetchKicktraqDailyImages(pageUrl, cookieStr, diagnostics);
+    const images = await fetchKicktraqDailyImages(pageUrl, cookieStr, diagnostics, imageOpts);
     if (!images.length) return [];
 
     const callQwen = async (prompt: string) => {

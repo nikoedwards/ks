@@ -1096,6 +1096,16 @@ function ensureKicktraqDebugTables(db: Database) {
       created_at INTEGER DEFAULT (unixepoch())
     );
     CREATE INDEX IF NOT EXISTS idx_kicktraq_debug_project ON kicktraq_import_debug(project_id, created_at);
+    CREATE TABLE IF NOT EXISTS kicktraq_chart_images (
+      project_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      image_data BLOB NOT NULL,
+      content_type TEXT,
+      bytes INTEGER,
+      source_url TEXT,
+      fetched_at INTEGER DEFAULT (unixepoch()),
+      PRIMARY KEY (project_id, kind)
+    );
   `);
 }
 
@@ -4641,6 +4651,93 @@ export function getKicktraqSnapshotStats(projectId: string): { count: number; da
     count: row?.count ?? 0,
     dateFrom: toDate(row?.minAt),
     dateTo: toDate(row?.maxAt),
+  };
+}
+
+// ─── Kicktraq cached chart images ──────────────────────────────────────────────
+// We persist the raw daily-chart PNG bytes (not the URL) so OCR can be re-run from
+// the DB without re-hitting Kicktraq. The unique key is (project_id, kind), so a
+// refresh simply overwrites the row for that chart.
+
+export type KicktraqChartKind = 'pledges' | 'backers' | 'comments';
+
+export interface StoredKicktraqChartImage {
+  kind: KicktraqChartKind;
+  base64: string;
+  contentType: string | null;
+  bytes: number | null;
+  url: string | null;
+  fetchedAt: number | null;
+}
+
+export function storeKicktraqChartImage(input: {
+  projectId: string;
+  kind: KicktraqChartKind;
+  base64: string;
+  contentType?: string | null;
+  bytes?: number | null;
+  url?: string | null;
+}) {
+  const buffer = Buffer.from(input.base64, 'base64');
+  getDB().prepare(`
+    INSERT INTO kicktraq_chart_images (project_id, kind, image_data, content_type, bytes, source_url, fetched_at)
+    VALUES (@project_id, @kind, @image_data, @content_type, @bytes, @source_url, unixepoch())
+    ON CONFLICT(project_id, kind) DO UPDATE SET
+      image_data = excluded.image_data,
+      content_type = excluded.content_type,
+      bytes = excluded.bytes,
+      source_url = excluded.source_url,
+      fetched_at = excluded.fetched_at
+  `).run({
+    project_id: input.projectId,
+    kind: input.kind,
+    image_data: buffer,
+    content_type: input.contentType ?? null,
+    bytes: input.bytes ?? buffer.byteLength,
+    source_url: input.url ?? null,
+  });
+}
+
+/** Full cached chart images (BLOBs decoded to base64) for OCR re-runs. */
+export function getKicktraqChartImages(projectId: string): StoredKicktraqChartImage[] {
+  const rows = getDB().prepare(`
+    SELECT kind, image_data, content_type, bytes, source_url, fetched_at
+    FROM kicktraq_chart_images
+    WHERE project_id = ?
+  `).all(projectId) as Array<{
+    kind: KicktraqChartKind;
+    image_data: Buffer;
+    content_type: string | null;
+    bytes: number | null;
+    source_url: string | null;
+    fetched_at: number | null;
+  }>;
+  return rows.map(r => ({
+    kind: r.kind,
+    base64: Buffer.isBuffer(r.image_data) ? r.image_data.toString('base64') : Buffer.from(r.image_data).toString('base64'),
+    contentType: r.content_type,
+    bytes: r.bytes,
+    url: r.source_url,
+    fetchedAt: r.fetched_at,
+  }));
+}
+
+/** Lightweight cache metadata (no BLOBs) for the import-preview UI. */
+export function getKicktraqChartImageMeta(projectId: string): { count: number; kinds: KicktraqChartKind[]; bytes: number; fetchedAt: number | null } {
+  const rows = getDB().prepare(`
+    SELECT kind, bytes, fetched_at
+    FROM kicktraq_chart_images
+    WHERE project_id = ?
+    ORDER BY kind
+  `).all(projectId) as Array<{ kind: KicktraqChartKind; bytes: number | null; fetched_at: number | null }>;
+  return {
+    count: rows.length,
+    kinds: rows.map(r => r.kind),
+    bytes: rows.reduce((sum, r) => sum + (r.bytes ?? 0), 0),
+    fetchedAt: rows.reduce<number | null>((latest, r) => {
+      if (typeof r.fetched_at !== 'number') return latest;
+      return latest === null || r.fetched_at > latest ? r.fetched_at : latest;
+    }, null),
   };
 }
 

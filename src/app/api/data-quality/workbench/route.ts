@@ -6,6 +6,7 @@ import {
   type DataWorkbenchFilter,
   getDataWorkbenchProjects,
   getKicktraqSnapshotStats,
+  getKicktraqChartImageMeta,
   getProjectById,
   getRecentCrawlerErrors,
 } from '@/lib/db';
@@ -337,6 +338,7 @@ async function runKicktraqPreview(projectId: string, action: string) {
     summary = null;
   }
   const stats = getKicktraqSnapshotStats(projectId);
+  const imageCache = getKicktraqChartImageMeta(projectId);
 
   return {
     payload: {
@@ -344,6 +346,12 @@ async function runKicktraqPreview(projectId: string, action: string) {
       action,
       preview: {
         projectName: project.name ?? projectSlug,
+        images: {
+          cachedCount: imageCache.count,
+          kinds: imageCache.kinds,
+          bytes: imageCache.bytes,
+          fetchedAt: imageCache.fetchedAt,
+        },
         summary: {
           incoming: summary
             ? { pledged_usd: summary.pledged_usd, backers_count: summary.backers_count, goal_usd: summary.goal_usd, currency: summary.currency }
@@ -369,7 +377,7 @@ async function runKicktraqPreview(projectId: string, action: string) {
 async function runKicktraqDaily(
   projectId: string,
   action: string,
-  body: { summaryPledged?: number; summaryBackers?: number },
+  body: { summaryPledged?: number; summaryBackers?: number; imageMode?: string },
 ) {
   const project = await getProjectById(projectId) as {
     source_url?: string | null; creator_slug?: string | null; slug?: string | null;
@@ -392,10 +400,14 @@ async function runKicktraqDaily(
     finalBackers: Number(body.summaryBackers ?? 0) || null,
   });
 
+  // Image source: 'refresh' re-downloads + overwrites the cached PNGs; anything else
+  // (default) reuses DB-cached images when present, fetching+caching only on a miss.
+  const imageMode: 'cache' | 'refresh' = body.imageMode === 'refresh' ? 'refresh' : 'cache';
+
   let days: KicktraqDay[] = [];
   let diagnostics: Awaited<ReturnType<typeof scrapeKicktraqDetailed>>['diagnostics'] = {};
   try {
-    const detailed = await scrapeKicktraqDetailed(creatorSlug, projectSlug, anchor);
+    const detailed = await scrapeKicktraqDetailed(creatorSlug, projectSlug, anchor, { projectId, mode: imageMode });
     days = detailed.days;
     diagnostics = detailed.diagnostics;
   } catch (e) {
@@ -416,6 +428,7 @@ async function runKicktraqDaily(
         sumBackers: metrics.sumBackers,
         dateFrom: metrics.dateFrom,
         dateTo: metrics.dateTo,
+        imageSource: diagnostics.imageSource ?? null,
       },
       validation: {
         pledgedMatchPct: metrics.pledgedMatchPct,
@@ -652,7 +665,7 @@ export async function POST(req: NextRequest) {
   }
   if (action === 'kicktraq_daily') {
     try {
-      const result = await runKicktraqDaily(projectId, action, body as { summaryPledged?: number; summaryBackers?: number });
+      const result = await runKicktraqDaily(projectId, action, body as { summaryPledged?: number; summaryBackers?: number; imageMode?: string });
       return NextResponse.json(result.payload, { status: result.status });
     } catch (e) {
       return NextResponse.json({ ok: false, action, error: `Daily scrape crashed: ${String(e instanceof Error ? e.message : e).slice(0, 300)}` }, { status: 500 });
