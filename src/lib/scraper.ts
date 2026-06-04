@@ -1547,24 +1547,16 @@ function parseOcrNumber(value: number | string | undefined, integerOnly = false)
   return integerOnly ? Math.round(result) : result;
 }
 
-// Shared, explicit date-alignment instructions. The three numbered steps mirror how
-// a human reads these charts: (1) anchor on the sparse x-axis labels, (2) one bar =
-// one consecutive day, (3) each bar's value is printed vertically on the bar.
+// Short, plain-language date hint. Empirically a simple instruction reads more
+// accurately on GPT-5.5 than the long STEP/CONTEXT/SANITY scaffolding we used before.
 function dateAlignmentSteps(anchor?: OcrAnchor): string[] {
   const lines = [
-    'STEP 1 (dates are ON the image): The printed MM-DD labels on the x-axis are the AUTHORITATIVE source of dates. Read EVERY visible tick label precisely (left to right) and pin each one to the bar directly above it. Note how many bars sit between two consecutive labeled ticks.',
-    'STEP 2 (one bar = one day): Each bar is exactly one consecutive calendar day, left to right, with NO skipped days. Fill in the dates of the unlabeled bars by counting one day per bar between the labeled ticks.',
-    'STEP 3 (values): Every bar has its value printed VERTICALLY (text rotated 90°) on or just above the bar. Read that printed number for each bar. These are PER-DAY values (the new amount that day), NOT cumulative running totals.',
+    'Each bar is one consecutive day (left to right, no gaps). Use the x-axis MM-DD labels to date the bars, and read the number printed vertically on each bar as that day\'s value (per-day, not a running total).',
   ];
   if (anchor?.launchDate) {
     lines.push(
-      `CONTEXT (use for the YEAR and as a sanity range ONLY, not as a hard date): this campaign ran from ${anchor.launchDate}` +
-      (anchor.endDate ? ` to ${anchor.endDate}` : '') +
-      `, so every bar's date falls inside that window and the year is ${anchor.launchDate.slice(0, 4)}. ` +
-      'Do NOT force the first bar to the launch date — Kicktraq often starts tracking a few days AFTER launch, so the leftmost bar may be later than the launch date. Always trust the printed x-axis tick labels over this context if they disagree.',
+      `The campaign ran ${anchor.launchDate}${anchor.endDate ? `–${anchor.endDate}` : ''} (year ${anchor.launchDate.slice(0, 4)}); trust the printed x-axis labels for exact dates.`,
     );
-  } else {
-    lines.push('Infer the year from the copyright/header text on the image.');
   }
   return lines;
 }
@@ -1573,16 +1565,13 @@ function dateAlignmentSteps(anchor?: OcrAnchor): string[] {
 // fallbacks. Old output schema (one row per date with all three metrics).
 function kicktraqVisionPrompt(mode: 'exact' | 'estimate' = 'exact', anchor?: OcrAnchor) {
   const lines = [
-    'You are reading Kicktraq "Per Day" bar-chart images for a Kickstarter project (provided in order: Pledges Per Day, Backers Per Day, Comments Per Day when available). This is a vision chart-extraction task, not plain-text OCR. Do NOT read the cumulative Funding Progress line chart.',
+    'Read these Kicktraq "Per Day" bar charts (in order: Pledges, Backers, Comments when present) and return their data. Ignore the cumulative Funding Progress line chart.',
     ...dateAlignmentSteps(anchor),
-    'All charts share the SAME date axis, so align them by date.',
-    'Normalize money labels such as $6.7m, $469k, $20,249 into numeric USD amounts.',
-    'Return ONLY a JSON array. Each item must be {"date":"YYYY-MM-DD","pledged_usd":number,"backers":number,"comments":number}.',
+    'Normalize money like $6.7m, $469k, $20,249 into numeric USD. The charts share the same dates, so align them by date.',
+    'Return ONLY a JSON array: [{"date":"YYYY-MM-DD","pledged_usd":number,"backers":number,"comments":number}].',
   ];
   if (mode === 'estimate') {
-    lines.push('If the tiny vertical labels are unreadable, estimate from bar heights and y-axis ticks; include every visible bar; do not return an empty array when bars are visible; never use zero unless a bar visibly has zero height.');
-  } else {
-    lines.push('Only include dates where you can read at least one numeric value from a bar. Omit any unreadable field; do not invent zeros. If no bar values are readable, return [].');
+    lines.push('If a label is unreadable, estimate from the bar height; never use 0 for a bar that clearly has height.');
   }
   return lines.join(' ');
 }
@@ -1594,19 +1583,15 @@ function kicktraqChartPrompt(metric: 'pledged' | 'backers' | 'comments', anchor?
     : metric === 'backers' ? 'Backers Per Day (daily new backer count)'
     : 'Comments Per Day (daily new comment count)';
   const lines = [
-    `You are reading ONE Kicktraq "${label}" bar chart for a Kickstarter campaign. This is a vision chart-extraction task, not plain-text OCR.`,
+    `Read this Kicktraq "${label}" bar chart and return its data.`,
     ...dateAlignmentSteps(anchor),
   ];
   if (metric === 'pledged') {
-    lines.push('Normalize money labels such as $6.7m, $469k, $20,249 into plain integer USD (6700000, 469000, 20249).');
+    lines.push('Normalize money like $6.7m, $469k, $20,249 into plain integer USD (6700000, 469000, 20249).');
   }
-  const finalVal = metric === 'pledged' ? anchor?.finalPledgedUsd : metric === 'backers' ? anchor?.finalBackers : undefined;
-  if (finalVal && finalVal > 0) {
-    lines.push(`SANITY CHECK only (do NOT force it): the per-day values should sum to roughly ${Math.round(finalVal)}. Use this to catch gross mis-reads, not to fabricate numbers.`);
-  }
-  lines.push('Return ONLY JSON: {"bar_count": <total bars you counted>, "x_ticks": ["MM-DD", ... the x-axis tick labels you actually read, left to right ...], "rows": [{"date":"YYYY-MM-DD","value": <number>}]} with exactly one entry per bar, in ascending date order.');
+  lines.push('Return ONLY JSON: {"bar_count": <total bars>, "x_ticks": ["MM-DD", ...x-axis labels you read...], "rows": [{"date":"YYYY-MM-DD","value": <number>}]} with one entry per bar, in ascending date order.');
   if (mode === 'estimate') {
-    lines.push('If a printed label is genuinely illegible, estimate that bar from its height relative to the y-axis ticks rather than dropping it. Never output 0 for a bar that clearly has height.');
+    lines.push('If a label is unreadable, estimate from the bar height; never use 0 for a bar that clearly has height.');
   }
   return lines.join(' ');
 }
