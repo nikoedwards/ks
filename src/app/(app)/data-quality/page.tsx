@@ -855,6 +855,8 @@ export default function DataQualityPage() {
   const [workbenchState, setWorkbenchState] = useState('all');
   const [workbenchMinPledged, setWorkbenchMinPledged] = useState('');
   const [workbenchMaxPledged, setWorkbenchMaxPledged] = useState('');
+  const [workbenchSort, setWorkbenchSort] = useState<string | null>(null);
+  const [workbenchDir, setWorkbenchDir] = useState<'asc' | 'desc'>('desc');
   const [selectedProjectIds, setSelectedProjectIds] = useState<string[]>([]);
   const [actionMessage, setActionMessage] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
   const [runningAction, setRunningAction] = useState<string | null>(null);
@@ -900,7 +902,14 @@ export default function DataQualityPage() {
 
   const cn = lang === 'cn';
 
-  const loadWorkbench = async (filter = workbenchFilter, query = workbenchQuery, offset = 0, limit = workbenchLimit) => {
+  const loadWorkbench = async (
+    filter = workbenchFilter,
+    query = workbenchQuery,
+    offset = 0,
+    limit = workbenchLimit,
+    sort = workbenchSort,
+    dir = workbenchDir,
+  ) => {
     setWorkbenchLoading(true);
     try {
       const params = new URLSearchParams({ filter, limit: String(limit), offset: String(offset) });
@@ -908,6 +917,7 @@ export default function DataQualityPage() {
       if (workbenchState !== 'all') params.set('state', workbenchState);
       if (workbenchMinPledged.trim()) params.set('minPledged', workbenchMinPledged.trim());
       if (workbenchMaxPledged.trim()) params.set('maxPledged', workbenchMaxPledged.trim());
+      if (sort) { params.set('sort', sort); params.set('dir', dir); }
       const res = await fetch(`/api/data-quality/workbench?${params.toString()}`, { cache: 'no-store' });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to load data workbench.');
@@ -929,6 +939,22 @@ export default function DataQualityPage() {
       setLoading(false);
     }
   };
+
+  // Click a sortable header: first click sorts descending, click again to flip to
+  // ascending, a third click clears back to the default ordering. Resets to page 1.
+  const toggleWorkbenchSort = (key: string) => {
+    let nextSort: string | null = key;
+    let nextDir: 'asc' | 'desc' = 'desc';
+    if (workbenchSort === key) {
+      if (workbenchDir === 'desc') { nextDir = 'asc'; }
+      else { nextSort = null; nextDir = 'desc'; }
+    }
+    setWorkbenchSort(nextSort);
+    setWorkbenchDir(nextDir);
+    loadWorkbench(workbenchFilter, workbenchQuery, 0, workbenchLimit, nextSort, nextDir);
+  };
+
+  const sortIndicator = (key: string) => (workbenchSort === key ? (workbenchDir === 'desc' ? ' ↓' : ' ↑') : '');
 
   useEffect(() => {
     load();
@@ -1521,9 +1547,36 @@ export default function DataQualityPage() {
                   />
                 </th>
                 <th className="text-left px-2 py-3 font-medium">{cn ? '项目' : 'Project'}</th>
-                <th className="text-right px-3 py-3 font-medium">{cn ? '筹款' : 'Pledged'}</th>
-                <th className="text-right px-3 py-3 font-medium">{cn ? '支持者' : 'Backers'}</th>
-                <th className="text-right px-3 py-3 font-medium">{cn ? '下线时间' : 'Closing'}</th>
+                <th className="text-right px-3 py-3 font-medium">
+                  <button
+                    type="button"
+                    onClick={() => toggleWorkbenchSort('pledged')}
+                    className={`inline-flex items-center gap-0.5 hover:text-ks-green ${workbenchSort === 'pledged' ? 'text-ks-green font-semibold' : ''}`}
+                    title={cn ? '点击按筹款排序' : 'Sort by pledged'}
+                  >
+                    {cn ? '筹款' : 'Pledged'}{sortIndicator('pledged')}
+                  </button>
+                </th>
+                <th className="text-right px-3 py-3 font-medium">
+                  <button
+                    type="button"
+                    onClick={() => toggleWorkbenchSort('backers')}
+                    className={`inline-flex items-center gap-0.5 hover:text-ks-green ${workbenchSort === 'backers' ? 'text-ks-green font-semibold' : ''}`}
+                    title={cn ? '点击按支持者排序' : 'Sort by backers'}
+                  >
+                    {cn ? '支持者' : 'Backers'}{sortIndicator('backers')}
+                  </button>
+                </th>
+                <th className="text-right px-3 py-3 font-medium">
+                  <button
+                    type="button"
+                    onClick={() => toggleWorkbenchSort('deadline')}
+                    className={`inline-flex items-center gap-0.5 hover:text-ks-green ${workbenchSort === 'deadline' ? 'text-ks-green font-semibold' : ''}`}
+                    title={cn ? '点击按下线时间排序' : 'Sort by closing date'}
+                  >
+                    {cn ? '下线时间' : 'Closing'}{sortIndicator('deadline')}
+                  </button>
+                </th>
                 <th className="text-left px-3 py-3 font-medium">{cn ? '数据' : 'Data'}</th>
                 <th className="text-right px-5 py-3 font-medium">{cn ? '操作' : 'Actions'}</th>
               </tr>

@@ -3671,12 +3671,27 @@ export interface DataWorkbenchProject {
   last_error: string | null;
 }
 
+// Whitelist of sortable columns → the SQL expression they map to in the final SELECT.
+// Kept as a fixed map so the (user-supplied) sort key can never be injected into SQL.
+export type DataWorkbenchSort = 'pledged' | 'backers' | 'goal' | 'completion' | 'launched' | 'deadline' | 'snapshots';
+const DATA_WORKBENCH_SORT_EXPR: Record<DataWorkbenchSort, string> = {
+  pledged: 'COALESCE(s.usd_pledged, 0)',
+  backers: 'COALESCE(s.backers_count, 0)',
+  goal: 'COALESCE(s.goal, 0)',
+  completion: 'CASE WHEN COALESCE(s.goal, 0) > 0 THEN COALESCE(s.usd_pledged, 0) * 1.0 / s.goal ELSE 0 END',
+  launched: 'COALESCE(s.launched_at, 0)',
+  deadline: 'COALESCE(s.deadline, 0)',
+  snapshots: 'snapshot_count',
+};
+
 export function getDataWorkbenchProjects(options: {
   filter?: DataWorkbenchFilter;
   query?: string;
   state?: string;
   minPledged?: number;
   maxPledged?: number;
+  sort?: DataWorkbenchSort;
+  dir?: 'asc' | 'desc';
   limit?: number;
   offset?: number;
 } = {}) {
@@ -3687,7 +3702,9 @@ export function getDataWorkbenchProjects(options: {
   const normalizedState = options.state?.trim() ?? '';
   const minPledged = Number.isFinite(options.minPledged) ? Number(options.minPledged) : null;
   const maxPledged = Number.isFinite(options.maxPledged) ? Number(options.maxPledged) : null;
-  const cacheKey = JSON.stringify({ filter, query: normalizedQuery, state: normalizedState, minPledged, maxPledged, limit, offset });
+  const sort = options.sort && options.sort in DATA_WORKBENCH_SORT_EXPR ? options.sort : null;
+  const dir = options.dir === 'asc' ? 'ASC' : 'DESC';
+  const cacheKey = JSON.stringify({ filter, query: normalizedQuery, state: normalizedState, minPledged, maxPledged, sort, dir, limit, offset });
   const cacheNow = Date.now();
   const cached = dataWorkbenchCache.get(cacheKey);
   if (cached && cached.expiresAt > cacheNow) return cached.value;
@@ -3721,6 +3738,13 @@ export function getDataWorkbenchProjects(options: {
   if (filter === 'recent_errors') where.push('EXISTS (SELECT 1 FROM crawler_errors ce WHERE ce.project_id = p.id)');
 
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+
+  // When the user picks an explicit sort column, order by it (stable id tiebreaker);
+  // otherwise keep the default "live first, most-recently-touched" ordering.
+  const orderSql = sort
+    ? `${DATA_WORKBENCH_SORT_EXPR[sort]} ${dir}, s.id ASC`
+    : `CASE WHEN s.state = 'live' THEN 0 ELSE 1 END,
+       COALESCE(s.last_error_at, s.latest_snapshot_at, s.ks_live_synced_at, s.first_seen_at, s.launched_at, 0) DESC`;
 
   const rows = db.prepare(`
     WITH ${LATEST_SNAPSHOT_CTE},
@@ -3813,9 +3837,7 @@ export function getDataWorkbenchProjects(options: {
         LIMIT 1
       ) as last_error
     FROM selected s
-    ORDER BY
-      CASE WHEN s.state = 'live' THEN 0 ELSE 1 END,
-      COALESCE(s.last_error_at, s.latest_snapshot_at, s.ks_live_synced_at, s.first_seen_at, s.launched_at, 0) DESC
+    ORDER BY ${orderSql}
     LIMIT @limit OFFSET @offset
   `).all(params) as DataWorkbenchProject[];
 

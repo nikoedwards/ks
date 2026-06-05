@@ -4,6 +4,7 @@ import {
   deleteProjectsDeep,
   deleteKicktraqSnapshots,
   type DataWorkbenchFilter,
+  type DataWorkbenchSort,
   getDataWorkbenchProjects,
   getKicktraqSnapshotStats,
   getKicktraqChartImageMeta,
@@ -65,6 +66,8 @@ export async function GET(req: NextRequest) {
     state: searchParams.get('state') ?? undefined,
     minPledged: searchParams.get('minPledged') ? Number(searchParams.get('minPledged')) : undefined,
     maxPledged: searchParams.get('maxPledged') ? Number(searchParams.get('maxPledged')) : undefined,
+    sort: (searchParams.get('sort') as DataWorkbenchSort) ?? undefined,
+    dir: searchParams.get('dir') === 'asc' ? 'asc' : searchParams.get('dir') === 'desc' ? 'desc' : undefined,
     limit: Number(searchParams.get('limit') || 25),
     offset: Number(searchParams.get('offset') || 0),
   }));
