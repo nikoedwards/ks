@@ -3,7 +3,7 @@ import type { Database } from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
 import { createHash } from 'crypto';
-import { MAX_USD_PER_BACKER, PLEDGED_SCRUTINY_FLOOR_USD, MAX_PLAUSIBLE_PLEDGED_USD, isImplausiblePledgedUsd } from './money';
+import { MAX_USD_PER_BACKER, PLEDGED_SCRUTINY_FLOOR_USD, MAX_PLAUSIBLE_PLEDGED_USD, HIGH_TOTAL_FLOOR_USD, HIGH_TOTAL_MAX_USD_PER_BACKER, isImplausiblePledgedUsd } from './money';
 
 const DATA_DIR = process.env.DATA_DIR ?? path.join(process.cwd(), 'data');
 const DB_PATH = path.join(DATA_DIR, 'kickstarter.db');
@@ -403,13 +403,22 @@ function reconcileImplausiblePledged(db: Database) {
       perBacker: MAX_USD_PER_BACKER,
       floor: PLEDGED_SCRUTINY_FLOOR_USD,
       ceiling: MAX_PLAUSIBLE_PLEDGED_USD,
+      highFloor: HIGH_TOTAL_FLOOR_USD,
+      highPerBacker: HIGH_TOTAL_MAX_USD_PER_BACKER,
     };
-    // A row/snapshot is implausible when its pledged exceeds the absolute ceiling, OR
-    // (for sizeable totals with known backers) implies > MAX_USD_PER_BACKER average.
-    const PROJ_BAD =
-      '(COALESCE(usd_pledged,0) > @ceiling OR (COALESCE(usd_pledged,0) >= @floor AND COALESCE(backers_count,0) > 0 AND usd_pledged > backers_count * @perBacker))';
-    const SNAP_BAD =
-      '(COALESCE(pledged_usd,0) > @ceiling OR (COALESCE(pledged_usd,0) >= @floor AND COALESCE(backers_count,0) > 0 AND pledged_usd > backers_count * @perBacker))';
+    // A value (col) is implausible when it exceeds the absolute ceiling, OR (with known
+    // backers) implies an average above MAX_USD_PER_BACKER, OR is a > $1M total with a
+    // > $5k average. Mirrors isImplausiblePledgedUsd().
+    const isBad = (col: string, backersCol: string) =>
+      `(COALESCE(${col},0) > @ceiling
+        OR (COALESCE(${backersCol},0) > 0 AND COALESCE(${col},0) >= @floor AND ${col} > ${backersCol} * @perBacker)
+        OR (COALESCE(${backersCol},0) > 0 AND COALESCE(${col},0) >= @highFloor AND ${col} > ${backersCol} * @highPerBacker))`;
+    const isOk = (col: string, backersCol: string) =>
+      `(${col} <= @ceiling
+        AND (COALESCE(${backersCol},0) = 0 OR ${col} <= ${backersCol} * @perBacker)
+        AND (COALESCE(${backersCol},0) = 0 OR ${col} < @highFloor OR ${col} <= ${backersCol} * @highPerBacker))`;
+    const PROJ_BAD = isBad('usd_pledged', 'backers_count');
+    const SNAP_BAD = isBad('pledged_usd', 'backers_count');
 
     // 1) Queue an authoritative re-fetch for the affected tracked projects first.
     const queued = db.prepare(
@@ -423,15 +432,14 @@ function reconcileImplausiblePledged(db: Database) {
     ).run(bad).changes;
 
     // 3) Reset each implausible project row to its best surviving plausible snapshot
-    //    (one that is itself within the per-backer bound), else 0.
+    //    (one that is itself within both per-backer bounds), else 0.
     const projFixed = db.prepare(
       `UPDATE projects
        SET usd_pledged = COALESCE((
          SELECT MAX(ps.pledged_usd) FROM project_snapshots ps
          WHERE ps.project_id = projects.id
            AND COALESCE(ps.pledged_usd,0) > 0
-           AND ps.pledged_usd <= @ceiling
-           AND (COALESCE(ps.backers_count,0) = 0 OR ps.pledged_usd <= ps.backers_count * @perBacker)
+           AND ${isOk('ps.pledged_usd', 'ps.backers_count')}
        ), 0)
        WHERE ${PROJ_BAD}`,
     ).run(bad).changes;

@@ -30,32 +30,40 @@ export const MAX_FX_RATE = 10;
 export const MAX_PLAUSIBLE_PLEDGED_USD = 60_000_000;
 
 // Per-backer plausibility guard. A real Kickstarter average pledge is tens to a few
-// thousand USD; even the priciest hardware/enterprise campaigns stay well under this.
-// A pledged total implying a higher average-per-backer is therefore a parse/scale
-// artifact (a since-fixed million/thousand-multiplier mis-read, a raw-local amount,
-// etc.) that the monotonic MAX-lock would otherwise freeze forever. The absolute
-// MAX_PLAUSIBLE_PLEDGED_USD ceiling only catches > $60M; many artifacts (e.g. a GBP
-// campaign mis-scaled to ~$44M) sit under it and are caught only by this ratio.
+// hundred USD; even the priciest hardware/board-game/enterprise campaigns essentially
+// never sustain a four-figure average across their whole backer base. A pledged total
+// implying a higher average-per-backer is therefore a parse/scale artifact (a local
+// `pledged` given in minor units/×100, a since-fixed million-multiplier mis-read, a
+// raw-local-as-USD value, …) that the monotonic MAX-lock would otherwise freeze
+// forever. The absolute MAX_PLAUSIBLE_PLEDGED_USD ceiling only catches > $60M; the
+// damaging artifacts (e.g. a £18k campaign mis-scaled to ~$2.3M against 354 backers,
+// or a GBP campaign at ~$44M) sit well under it and are caught only by this ratio.
+//
+// Two tiers, both requiring a known backer count and a non-trivial total:
+//  - HARD: any average above MAX_USD_PER_BACKER is impossible.
+//  - HIGH-TOTAL: a > $1M total with a > $5k average is, in practice, always an
+//    artifact (a real $1M+ raise has hundreds–thousands of backers, never < 200).
 export const MAX_USD_PER_BACKER = 25_000;
-
-// Only scrutinise sizeable totals. Small rows cannot be inflated in a way that matters
-// and we never want to touch ordinary projects or low-backer test rows.
-export const PLEDGED_SCRUTINY_FLOOR_USD = 1_000_000;
+export const HIGH_TOTAL_FLOOR_USD = 1_000_000;
+export const HIGH_TOTAL_MAX_USD_PER_BACKER = 5_000;
+// Totals below this are too small for a ratio to be meaningful; never flagged.
+export const PLEDGED_SCRUTINY_FLOOR_USD = 100_000;
 
 /**
- * True when `pledgedUsd` is implausible for the given backer count — i.e. it exceeds
- * the absolute ceiling, or (for sizeable totals with a known backer count) implies an
- * average pledge above MAX_USD_PER_BACKER. Backer count of 0/unknown is intentionally
- * NOT flagged here: we can't compute a ratio and don't want to zero a legitimate big
- * campaign whose backer count is merely missing — those are left to a re-fetch.
+ * True when `pledgedUsd` is implausible for the given backer count. Backer count of
+ * 0/unknown is intentionally NOT flagged (we can't compute a ratio and don't want to
+ * zero a legitimate big campaign whose backer count is merely missing — left to a
+ * re-fetch). Small totals are likewise never flagged.
  */
 export function isImplausiblePledgedUsd(pledgedUsd: number, backers: number): boolean {
   if (!Number.isFinite(pledgedUsd) || pledgedUsd <= 0) return false;
   if (pledgedUsd > MAX_PLAUSIBLE_PLEDGED_USD) return true;
-  if (pledgedUsd < PLEDGED_SCRUTINY_FLOOR_USD) return false;
   const b = Number.isFinite(backers) && backers > 0 ? backers : 0;
-  if (b <= 0) return false;
-  return pledgedUsd / b > MAX_USD_PER_BACKER;
+  if (b <= 0 || pledgedUsd < PLEDGED_SCRUTINY_FLOOR_USD) return false;
+  const perBacker = pledgedUsd / b;
+  if (perBacker > MAX_USD_PER_BACKER) return true;
+  if (pledgedUsd >= HIGH_TOTAL_FLOOR_USD && perBacker > HIGH_TOTAL_MAX_USD_PER_BACKER) return true;
+  return false;
 }
 
 /** Returns `pledgedUsd` when plausible for `backers`, otherwise 0 (so a bad value is
@@ -94,6 +102,10 @@ export interface UsdAmountInput {
   fxRate?: number;
   staticUsdRate?: number;
   currency?: string | null;
+  // Backer count from the same payload. Used as an independent tie-breaker when the
+  // authoritative USD figure and localAmount*rate disagree — the candidate implying a
+  // sane average pledge wins, which catches a local `pledged` given in minor units.
+  backers?: number;
 }
 
 export interface UsdAmounts {
@@ -114,6 +126,29 @@ function reconcileUsdFigure(candidate: number, localAmount: number, rate: number
   if (candidate <= 0) return expected;
   const ratio = candidate / expected;
   return ratio >= 0.5 && ratio <= 2 ? candidate : expected;
+}
+
+/**
+ * Choose the pledged-USD figure between Kickstarter's authoritative converted/usd field
+ * (`supplied`) and `reconciled` = reconcileUsdFigure(supplied, local, rate) — which is
+ * `supplied` when the two agree, else `local*rate`. When they diverge exactly one side
+ * is a scale artifact:
+ *   (a) the usd/converted field actually holds a RAW-LOCAL (un-converted) amount, or
+ *   (b) the local `pledged` field is in MINOR UNITS (×100) while usd/converted is right.
+ * With a known backer count we break the tie by sanity: prefer Kickstarter's
+ * authoritative figure when it implies a sane average, else the other; if both look
+ * insane take the smaller (minor-unit inflation only ever makes a value too big). With
+ * no backer signal we keep the legacy `reconciled` choice (prefers local*rate on
+ * divergence, which guards the raw-local-in-usd-field case).
+ */
+function chooseBestPledgedUsd(supplied: number, reconciled: number, backers: number): number {
+  if (backers <= 0) return reconciled;
+  const candidates = [supplied, reconciled].filter(v => v > 0);
+  if (candidates.length === 0) return 0;
+  if (candidates.length === 1) return candidates[0];
+  if (!isImplausiblePledgedUsd(supplied, backers)) return supplied;
+  if (!isImplausiblePledgedUsd(reconciled, backers)) return reconciled;
+  return Math.min(supplied, reconciled);
 }
 
 export function resolveUsdAmounts(input: UsdAmountInput): UsdAmounts {
@@ -139,12 +174,15 @@ export function resolveUsdAmounts(input: UsdAmountInput): UsdAmounts {
     rate = authoritative ?? sanitizeFxRate(staticUsdRateFor(currency)) ?? inferred ?? 1;
   }
 
-  // 2) Pledged in USD: never store the raw local amount. Prefer a supplied USD figure
-  //    only when it is plausible for pledgedLocal*rate; otherwise convert ourselves.
+  // 2) Pledged in USD: never store the raw local amount. Pick between Kickstarter's
+  //    authoritative converted/usd figure and our own local*rate recompute, using the
+  //    backer count to reject whichever side is a scale artifact (raw-local in the usd
+  //    field, or a minor-unit/×100 local `pledged`).
   const suppliedUsd = convertedPledged > 0 ? convertedPledged : explicitUsd;
+  const backers = pos(input.backers);
   let pledgedUsd = isUsd
     ? (suppliedUsd > 0 ? suppliedUsd : pledgedLocal)
-    : reconcileUsdFigure(suppliedUsd, pledgedLocal, rate);
+    : chooseBestPledgedUsd(suppliedUsd, reconcileUsdFigure(suppliedUsd, pledgedLocal, rate), backers);
   // Reject impossibly-large pledged totals (scale/units artifacts). Returning 0
   // lets the ingest fall back to the project's existing value instead of writing
   // (and MAX-locking) a bogus billion-dollar figure.

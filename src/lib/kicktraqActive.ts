@@ -24,6 +24,7 @@ function ktUsd(project: KicktraqListProject): { pledgedUsd: number; goalUsd: num
     pledgedLocal: project.pledged,
     goalLocal: project.goal,
     currency: project.currency,
+    backers: project.backers_count,
   });
   return { pledgedUsd, goalUsd };
 }

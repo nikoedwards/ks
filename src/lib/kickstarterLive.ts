@@ -99,6 +99,7 @@ function resolveUsdAmounts(project: KSDiscoverProject): { pledgedUsd: number; go
     fxRate: parseNum(project.fx_rate),
     staticUsdRate: parseNum((project as { static_usd_rate?: number | string }).static_usd_rate),
     currency: project.currency ?? null,
+    backers: project.backers_count ?? 0,
   });
   return { pledgedUsd, goalUsd };
 }

@@ -172,6 +172,7 @@ function resolveUsdAmounts(p: KSProject): { pledgedUsd: number; goalUsd: number 
     fxRate: parseNum(p.fx_rate),
     staticUsdRate: firstPositiveNumber(p, ['static_usd_rate', 'usd_exchange_rate']),
     currency,
+    backers: resolveBackersCount(p),
   });
   return { pledgedUsd, goalUsd };
 }
