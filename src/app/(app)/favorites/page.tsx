@@ -68,10 +68,6 @@ export default function FavoritesPage() {
 
   if (!user) return (
     <div className="max-w-7xl mx-auto">
-      <div>
-        <h1 className="text-2xl font-bold text-gray-900">{tr.title}</h1>
-        <p className="text-sm text-gray-500 mt-1">{tr.subtitle}</p>
-      </div>
       <div className="mt-12 text-center">
         <Heart className="w-12 h-12 text-gray-200 mx-auto mb-4" />
         <p className="text-gray-500 mb-4">{authTr.loginToFavorite}</p>
@@ -94,11 +90,6 @@ export default function FavoritesPage() {
 
   return (
     <div className="max-w-7xl mx-auto space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-gray-900">{tr.title}</h1>
-        <p className="text-sm text-gray-500 mt-1">{tr.subtitle}</p>
-      </div>
-
       {projects.length === 0 ? (
         <div className="text-center py-16">
           <Heart className="w-12 h-12 text-gray-200 mx-auto mb-4" />

@@ -271,10 +271,6 @@ export default function AnalysisPage() {
 
   if (loading) return (
     <div className="max-w-7xl mx-auto space-y-5">
-      <div>
-        <h1 className="text-2xl font-bold text-gray-900">{tr.title}</h1>
-        <p className="text-sm text-gray-500 mt-1">{tr.subtitle}</p>
-      </div>
       {periodBar}
       <div className="flex items-center justify-center h-48 text-gray-400">
         {lang === 'cn' ? '加载中...' : 'Loading...'}
@@ -284,10 +280,6 @@ export default function AnalysisPage() {
 
   if (empty) return (
     <div className="max-w-7xl mx-auto space-y-5">
-      <div>
-        <h1 className="text-2xl font-bold text-gray-900">{tr.title}</h1>
-        <p className="text-sm text-gray-500 mt-1">{tr.subtitle}</p>
-      </div>
       {periodBar}
       <EmptyState />
     </div>
@@ -763,11 +755,6 @@ export default function AnalysisPage() {
 
   return (
     <div className="max-w-7xl mx-auto space-y-5">
-      <div>
-        <h1 className="text-2xl font-bold text-gray-900">{tr.title}</h1>
-        <p className="text-sm text-gray-500 mt-1">{tr.subtitle}</p>
-      </div>
-
       {periodBar}
 
       <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">

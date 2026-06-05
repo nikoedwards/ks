@@ -243,13 +243,7 @@ export default function LiveIntelPage() {
 
   return (
     <div className="max-w-7xl mx-auto space-y-6">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">{cn ? 'Live 情报' : 'Live Intel'}</h1>
-          <p className="text-sm text-gray-500 mt-1">
-            {cn ? '实时发现正在起量、刚上线、即将结束和类目升温的 Kickstarter 项目。' : 'Spot Kickstarter projects that are rising, launching, ending, and heating up by category.'}
-          </p>
-        </div>
+      <div className="flex items-start justify-end gap-4">
         <div className="flex flex-wrap items-center justify-end gap-2">
           <label className="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-600">
             <Filter className="h-4 w-4 text-gray-400" />

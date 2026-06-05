@@ -432,11 +432,6 @@ export default function ProjectsPage() {
 
   return (
     <div className="max-w-7xl mx-auto space-y-5">
-      <div>
-        <h1 className="text-2xl font-bold text-gray-900">{tr.title}</h1>
-        <p className="text-sm text-gray-500 mt-1">{tr.subtitle}</p>
-      </div>
-
       {/* Filters */}
       <div className="bg-white rounded-xl border border-gray-100 p-4 shadow-sm space-y-3">
         {/* Time period */}

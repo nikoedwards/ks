@@ -2,6 +2,7 @@ import {
   deleteKicktraqSnapshots,
   getProjectById,
   getSnapshots,
+  getOwnSnapshotDates,
   insertSnapshot,
   insertRewardSnapshots,
   upsertProjectCollaborators,
@@ -2427,9 +2428,14 @@ export function storeKicktraqDays(
   days: KicktraqDay[],
   opts?: { mode?: 'overwrite' | 'merge' },
 ): KicktraqWrittenSnapshot[] {
-  // mode='overwrite' (default, legacy behaviour): wipe existing kicktraq snapshots then
-  // re-insert the full curve. mode='merge': keep existing rows and only fill in dates that
-  // are not already stored (insertSnapshot uses INSERT OR IGNORE on the unique date key).
+  // KS-wins, day-level gap-fill. Our own KS-live history (source != 'kicktraq') is exact and
+  // higher-frequency, so Kicktraq's once-a-day OCR point must never be written on a day KS
+  // already covers — that would only add a less-accurate duplicate and a jagged delta.
+  //   mode='merge'     → gap-fill only: write a Kicktraq day iff that date has NO snapshot of
+  //                      ANY source yet (fills the pre-tracking tail before KS-live began).
+  //   mode='overwrite' → refresh the Kicktraq layer: drop existing kicktraq snapshots, then
+  //                      re-insert kicktraq days — but STILL skip any date owned by KS.
+  // Either way KS-owned days are preserved untouched.
   const mode = opts?.mode ?? 'overwrite';
   const validDays = days
     .filter(d => d.pledged_usd > 0 || d.backers > 0 || (d.comments ?? 0) > 0)
@@ -2439,6 +2445,9 @@ export function storeKicktraqDays(
 
   if (mode === 'overwrite') deleteKicktraqSnapshots(projectId);
 
+  // Dates already owned by our own (non-kicktraq) history — never overwrite these.
+  const ownDates = getOwnSnapshotDates(projectId);
+
   let pledgedTotal = 0;
   let backersTotal = 0;
   let commentsTotal = 0;
@@ -2446,6 +2455,8 @@ export function storeKicktraqDays(
 
   const nowSec = Math.floor(Date.now() / 1000);
   for (const d of validDays) {
+    // Accumulate cumulative totals over EVERY valid day (including skipped ones) so that the
+    // cumulative figure stored for the days we do write stays correct across gaps.
     pledgedTotal += d.pledged_usd;
     backersTotal += d.backers;
     commentsTotal += d.comments ?? 0;
@@ -2453,6 +2464,8 @@ export function storeKicktraqDays(
     // Kicktraq charts can include campaign days that haven't happened yet
     // (up to the deadline). Never record a "history" point in the future.
     if (!Number.isFinite(capturedAt) || capturedAt > nowSec) continue;
+    // KS owns this calendar day → leave it alone (both merge and overwrite).
+    if (ownDates.has(d.date)) continue;
     insertSnapshot({
       project_id: projectId,
       captured_at: capturedAt,

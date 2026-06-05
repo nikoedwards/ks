@@ -3391,6 +3391,50 @@ function computeLandingData() {
   return { top2026, latestMonth, topPledged };
 }
 
+export interface TrendingProject {
+  id: string; name: string; state: string; category_parent: string | null;
+  usd_pledged: number; backers_count: number; image_url: string | null; image_thumb_url: string | null;
+}
+
+export function getTrendingProjects(): TrendingProject[] {
+  return swrCached('trendingProjects', 120_000, computeTrendingProjects);
+}
+
+// "Hot" projects for the global search dropdown's default (empty-query) state: live
+// campaigns ranked by pledged, topped up with the biggest all-time projects so the list
+// is never empty on a quiet day.
+function computeTrendingProjects(): TrendingProject[] {
+  const db = getDB();
+  const select = `
+    WITH ${LATEST_SNAPSHOT_CTE}
+    SELECT p.id, p.name, p.state, p.category_parent,
+           ${EFFECTIVE_PLEDGED} AS usd_pledged, ${EFFECTIVE_BACKERS} AS backers_count,
+           p.image_url, p.image_thumb_url
+    FROM projects p
+    LEFT JOIN latest_snap_effective l ON l.project_id = p.id
+  `;
+  const live = db.prepare(`
+    ${select}
+    WHERE p.state = 'live'
+    ORDER BY usd_pledged DESC, backers_count DESC
+    LIMIT 8
+  `).all() as TrendingProject[];
+  if (live.length >= 8) return live;
+  const seen = new Set(live.map(r => r.id));
+  const topAll = db.prepare(`
+    ${select}
+    ORDER BY usd_pledged DESC, backers_count DESC
+    LIMIT 16
+  `).all() as TrendingProject[];
+  for (const row of topAll) {
+    if (live.length >= 8) break;
+    if (seen.has(row.id)) continue;
+    seen.add(row.id);
+    live.push(row);
+  }
+  return live.slice(0, 8);
+}
+
 export function getDataQualityReport() {
   return swrCached('dataQualityReport', 20_000, computeDataQualityReport);
 }
@@ -4767,6 +4811,50 @@ export function getKicktraqSnapshotStats(projectId: string): { count: number; da
     dateFrom: toDate(row?.minAt),
     dateTo: toDate(row?.maxAt),
   };
+}
+
+/**
+ * Daily-history stats across ALL sources, split into kicktraq vs "own" (KS-live / other
+ * self-scraped). Used by the import preview so a project whose history came from our own
+ * KS scrape (source != 'kicktraq') is still recognised as having existing data — and the
+ * merge/overwrite choice is offered — even when it has zero kicktraq snapshots.
+ */
+export function getDailySnapshotStats(projectId: string): {
+  count: number; kicktraqCount: number; ownCount: number; dateFrom: string | null; dateTo: string | null;
+} {
+  const row = getDB().prepare(`
+    SELECT
+      COUNT(*) AS count,
+      SUM(CASE WHEN source = 'kicktraq' THEN 1 ELSE 0 END) AS kicktraqCount,
+      SUM(CASE WHEN source <> 'kicktraq' THEN 1 ELSE 0 END) AS ownCount,
+      MIN(captured_at) AS minAt, MAX(captured_at) AS maxAt
+    FROM project_snapshots
+    WHERE project_id = ?
+  `).get(projectId) as { count: number; kicktraqCount: number; ownCount: number; minAt: number | null; maxAt: number | null } | undefined;
+  const toDate = (s: number | null | undefined) =>
+    typeof s === 'number' && Number.isFinite(s) ? new Date(s * 1000).toISOString().slice(0, 10) : null;
+  return {
+    count: row?.count ?? 0,
+    kicktraqCount: row?.kicktraqCount ?? 0,
+    ownCount: row?.ownCount ?? 0,
+    dateFrom: toDate(row?.minAt),
+    dateTo: toDate(row?.maxAt),
+  };
+}
+
+/**
+ * UTC calendar dates (YYYY-MM-DD) that already carry a NON-kicktraq snapshot for this
+ * project (our own KS-live history). Kicktraq daily backfill must never write a point on
+ * one of these days — KS data is exact and higher-frequency, so it always wins; a
+ * kicktraq noon point would only add a less-accurate duplicate and a jagged delta.
+ */
+export function getOwnSnapshotDates(projectId: string): Set<string> {
+  const rows = getDB().prepare(`
+    SELECT DISTINCT strftime('%Y-%m-%d', captured_at, 'unixepoch') AS d
+    FROM project_snapshots
+    WHERE project_id = ? AND source <> 'kicktraq'
+  `).all(projectId) as { d: string }[];
+  return new Set(rows.map(r => r.d).filter(Boolean));
 }
 
 // ─── Kicktraq cached chart images ──────────────────────────────────────────────

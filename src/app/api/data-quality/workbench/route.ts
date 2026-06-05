@@ -6,7 +6,7 @@ import {
   type DataWorkbenchFilter,
   type DataWorkbenchSort,
   getDataWorkbenchProjects,
-  getKicktraqSnapshotStats,
+  getDailySnapshotStats,
   getKicktraqChartImageMeta,
   getProjectById,
   getRecentCrawlerErrors,
@@ -340,7 +340,7 @@ async function runKicktraqPreview(projectId: string, action: string) {
   } catch {
     summary = null;
   }
-  const stats = getKicktraqSnapshotStats(projectId);
+  const stats = getDailySnapshotStats(projectId);
   const imageCache = getKicktraqChartImageMeta(projectId);
 
   return {
@@ -367,7 +367,13 @@ async function runKicktraqPreview(projectId: string, action: string) {
         },
         daily: {
           incoming: null,
-          current: { snapshotCount: stats.count, dateFrom: stats.dateFrom, dateTo: stats.dateTo },
+          current: {
+            snapshotCount: stats.count,
+            kicktraqCount: stats.kicktraqCount,
+            ownCount: stats.ownCount,
+            dateFrom: stats.dateFrom,
+            dateTo: stats.dateTo,
+          },
         },
       },
     },

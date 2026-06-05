@@ -43,11 +43,6 @@ export default function CountriesPage() {
 
   return (
     <div className="max-w-7xl mx-auto space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-gray-900">{tr.title}</h1>
-        <p className="text-sm text-gray-500 mt-1">{tr.subtitle}</p>
-      </div>
-
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
         <BarChart
           data={top10}

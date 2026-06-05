@@ -7,12 +7,17 @@ import { usePathname } from 'next/navigation';
 import { Menu } from 'lucide-react';
 import Sidebar from '@/components/Sidebar';
 import PageviewBeacon from '@/components/PageviewBeacon';
+import GlobalSearch from '@/components/GlobalSearch';
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const pathname = usePathname();
 
   const closeNav = () => setMobileNavOpen(false);
+
+  // The global search bar sits at the top of every user-facing view. Admin views
+  // (data-quality + /admin/*) are operational tools and don't need it.
+  const showSearch = !pathname.startsWith('/admin') && !pathname.startsWith('/data-quality');
 
   // Close the drawer on any route change (covers back/forward navigation too).
   useEffect(() => { setMobileNavOpen(false); }, [pathname]);
@@ -37,6 +42,12 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             <span className="font-bold text-gray-900">Kicksonar</span>
           </Link>
         </header>
+        {/* Frozen global search — stays put while the view below scrolls. */}
+        {showSearch && (
+          <div className="z-30 border-b border-gray-200 bg-white/95 px-4 py-2.5 backdrop-blur-sm sm:px-6">
+            <GlobalSearch />
+          </div>
+        )}
         <main className="flex-1 overflow-y-auto p-4 sm:p-6">
           {children}
         </main>

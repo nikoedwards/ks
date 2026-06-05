@@ -758,10 +758,6 @@ export default function LeaderboardPage() {
     <div className="mx-auto max-w-7xl space-y-5">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">{cn ? '排行榜' : 'Leaderboard'}</h1>
-          <p className="mt-1 text-sm text-gray-500">
-            {cn ? '按单年、类目和统一美元金额查看 Kickstarter TOP100 项目。' : 'Rank Kickstarter projects by year, category, normalized USD pledged, and backers.'}
-          </p>
           <Link
             href="/awards"
             className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-amber-200 bg-gradient-to-r from-amber-50 to-amber-100/60 px-3 py-1 text-xs font-bold text-amber-700 transition-colors hover:from-amber-100 hover:to-amber-200/70"

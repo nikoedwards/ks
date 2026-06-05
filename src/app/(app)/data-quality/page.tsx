@@ -148,7 +148,7 @@ interface KicktraqPreviewPayload {
   };
   daily: {
     incoming: { days: KicktraqDayRow[]; count: number; sumPledged: number; sumBackers: number; dateFrom: string | null; dateTo: string | null; imageSource?: 'cache' | 'network' | null } | null;
-    current: { snapshotCount: number; dateFrom: string | null; dateTo: string | null };
+    current: { snapshotCount: number; kicktraqCount?: number; ownCount?: number; dateFrom: string | null; dateTo: string | null };
   };
   validation?: {
     pledgedMatchPct: number | null;
@@ -2034,6 +2034,13 @@ export default function DataQualityPage() {
                       <div>
                         <p className="text-xs text-gray-400">{cn ? '现有' : 'Current'}</p>
                         <p className="text-gray-600">{cn ? `${fmtNum(ktPreview.daily.current.snapshotCount)} 个快照` : `${fmtNum(ktPreview.daily.current.snapshotCount)} snapshots`}</p>
+                        {(ktPreview.daily.current.ownCount ?? 0) > 0 && (
+                          <p className="text-[11px] text-gray-400">
+                            {cn
+                              ? `自抓(KS) ${fmtNum(ktPreview.daily.current.ownCount ?? 0)} · Kicktraq ${fmtNum(ktPreview.daily.current.kicktraqCount ?? 0)}`
+                              : `Own(KS) ${fmtNum(ktPreview.daily.current.ownCount ?? 0)} · Kicktraq ${fmtNum(ktPreview.daily.current.kicktraqCount ?? 0)}`}
+                          </p>
+                        )}
                         {ktPreview.daily.current.dateFrom && <p className="text-xs text-gray-400">{ktPreview.daily.current.dateFrom} → {ktPreview.daily.current.dateTo}</p>}
                       </div>
                       <div>
@@ -2115,14 +2122,27 @@ export default function DataQualityPage() {
                     )}
 
                     {ktImportDaily && ktPreview.daily.incoming && ktPreview.daily.current.snapshotCount > 0 && (
-                      <div className="mt-3 flex items-center gap-3 text-xs">
-                        <span className="text-gray-500">{cn ? '已有数据：' : 'Existing data:'}</span>
-                        {(['overwrite', 'merge'] as DailyMode[]).map(m => (
-                          <label key={m} className="flex items-center gap-1 cursor-pointer">
-                            <input type="radio" name="kt-daily-mode" checked={ktDailyMode === m} onChange={() => setKtDailyMode(m)} className="text-ks-green focus:ring-ks-green" />
-                            <span className="text-gray-700">{m === 'overwrite' ? (cn ? '覆盖（先清空）' : 'Overwrite') : (cn ? '合并（补缺失）' : 'Merge (gap-fill)')}</span>
-                          </label>
-                        ))}
+                      <div className="mt-3 space-y-2 rounded-lg border border-gray-200 bg-gray-50/70 px-3 py-2.5 text-xs">
+                        <div className="flex items-center gap-3">
+                          <span className="font-semibold text-gray-600">{cn ? '已有历史数据：' : 'Existing history:'}</span>
+                          {(['overwrite', 'merge'] as DailyMode[]).map(m => (
+                            <label key={m} className="flex items-center gap-1 cursor-pointer">
+                              <input type="radio" name="kt-daily-mode" checked={ktDailyMode === m} onChange={() => setKtDailyMode(m)} className="text-ks-green focus:ring-ks-green" />
+                              <span className="text-gray-700">{m === 'overwrite' ? (cn ? '覆盖' : 'Overwrite') : (cn ? '合并' : 'Merge')}</span>
+                            </label>
+                          ))}
+                        </div>
+                        <p className="text-[11px] leading-relaxed text-gray-500">
+                          {(ktPreview.daily.current.ownCount ?? 0) > 0 ? (
+                            cn
+                              ? '检测到本项目已有自抓(KS)历史。无论选哪种，KS 已覆盖的日期都会保留、不被 Kicktraq 覆盖——Kicktraq 只回填 KS 没有的日期。「合并」仅补缺失日；「覆盖」会先清空旧的 Kicktraq 层再重抓（适合重新 OCR 后纠错），仍不动 KS。'
+                              : 'This project already has own (KS) history. Either way, KS-owned days are preserved — Kicktraq only backfills dates KS doesn\'t cover. "Merge" fills gaps only; "Overwrite" clears the old Kicktraq layer and re-imports (use after a re-OCR), still never touching KS.'
+                          ) : (
+                            cn
+                              ? '「合并」仅补缺失日期；「覆盖」先清空旧的 Kicktraq 快照再重新导入（适合重新 OCR 后纠错）。'
+                              : '"Merge" fills missing dates only; "Overwrite" clears old Kicktraq snapshots then re-imports (use after a re-OCR).'
+                          )}
+                        </p>
                       </div>
                     )}
                   </div>

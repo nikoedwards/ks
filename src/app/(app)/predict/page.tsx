@@ -183,14 +183,6 @@ export default function PredictPage() {
 
   return (
     <div className="max-w-3xl mx-auto space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
-          <Sparkles className="w-6 h-6 text-ks-green" />
-          {tr.title}
-        </h1>
-        <p className="text-sm text-gray-500 mt-1">{tr.subtitle}</p>
-      </div>
-
       {/* URL Input */}
       {(status === 'idle' || status === 'error') && (
         <div className="bg-white rounded-xl border border-gray-100 p-6 shadow-sm space-y-4">
