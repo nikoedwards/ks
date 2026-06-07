@@ -23,6 +23,21 @@ const BINS = 24; // resolution of the pacing curve over τ ∈ [0, 1]
 const OVERALL_KEY = '__all__';
 const MIN_BUCKET_SAMPLES = 400; // below this a category falls back to overall
 const CURVE_TTL_MS = 6 * 60 * 60 * 1000; // rebuild the (expensive) curve every 6h
+// Per-bin pseudo-observations of the canonical prior. Each empirical bin is
+// shrunk toward the prior with this weight, so data-poor or skewed buckets can
+// never collapse to p(τ)≈1 (which would make the forecast just echo current
+// pledged — the "every project predicts == current" bug). Data dominates once a
+// bin has many real samples.
+const PRIOR_PSEUDOCOUNT = 60;
+
+// Canonical Kickstarter pacing prior: the "smile" curve — a front-loaded launch
+// surge (the √τ term) plus a back-loaded deadline spike (the τ² term), both
+// pinned to 0 at τ=0 and 1 at τ=1. e.g. p(0.5)≈0.39, p(0.9)≈0.85, so a live
+// campaign is always projected meaningfully above its current pledged.
+function priorPacingAt(tau: number): number {
+  const t = Math.min(1, Math.max(0, tau));
+  return 0.3 * Math.sqrt(t) + 0.7 * t * t;
+}
 
 export interface ProjectForPrediction {
   state?: string | null;
@@ -91,14 +106,17 @@ function buildCurveFromSamples(samples: PacingSample[]): PacingCurve {
   for (const [key, bins] of byBucket) {
     const total = bins.reduce((n, b) => n + b.length, 0);
     sampleCounts.set(key, total);
-    const curve = bins.map((b) => median(b));
+    // Shrink each bin's empirical median toward the canonical prior (Bayesian
+    // smoothing). With few/no samples the bin ≈ prior; with many it ≈ data. This
+    // is what keeps the curve from degenerating to p(τ)=1 everywhere.
+    const curve = bins.map((b, i) => {
+      const prior = priorPacingAt(i / BINS);
+      const m = b.length ? median(b) : prior;
+      return (b.length * m + PRIOR_PSEUDOCOUNT * prior) / (b.length + PRIOR_PSEUDOCOUNT);
+    });
     // Endpoints: by definition nothing raised at τ=0, everything at τ=1.
     curve[0] = 0;
     curve[BINS] = 1;
-    // Interpolate empty bins from neighbours, then enforce monotonic + normalize.
-    for (let i = 1; i < BINS; i++) {
-      if (bins[i].length === 0) curve[i] = curve[i - 1];
-    }
     let runningMax = 0;
     for (let i = 0; i <= BINS; i++) { runningMax = Math.max(runningMax, curve[i]); curve[i] = runningMax; }
     const peak = curve[BINS] || 1;
@@ -106,9 +124,9 @@ function buildCurveFromSamples(samples: PacingSample[]): PacingCurve {
     curve[BINS] = 1;
     buckets.set(key, curve);
   }
-  // Guarantee an overall curve exists even with no data (linear fallback).
+  // Guarantee an overall curve exists even with no data (prior S-curve fallback).
   if (!buckets.has(OVERALL_KEY)) {
-    buckets.set(OVERALL_KEY, Array.from({ length: BINS + 1 }, (_, i) => i / BINS));
+    buckets.set(OVERALL_KEY, Array.from({ length: BINS + 1 }, (_, i) => priorPacingAt(i / BINS)));
     sampleCounts.set(OVERALL_KEY, 0);
   }
   return { buckets, sampleCounts, builtAt: Date.now() };

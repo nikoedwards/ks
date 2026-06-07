@@ -44,7 +44,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         </header>
         {/* Frozen global search — stays put while the view below scrolls. */}
         {showSearch && (
-          <div className="z-30 border-b border-gray-200 bg-white/95 px-4 py-2.5 backdrop-blur-sm sm:px-6">
+          <div className="z-30 border-b border-gray-200 bg-white/95 px-4 py-2 backdrop-blur-sm sm:px-6">
             <GlobalSearch />
           </div>
         )}

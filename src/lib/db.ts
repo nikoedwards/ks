@@ -3417,22 +3417,22 @@ function computeTrendingProjects(): TrendingProject[] {
     ${select}
     WHERE p.state = 'live'
     ORDER BY usd_pledged DESC, backers_count DESC
-    LIMIT 8
+    LIMIT 5
   `).all() as TrendingProject[];
-  if (live.length >= 8) return live;
+  if (live.length >= 5) return live;
   const seen = new Set(live.map(r => r.id));
   const topAll = db.prepare(`
     ${select}
     ORDER BY usd_pledged DESC, backers_count DESC
-    LIMIT 16
+    LIMIT 10
   `).all() as TrendingProject[];
   for (const row of topAll) {
-    if (live.length >= 8) break;
+    if (live.length >= 5) break;
     if (seen.has(row.id)) continue;
     seen.add(row.id);
     live.push(row);
   }
-  return live.slice(0, 8);
+  return live.slice(0, 5);
 }
 
 export function getDataQualityReport() {

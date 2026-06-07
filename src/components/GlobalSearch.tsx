@@ -153,7 +153,7 @@ export default function GlobalSearch() {
   };
 
   return (
-    <div ref={wrapRef} className="relative mx-auto w-full max-w-2xl">
+    <div ref={wrapRef} className="relative w-full max-w-3xl">
       <form onSubmit={submit}>
         <div className="relative">
           <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
@@ -163,7 +163,7 @@ export default function GlobalSearch() {
             onChange={handleChange}
             onFocus={handleFocus}
             placeholder={cn ? '搜索项目名称…' : 'Search campaigns…'}
-            className="w-full rounded-full border border-gray-200 bg-gray-50 py-2.5 pl-10 pr-4 text-sm transition-all focus:border-ks-green focus:bg-white focus:outline-none focus:ring-2 focus:ring-ks-green/30"
+            className="w-full rounded-full border border-gray-200 bg-gray-50 py-1.5 pl-10 pr-4 text-sm transition-all focus:border-ks-green focus:bg-white focus:outline-none focus:ring-2 focus:ring-ks-green/30"
           />
         </div>
       </form>
