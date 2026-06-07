@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { workerGateStatus } from '@/lib/workerGate';
+import { workerGateStatus, pickWorkerBase, gatedWorkerFetch, WorkerPriority } from '@/lib/workerGate';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -57,6 +57,7 @@ export async function GET(req: NextRequest) {
     });
   }
 
+  let healthBody: Record<string, unknown> | null = null;
   const workerHealthUrl = healthUrl(fetchUrl);
   if (workerHealthUrl) {
     try {
@@ -65,10 +66,11 @@ export async function GET(req: NextRequest) {
         signal: AbortSignal.timeout(15_000),
       });
       const text = await res.text();
+      healthBody = safeJson(text);
       diagnostics.health = {
         status: res.status,
         ok: res.ok,
-        body: safeJson(text) ?? text.slice(0, 500),
+        body: healthBody ?? text.slice(0, 500),
       };
     } catch (err) {
       diagnostics.health = {
@@ -78,8 +80,30 @@ export async function GET(req: NextRequest) {
     }
   }
 
+  // If the worker is healthy but its single lane is already busy, DON'T fire the
+  // heavy probe — it would just queue, time out after ~150s, and pile more load
+  // onto the saturated lane (which is what made the old diagnostic look like a
+  // hard failure). Report the busy state truthfully instead.
+  const active = Number(healthBody?.activeFetches ?? 0) || 0;
+  const queued = Number(healthBody?.queuedFetches ?? 0) || 0;
+  const concurrency = Math.max(1, Number(healthBody?.maxConcurrency ?? 1) || 1);
+  if (healthBody && (active >= concurrency || queued > 0)) {
+    diagnostics.fetch = { skipped: true, reason: 'worker_busy', active, queued, concurrency };
+    return NextResponse.json({
+      ok: true,
+      message: `Browser worker is healthy but its lane is busy (active ${active}/${concurrency}, queued ${queued}). Skipped the live probe to avoid piling onto the queue. Background discovery uses HIGH priority and will be served first; expensive backfill passes auto-defer until a lane frees up.`,
+      diagnostics,
+    });
+  }
+
+  const base = pickWorkerBase();
+  if (!base) {
+    return NextResponse.json({ ok: false, message: 'No worker base resolved.', diagnostics });
+  }
   try {
-    const res = await fetch(fetchUrl, {
+    // Route through the gate at HIGH priority (like live discovery) with a tight
+    // budget, so the probe never becomes a lane hog.
+    const res = await gatedWorkerFetch(base, '/fetch', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -89,13 +113,13 @@ export async function GET(req: NextRequest) {
       body: JSON.stringify({
         url: testUrl,
         expect: 'json',
-        timeoutMs: 130_000,
+        timeoutMs: 75_000,
         settleMs: 1500,
         scrollSteps: target ? 10 : 1,
       }),
       cache: 'no-store',
-      signal: AbortSignal.timeout(150_000),
-    });
+      signal: AbortSignal.timeout(90_000),
+    }, WorkerPriority.HIGH);
     const text = await res.text();
     const body = safeJson(text);
     const responseBody = body?.body && typeof body.body === 'object' ? body.body as Record<string, unknown> : null;
@@ -143,13 +167,14 @@ export async function GET(req: NextRequest) {
       diagnostics,
     });
   } catch (err) {
-    diagnostics.fetch = {
-      ok: false,
-      error: err instanceof Error ? err.message : String(err),
-    };
+    const msg = err instanceof Error ? err.message : String(err);
+    const timedOut = /abort|timeout/i.test(msg);
+    diagnostics.fetch = { ok: false, error: msg, classified: timedOut ? 'worker_busy_or_slow' : 'unreachable' };
     return NextResponse.json({
       ok: false,
-      message: 'Main service could not call the browser worker.',
+      message: timedOut
+        ? 'Browser worker is reachable (see health) but the probe timed out — the single lane is likely busy with a Cloudflare challenge. This is transient; discovery runs at HIGH priority and backfill auto-defers.'
+        : 'Main service could not call the browser worker.',
       diagnostics,
     });
   }

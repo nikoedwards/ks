@@ -203,6 +203,74 @@ export async function gatedWorkerFetch(
   });
 }
 
+// ── Cross-process load awareness (via the worker's cheap /health) ─────────────
+//
+// The in-process semaphore only coordinates ONE replica. On Railway the app runs
+// multiple replicas (shared SQLite volume), so the tracker holder + on-demand
+// user fetches on other replicas can still converge on the single worker lane.
+// The worker's /health is the one place that sees global load (activeFetches +
+// queuedFetches), so we poll it (briefly cached) to decide whether to shed
+// low-priority background work. This is the cross-replica admission control.
+
+interface FleetLoad { freeLane: boolean; active: number; queued: number; concurrency: number; at: number; }
+const loadCache = new Map<string, FleetLoad>();
+const LOAD_TTL_MS = () => envNum('WORKER_LOAD_TTL_MS', 8_000, 1_000, 60_000);
+const BUSY_QUEUE_THRESHOLD = () => envNum('WORKER_BUSY_QUEUE_THRESHOLD', 1, 0, 20);
+
+function authHeader(): Record<string, string> {
+  const token = envRaw('BROWSER_WORKER_TOKEN');
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+async function probeBaseLoad(base: string): Promise<FleetLoad | null> {
+  const cached = loadCache.get(base);
+  const now = Date.now();
+  if (cached && now - cached.at < LOAD_TTL_MS()) return cached;
+  try {
+    const res = await fetch(`${base}/health`, {
+      headers: { Accept: 'application/json', ...authHeader() },
+      cache: 'no-store',
+      signal: AbortSignal.timeout(8_000),
+    });
+    if (!res.ok) return null;
+    const body = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+    const active = Number(body?.activeFetches ?? 0) || 0;
+    const queued = Number(body?.queuedFetches ?? 0) || 0;
+    const concurrency = Math.max(1, Number(body?.maxConcurrency ?? 1) || 1);
+    // A lane is free for new low-priority work only if it isn't already at
+    // capacity AND its queue is below the busy threshold.
+    const freeLane = active < concurrency && queued < BUSY_QUEUE_THRESHOLD();
+    const load: FleetLoad = { active, queued, concurrency, freeLane, at: now };
+    loadCache.set(base, load);
+    return load;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * True when at least one healthy worker base has a free lane (so it's safe to
+ * dispatch low-priority background work). When /health can't be read we return
+ * true (optimistic) and let the breaker catch real failures, so a flaky /health
+ * never silently halts the pipeline.
+ */
+export async function fleetHasFreeLane(): Promise<boolean> {
+  const bases = getWorkerBases();
+  if (!bases.length) return false;
+  const now = Date.now();
+  const healthy = bases.filter(b => !isOpen(b, now));
+  if (!healthy.length) return false;
+  const loads = await Promise.all(healthy.map(probeBaseLoad));
+  let sawLoad = false;
+  for (const l of loads) {
+    if (!l) continue;
+    sawLoad = true;
+    if (l.freeLane) return true;
+  }
+  // No readable /health at all → optimistic; some readable but all busy → shed.
+  return !sawLoad;
+}
+
 /** Lightweight snapshot for diagnostics / admin surfaces. */
 export function workerGateStatus() {
   const now = Date.now();

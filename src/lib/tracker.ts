@@ -33,7 +33,7 @@ import {
 import { normalizeState } from './projectState';
 import { runKickstarterLiveSync } from './kickstarterLive';
 import { runKicktraqActiveSync } from './kicktraqActive';
-import { isFleetUnhealthy } from './workerGate';
+import { isFleetUnhealthy, fleetHasFreeLane } from './workerGate';
 
 let started = false;
 
@@ -309,6 +309,13 @@ async function scrapeRichDueProjects() {
     console.warn('[tracker] worker fleet unhealthy; skipping rich pass to protect discovery');
     return;
   }
+  // Cross-replica admission: the worker /health reflects load from ALL replicas
+  // + on-demand user fetches. If no lane is free right now, defer this heavy
+  // pass rather than dogpiling the queue (which 503s as "blocked").
+  if (!(await fleetHasFreeLane())) {
+    console.warn('[tracker] worker lane busy across fleet; deferring rich pass');
+    return;
+  }
   try {
     const now = Math.floor(Date.now() / 1000);
     const due = getRichDueProjects(KS_RICH_BATCH, now - KS_RICH_INTERVAL_SEC) as DueProject[];
@@ -506,6 +513,7 @@ async function startDiscoveryJobs(now: number) {
 async function scrapePrelaunchWatch() {
   if (!KS_PRELAUNCH_WATCH) return;
   if (isFleetUnhealthy()) return;
+  if (!(await fleetHasFreeLane())) return;
   const now = Date.now();
   if (now - lastPrelaunchWatch <= KS_PRELAUNCH_INTERVAL_MS) return;
   lastPrelaunchWatch = now;
@@ -578,6 +586,7 @@ async function watchOnePrelaunch(projectId: string): Promise<boolean> {
 async function scrapeCollabBackfill() {
   if (!KS_COLLAB_BACKFILL) return;
   if (isFleetUnhealthy()) return;
+  if (!(await fleetHasFreeLane())) return;
   const now = Date.now();
   if (now - lastCollabBackfill <= KS_COLLAB_INTERVAL_MS) return;
   lastCollabBackfill = now;
