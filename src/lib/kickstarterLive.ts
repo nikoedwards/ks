@@ -13,6 +13,7 @@ import { updateSyncState } from './syncState';
 import { runKicktraqActiveSync } from './kicktraqActive';
 import { resolveUsdAmounts as resolveUsdAmountsShared } from './money';
 import { resolveProjectState } from './projectState';
+import { pickWorkerBase, gatedWorkerFetch, getWorkerBases, WorkerPriority } from './workerGate';
 
 const DISCOVER_URL = 'https://www.kickstarter.com/discover/advanced';
 
@@ -219,7 +220,7 @@ interface BrowserFetchOutcome {
 }
 
 function isBrowserWorkerConfigured(): boolean {
-  return !!getOptionalEnv('KICKSTARTER_BROWSER_FETCH_URL');
+  return getWorkerBases().length > 0;
 }
 
 function summarizeWorkerError(text: string): string {
@@ -259,8 +260,8 @@ function summarizeWorkerError(text: string): string {
 }
 
 async function fetchDiscoverViaBrowser(url: string): Promise<BrowserFetchOutcome> {
-  const proxyUrl = getOptionalEnv('KICKSTARTER_BROWSER_FETCH_URL');
-  if (!proxyUrl) {
+  const base = pickWorkerBase();
+  if (!base) {
     const message = 'KICKSTARTER_BROWSER_FETCH_URL is not configured on the main service. Deploy the browser-worker (see browser-worker/README.md) and set this env var.';
     recordCrawlerError({
       source: 'ks_live',
@@ -272,13 +273,6 @@ async function fetchDiscoverViaBrowser(url: string): Promise<BrowserFetchOutcome
   }
   const token = getOptionalEnv('BROWSER_WORKER_TOKEN');
 
-  // Cloudflare blocks the discover format=json API for any non-Chrome TLS
-  // fingerprint, so the legacy /fetch path (context.request.get) always got
-  // re-challenged. Route to the dedicated /discover endpoint, which clears the
-  // HTML page then runs the JSON fetch IN-PAGE (real Chrome fingerprint +
-  // cf_clearance). Derive the base from the configured /fetch URL.
-  const discoverEndpoint = `${proxyUrl.replace(/\/(fetch|project|core|discover)\/?$/i, '')}/discover`;
-
   // The browser worker now passes a 45s Cloudflare challenge per cold-cached
   // page, so the per-request budget needs to be well above that. Default 180s
   // (was 60s) gives the worker headroom for one CF challenge + page render +
@@ -287,7 +281,10 @@ async function fetchDiscoverViaBrowser(url: string): Promise<BrowserFetchOutcome
   const workerTimeoutMs = Math.max(60_000, Math.min(Number(getOptionalEnv('KICKSTARTER_BROWSER_TIMEOUT_MS') || 180_000), 300_000));
   let res: Response;
   try {
-    res = await fetch(discoverEndpoint, {
+    // Discovery runs at HIGH priority through the worker gate, so it always wins
+    // the next free Chromium lane ahead of the low-priority rich/core backfill —
+    // the starvation that produced the "blocked" wedge.
+    res = await gatedWorkerFetch(base, '/discover', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -300,9 +297,9 @@ async function fetchDiscoverViaBrowser(url: string): Promise<BrowserFetchOutcome
       body: JSON.stringify({ url, timeoutMs: workerTimeoutMs - 10_000 }),
       signal: AbortSignal.timeout(workerTimeoutMs),
       cache: 'no-store',
-    });
+    }, WorkerPriority.HIGH);
   } catch (err) {
-    const message = `Browser worker request failed (${proxyUrl}): ${err instanceof Error ? err.message : String(err)}`;
+    const message = `Browser worker request failed (${base}): ${err instanceof Error ? err.message : String(err)}`;
     recordCrawlerError({ source: 'ks_live', job_type: 'browser_fallback', url, message });
     return { body: null, reason: message };
   }

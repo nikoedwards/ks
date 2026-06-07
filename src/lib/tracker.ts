@@ -33,6 +33,7 @@ import {
 import { normalizeState } from './projectState';
 import { runKickstarterLiveSync } from './kickstarterLive';
 import { runKicktraqActiveSync } from './kicktraqActive';
+import { isFleetUnhealthy } from './workerGate';
 
 let started = false;
 
@@ -301,6 +302,13 @@ function ksPathKey(url: string): string {
 // data is stale, via the worker /project endpoint (serial — single worker lane).
 async function scrapeRichDueProjects() {
   if (KS_RICH_BATCH <= 0) return;
+  // Contingency: when every worker is tripped, skip the expensive rich pass (it
+  // holds the single lane 70-120s each) so the high-priority discovery can keep
+  // trying. Stale rewards get picked up once the fleet recovers.
+  if (isFleetUnhealthy()) {
+    console.warn('[tracker] worker fleet unhealthy; skipping rich pass to protect discovery');
+    return;
+  }
   try {
     const now = Math.floor(Date.now() / 1000);
     const due = getRichDueProjects(KS_RICH_BATCH, now - KS_RICH_INTERVAL_SEC) as DueProject[];
@@ -497,6 +505,7 @@ async function startDiscoveryJobs(now: number) {
 // prelaunch projects to detect launch; never touches the live core/rich queues.
 async function scrapePrelaunchWatch() {
   if (!KS_PRELAUNCH_WATCH) return;
+  if (isFleetUnhealthy()) return;
   const now = Date.now();
   if (now - lastPrelaunchWatch <= KS_PRELAUNCH_INTERVAL_MS) return;
   lastPrelaunchWatch = now;
@@ -568,6 +577,7 @@ async function watchOnePrelaunch(projectId: string): Promise<boolean> {
 // touches the live core/rich queues or the stable /project path.
 async function scrapeCollabBackfill() {
   if (!KS_COLLAB_BACKFILL) return;
+  if (isFleetUnhealthy()) return;
   const now = Date.now();
   if (now - lastCollabBackfill <= KS_COLLAB_INTERVAL_MS) return;
   lastCollabBackfill = now;

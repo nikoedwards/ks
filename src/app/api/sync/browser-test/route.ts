@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { workerGateStatus } from '@/lib/workerGate';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -43,6 +44,7 @@ export async function GET(req: NextRequest) {
       hasToken: Boolean(token),
       tokenLength: token.length,
     },
+    gate: workerGateStatus(),
     health: null,
     fetch: null,
   };

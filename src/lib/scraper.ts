@@ -19,6 +19,7 @@ import {
 } from './db';
 import { resolveUsdAmounts as resolveUsdAmountsShared } from './money';
 import { resolveProjectState } from './projectState';
+import { pickWorkerBase, gatedWorkerFetch, WorkerPriority } from './workerGate';
 
 export function getOptionalEnv(name: string) {
   const direct = process.env[name]?.trim();
@@ -449,8 +450,8 @@ function workerOk(value: unknown): boolean | null {
 }
 
 async function fetchViaBrowserProxy(url: string, projectId?: string, options: { basicOnly?: boolean } = {}): Promise<KSProject | null> {
-  const proxyUrl = getOptionalEnv('KICKSTARTER_BROWSER_FETCH_URL');
-  if (!proxyUrl) {
+  const base = getWorkerBaseUrl();
+  if (!base) {
     recordCrawlerError({
       source: 'ks_project',
       job_type: 'browser_json_fallback',
@@ -463,7 +464,7 @@ async function fetchViaBrowserProxy(url: string, projectId?: string, options: { 
   const token = getOptionalEnv('BROWSER_WORKER_TOKEN');
 
   try {
-    const res = await fetch(proxyUrl, {
+    const res = await gatedWorkerFetch(base, '/fetch', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -481,7 +482,7 @@ async function fetchViaBrowserProxy(url: string, projectId?: string, options: { 
       }),
       signal: AbortSignal.timeout(Number(getOptionalEnv('KICKSTARTER_BROWSER_TIMEOUT_MS') || 180_000)),
       cache: 'no-store',
-    });
+    }, WorkerPriority.NORMAL);
     const text = await res.text();
     if (!res.ok) {
       recordCrawlerError({
@@ -528,11 +529,9 @@ async function fetchViaBrowserProxy(url: string, projectId?: string, options: { 
 // same service as /fetch, so derive the base URL from KICKSTARTER_BROWSER_FETCH_URL
 // (strip the trailing /fetch) unless KICKSTARTER_BROWSER_WORKER_URL is set.
 export function getWorkerBaseUrl(): string {
-  const explicit = getOptionalEnv('KICKSTARTER_BROWSER_WORKER_URL');
-  if (explicit) return explicit.replace(/\/+$/, '');
-  const fetchUrl = getOptionalEnv('KICKSTARTER_BROWSER_FETCH_URL');
-  if (!fetchUrl) return '';
-  return fetchUrl.replace(/\/fetch\/?$/i, '').replace(/\/+$/, '');
+  // Delegated to the worker gate, which understands the multi-URL fleet and
+  // routes to the healthiest base (skipping ones whose breaker is open).
+  return pickWorkerBase() ?? '';
 }
 
 interface WorkerReward {
@@ -640,7 +639,7 @@ export async function fetchProjectViaWorker(pageUrl: string, projectId?: string)
   if (!base) return null;
   const token = getOptionalEnv('BROWSER_WORKER_TOKEN');
   try {
-    const res = await fetch(`${base}/project`, {
+    const res = await gatedWorkerFetch(base, '/project', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -650,7 +649,7 @@ export async function fetchProjectViaWorker(pageUrl: string, projectId?: string)
       body: JSON.stringify({ url: pageUrl }),
       signal: AbortSignal.timeout(Math.max(60_000, Math.min(Number(getOptionalEnv('KICKSTARTER_BROWSER_TIMEOUT_MS') || 180_000), 300_000))),
       cache: 'no-store',
-    });
+    }, WorkerPriority.LOW);
     const text = await res.text();
     if (!res.ok) {
       recordCrawlerError({
@@ -711,7 +710,7 @@ export async function fetchCollaboratorsViaWorker(
   if (!base) return null;
   const token = getOptionalEnv('BROWSER_WORKER_TOKEN');
   try {
-    const res = await fetch(`${base}/collab`, {
+    const res = await gatedWorkerFetch(base, '/collab', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -721,7 +720,7 @@ export async function fetchCollaboratorsViaWorker(
       body: JSON.stringify({ url: pageUrl }),
       signal: AbortSignal.timeout(Math.max(60_000, Math.min(Number(getOptionalEnv('KICKSTARTER_BROWSER_TIMEOUT_MS') || 180_000), 300_000))),
       cache: 'no-store',
-    });
+    }, WorkerPriority.LOW);
     const text = await res.text();
     if (!res.ok) {
       recordCrawlerError({
@@ -798,7 +797,7 @@ export async function fetchCoreBatchViaWorker(pageUrls: string[]): Promise<Worke
   if (!base || !pageUrls.length) return [];
   const token = getOptionalEnv('BROWSER_WORKER_TOKEN');
   try {
-    const res = await fetch(`${base}/core`, {
+    const res = await gatedWorkerFetch(base, '/core', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -808,7 +807,7 @@ export async function fetchCoreBatchViaWorker(pageUrls: string[]): Promise<Worke
       body: JSON.stringify({ urls: pageUrls }),
       signal: AbortSignal.timeout(Math.max(60_000, Math.min(Number(getOptionalEnv('KICKSTARTER_BROWSER_TIMEOUT_MS') || 180_000), 300_000))),
       cache: 'no-store',
-    });
+    }, WorkerPriority.NORMAL);
     const text = await res.text();
     if (!res.ok) {
       recordCrawlerError({
@@ -913,12 +912,12 @@ export async function storeWorkerCoreResult(projectId: string, result: WorkerCor
 }
 
 async function fetchHtmlViaBrowserProxy(url: string, projectId?: string): Promise<string | null> {
-  const proxyUrl = getOptionalEnv('KICKSTARTER_BROWSER_FETCH_URL');
-  if (!proxyUrl) return null;
+  const base = getWorkerBaseUrl();
+  if (!base) return null;
   const token = getOptionalEnv('BROWSER_WORKER_TOKEN');
 
   try {
-    const res = await fetch(proxyUrl, {
+    const res = await gatedWorkerFetch(base, '/fetch', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -930,7 +929,7 @@ async function fetchHtmlViaBrowserProxy(url: string, projectId?: string): Promis
       body: JSON.stringify({ url, expect: 'html', timeoutMs: 170_000, settleMs: 1500 }),
       signal: AbortSignal.timeout(Math.max(60_000, Math.min(Number(getOptionalEnv('KICKSTARTER_BROWSER_TIMEOUT_MS') || 180_000), 300_000))),
       cache: 'no-store',
-    });
+    }, WorkerPriority.NORMAL);
     const text = await res.text();
     if (!res.ok) {
       recordCrawlerError({
