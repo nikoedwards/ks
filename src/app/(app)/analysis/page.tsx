@@ -8,7 +8,7 @@ import StatCard from '@/components/StatCard';
 import EmptyState from '@/components/EmptyState';
 import DataSource from '@/components/DataSource';
 import { useLanguage } from '@/hooks/useLanguage';
-import { t } from '@/lib/i18n';
+import { t, uiCopy } from '@/lib/i18n';
 import { useAuth } from '@/contexts/AuthContext';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -109,6 +109,7 @@ export default function AnalysisPage() {
   const tCoun = t[lang].countries;
   const tDash = t[lang].dashboard;
   const stateTr = t[lang].states;
+  const copy = uiCopy[lang].analysis;
 
   const { user, showLogin } = useAuth();
   const gate = (fn: () => void) => { if (user) { fn(); return; } showLogin(fn); };
@@ -242,11 +243,11 @@ export default function AnalysisPage() {
   // ── Tab bar ─────────────────────────────────────────────────────────────────
 
   const tabs: { key: Tab; label: string }[] = [
-    { key: 'overview', label: lang === 'cn' ? '数据概览' : 'Overview' },
+    { key: 'overview', label: copy.overview },
     { key: 'categories', label: tr.tabCategories },
     { key: 'trends',     label: tr.tabTrends },
     { key: 'countries',  label: tr.tabCountries },
-    { key: 'time',       label: lang === 'cn' ? '时间分析' : 'Time Analysis' },
+    { key: 'time',       label: copy.timeAnalysis },
   ];
 
   const tabBar = (
@@ -273,7 +274,7 @@ export default function AnalysisPage() {
     <div className="max-w-7xl mx-auto space-y-5">
       {periodBar}
       <div className="flex items-center justify-center h-48 text-gray-400">
-        {lang === 'cn' ? '加载中...' : 'Loading...'}
+        {uiCopy[lang].common.loading}
       </div>
     </div>
   );
@@ -595,15 +596,13 @@ export default function AnalysisPage() {
   // ── Dimension metadata: the user picks ONE dimension to compare across the two
   //    years, so we keep a single focused curve instead of a wall of charts. The
   //    `key` works for both the yearly rows and the monthly rows (same columns).
-  const MONTHS_CN = ['1月', '2月', '3月', '4月', '5月', '6月', '7月', '8月', '9月', '10月', '11月', '12月'];
-  const MONTHS_EN = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-  const monthLabel = (m: number) => (lang === 'cn' ? MONTHS_CN : MONTHS_EN)[m - 1] ?? String(m);
+  const monthLabel = (m: number) => copy.monthNames[m - 1] ?? String(m);
 
   const DIMS: { id: TimeDimension; label: string; color: string; key: keyof TimeMonthRow; fmt: (v: number) => string }[] = [
-    { id: 'pledged', label: lang === 'cn' ? '融资额' : 'Pledged', color: '#F59E0B', key: 'total_pledged_m', fmt: v => `$${(v ?? 0).toFixed(v >= 100 ? 0 : 1)}M` },
-    { id: 'count', label: lang === 'cn' ? '项目数' : 'Projects', color: '#3B82F6', key: 'total', fmt: v => Math.round(v ?? 0).toLocaleString() },
-    { id: 'success_rate', label: lang === 'cn' ? '成功率' : 'Success rate', color: '#05CE78', key: 'success_rate', fmt: v => `${(v ?? 0).toFixed(1)}%` },
-    { id: 'backers', label: lang === 'cn' ? '支持者' : 'Backers', color: '#6366F1', key: 'total_backers', fmt: v => Math.round(v ?? 0).toLocaleString() },
+    { id: 'pledged', label: copy.pledged, color: '#F59E0B', key: 'total_pledged_m', fmt: v => `$${(v ?? 0).toFixed(v >= 100 ? 0 : 1)}M` },
+    { id: 'count', label: copy.projects, color: '#3B82F6', key: 'total', fmt: v => Math.round(v ?? 0).toLocaleString() },
+    { id: 'success_rate', label: copy.successRate, color: '#05CE78', key: 'success_rate', fmt: v => `${(v ?? 0).toFixed(1)}%` },
+    { id: 'backers', label: copy.backers, color: '#6366F1', key: 'total_backers', fmt: v => Math.round(v ?? 0).toLocaleString() },
   ];
   const dim = DIMS.find(d => d.id === timeDimension) ?? DIMS[0];
   const dimKey = dim.key;
@@ -626,7 +625,7 @@ export default function AnalysisPage() {
   const valB = timeScope === 'year' ? pick(bRow) : pick(timeMonthly.find(r => r.year === compareB && r.month === timeMonth));
   const deltaPct = valA > 0 ? ((valB - valA) / valA) * 100 : null;
   const deltaLabel = deltaPct == null ? 'N/A' : `${deltaPct >= 0 ? '+' : ''}${deltaPct.toFixed(1)}%`;
-  const scopeLabel = timeScope === 'year' ? (lang === 'cn' ? '全年' : 'Full year') : monthLabel(timeMonth);
+  const scopeLabel = timeScope === 'year' ? copy.fullYear : monthLabel(timeMonth);
 
   const segBtn = (active: boolean) =>
     `rounded-md px-3 py-1.5 text-xs font-semibold transition-all ${active ? 'bg-ks-green text-white shadow-sm' : 'text-gray-500 hover:bg-gray-200'}`;
@@ -639,14 +638,14 @@ export default function AnalysisPage() {
         <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div className="flex flex-wrap items-end gap-3">
             <label className="space-y-1">
-              <span className="block text-xs font-semibold text-gray-400">{lang === 'cn' ? '对比年份 A' : 'Year A'}</span>
+              <span className="block text-xs font-semibold text-gray-400">{copy.yearA}</span>
               <select value={compareA} onChange={e => setCompareA(e.target.value)} className="rounded-lg border border-gray-200 px-3 py-2 text-sm">
                 {timeYears.map(y => <option key={y} value={y}>{y}</option>)}
               </select>
             </label>
             <span className="pb-2 text-gray-300">vs</span>
             <label className="space-y-1">
-              <span className="block text-xs font-semibold text-gray-400">{lang === 'cn' ? '对比年份 B' : 'Year B'}</span>
+              <span className="block text-xs font-semibold text-gray-400">{copy.yearB}</span>
               <select value={compareB} onChange={e => setCompareB(e.target.value)} className="rounded-lg border border-gray-200 px-3 py-2 text-sm">
                 {timeYears.map(y => <option key={y} value={y}>{y}</option>)}
               </select>
@@ -654,15 +653,15 @@ export default function AnalysisPage() {
           </div>
           <div className="flex flex-wrap items-end gap-3">
             <div className="space-y-1">
-              <span className="block text-xs font-semibold text-gray-400">{lang === 'cn' ? '对比粒度' : 'Granularity'}</span>
+              <span className="block text-xs font-semibold text-gray-400">{copy.granularity}</span>
               <div className="flex rounded-lg bg-gray-100 p-1">
-                <button onClick={() => setTimeScope('year')} className={segBtn(timeScope === 'year')}>{lang === 'cn' ? '全年' : 'Full year'}</button>
-                <button onClick={() => setTimeScope('month')} className={segBtn(timeScope === 'month')}>{lang === 'cn' ? '指定月份' : 'By month'}</button>
+                <button onClick={() => setTimeScope('year')} className={segBtn(timeScope === 'year')}>{copy.fullYear}</button>
+                <button onClick={() => setTimeScope('month')} className={segBtn(timeScope === 'month')}>{copy.byMonth}</button>
               </div>
             </div>
             {timeScope === 'month' && (
               <label className="space-y-1">
-                <span className="block text-xs font-semibold text-gray-400">{lang === 'cn' ? '月份' : 'Month'}</span>
+                <span className="block text-xs font-semibold text-gray-400">{copy.month}</span>
                 <select value={timeMonth} onChange={e => setTimeMonth(Number(e.target.value))} className="rounded-lg border border-gray-200 px-3 py-2 text-sm">
                   {Array.from({ length: 12 }, (_, i) => i + 1).map(m => <option key={m} value={m}>{monthLabel(m)}</option>)}
                 </select>
@@ -673,7 +672,7 @@ export default function AnalysisPage() {
 
         {/* Dimension */}
         <div className="space-y-1">
-          <span className="block text-xs font-semibold text-gray-400">{lang === 'cn' ? '对比维度' : 'Dimension'}</span>
+          <span className="block text-xs font-semibold text-gray-400">{copy.dimension}</span>
           <div className="flex flex-wrap gap-2">
             {DIMS.map(d => (
               <button
@@ -694,16 +693,16 @@ export default function AnalysisPage() {
         {/* Optional scoping filters */}
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <label className="space-y-1">
-            <span className="block text-xs font-semibold text-gray-400">{lang === 'cn' ? '类目（可选）' : 'Category (optional)'}</span>
+            <span className="block text-xs font-semibold text-gray-400">{copy.categoryOptional}</span>
             <select value={timeCategory} onChange={e => setTimeCategory(e.target.value)} className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm">
-              <option value="">{lang === 'cn' ? '全部类目' : 'All categories'}</option>
+              <option value="">{copy.allCategories}</option>
               {categories.map(c => <option key={c.category} value={c.category}>{c.category}</option>)}
             </select>
           </label>
           <label className="space-y-1">
-            <span className="block text-xs font-semibold text-gray-400">{lang === 'cn' ? '国家（可选）' : 'Country (optional)'}</span>
+            <span className="block text-xs font-semibold text-gray-400">{copy.countryOptional}</span>
             <select value={timeCountry} onChange={e => setTimeCountry(e.target.value)} className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm">
-              <option value="">{lang === 'cn' ? '全部国家' : 'All countries'}</option>
+              <option value="">{copy.allCountries}</option>
               {countries.map(c => <option key={c.country} value={c.country}>{c.country_name || c.country}</option>)}
             </select>
           </label>
@@ -714,7 +713,7 @@ export default function AnalysisPage() {
       <div className="rounded-xl border border-gray-100 bg-white p-5 shadow-sm">
         <div className="mb-4 flex items-center justify-between">
           <h3 className="text-sm font-semibold text-gray-700">
-            {lang === 'cn' ? `${dim.label} · ${scopeLabel}对比` : `${dim.label} · ${scopeLabel}`}
+            {copy.comparisonTitle(dim.label, scopeLabel)}
           </h3>
           <span className={`rounded-full px-3 py-1 text-sm font-bold ${
             deltaPct == null ? 'bg-gray-100 text-gray-400' : deltaPct >= 0 ? 'bg-ks-green-light text-ks-green-dark' : 'bg-red-50 text-red-600'
@@ -746,7 +745,7 @@ export default function AnalysisPage() {
           { key: compareA, name: compareA, color: colorA },
           { key: compareB, name: compareB, color: colorB },
         ]}
-        title={lang === 'cn' ? `逐月${dim.label}对比（${compareA} vs ${compareB}）` : `Monthly ${dim.label} (${compareA} vs ${compareB})`}
+        title={copy.monthlyComparison(dim.label, Number(compareA), Number(compareB))}
         yFormatter={dim.fmt}
         height={320}
       />

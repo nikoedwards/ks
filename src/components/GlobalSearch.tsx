@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Search, Flame, TrendingUp } from 'lucide-react';
 import { useLanguage } from '@/hooks/useLanguage';
+import { t, uiCopy, type Lang } from '@/lib/i18n';
 
 interface Hit {
   id: string;
@@ -24,16 +25,8 @@ function fmtMoneyCompact(value: number) {
   return `$${v.toFixed(0)}`;
 }
 
-function stateLabel(state: string, cn: boolean) {
-  const map: Record<string, [string, string]> = {
-    live: ['进行中', 'Live'],
-    successful: ['成功', 'Successful'],
-    failed: ['失败', 'Failed'],
-    canceled: ['已下线', 'Offline'],
-    suspended: ['已下线', 'Offline'],
-  };
-  const pair = map[state];
-  return pair ? (cn ? pair[0] : pair[1]) : state;
+function stateLabel(state: string, lang: Lang) {
+  return t[lang].states[state as keyof typeof t.en.states] ?? state;
 }
 
 function stateClass(state: string) {
@@ -43,11 +36,11 @@ function stateClass(state: string) {
   return 'border-gray-100 bg-gray-50 text-gray-500';
 }
 
-function StatePill({ state, cn }: { state: string; cn: boolean }) {
+function StatePill({ state, lang }: { state: string; lang: Lang }) {
   return (
     <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-semibold ${stateClass(state)}`}>
       {state === 'live' && <span className="h-1.5 w-1.5 rounded-full bg-blue-500" />}
-      {stateLabel(state, cn)}
+      {stateLabel(state, lang)}
     </span>
   );
 }
@@ -55,7 +48,7 @@ function StatePill({ state, cn }: { state: string; cn: boolean }) {
 export default function GlobalSearch() {
   const router = useRouter();
   const [lang] = useLanguage();
-  const cn = lang === 'cn';
+  const copy = uiCopy[lang].globalSearch;
 
   const [query, setQuery] = useState('');
   const [open, setOpen] = useState(false);
@@ -142,7 +135,7 @@ export default function GlobalSearch() {
           <span className="block truncate text-sm font-medium text-gray-800">{s.name}</span>
           <span className="mt-1 flex items-center gap-2 text-xs text-gray-400">
             {s.category_parent && <span>{s.category_parent}</span>}
-            <StatePill state={s.state} cn={cn} />
+            <StatePill state={s.state} lang={lang} />
             {typeof s.usd_pledged === 'number' && s.usd_pledged > 0 && (
               <span className="font-semibold text-gray-500">{fmtMoneyCompact(s.usd_pledged)}</span>
             )}
@@ -162,7 +155,7 @@ export default function GlobalSearch() {
             value={query}
             onChange={handleChange}
             onFocus={handleFocus}
-            placeholder={cn ? '搜索项目名称…' : 'Search campaigns…'}
+            placeholder={copy.placeholder}
             className="w-full rounded-full border border-gray-200 bg-gray-50 py-1.5 pl-10 pr-4 text-sm transition-all focus:border-ks-green focus:bg-white focus:outline-none focus:ring-2 focus:ring-ks-green/30"
           />
         </div>
@@ -179,21 +172,21 @@ export default function GlobalSearch() {
                   onClick={() => submit()}
                   className="w-full border-t border-gray-50 px-4 py-2.5 text-left text-xs font-semibold text-ks-green transition-colors hover:bg-ks-green-light"
                 >
-                  {cn ? `查看 "${query.trim()}" 的全部结果 →` : `See all results for "${query.trim()}" →`}
+                  {copy.seeAll(query.trim())}
                 </button>
               </>
             ) : (
               <div className="px-4 py-6 text-center text-sm text-gray-400">
                 {query.trim().length < 2
-                  ? (cn ? '继续输入以搜索…' : 'Keep typing to search…')
-                  : (cn ? '没有匹配的项目' : 'No matching campaigns')}
+                  ? copy.keepTyping
+                  : copy.noMatches}
               </div>
             )
           ) : (
             <div>
               <div className="flex items-center gap-1.5 border-b border-gray-50 px-4 py-2.5 text-xs font-bold uppercase tracking-wide text-gray-400">
                 <Flame className="h-3.5 w-3.5 text-orange-400" />
-                {cn ? '热门项目' : 'Trending'}
+                {copy.trending}
               </div>
               {trending.length > 0 ? (
                 trending.map((s, i) => (
@@ -205,7 +198,7 @@ export default function GlobalSearch() {
               ) : (
                 <div className="flex items-center justify-center gap-2 px-4 py-6 text-sm text-gray-400">
                   <TrendingUp className="h-4 w-4" />
-                  {cn ? '加载中…' : 'Loading…'}
+                  {uiCopy[lang].common.loading}
                 </div>
               )}
             </div>

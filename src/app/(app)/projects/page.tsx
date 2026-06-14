@@ -6,7 +6,7 @@ import { Search, ExternalLink, ChevronLeft, ChevronRight, Download, ArrowUp, Arr
 import EmptyState from '@/components/EmptyState';
 import ImagePreview from '@/components/ImagePreview';
 import { useLanguage } from '@/hooks/useLanguage';
-import { t } from '@/lib/i18n';
+import { localeOf, t, uiCopy, type Lang } from '@/lib/i18n';
 import { useAuth } from '@/contexts/AuthContext';
 
 interface Project {
@@ -80,9 +80,9 @@ function projectMoney(p: Project) {
   return { pledged, goal: inferredGoal, currency: 'USD' };
 }
 
-function fmtDate(ts: number) {
+function fmtDate(ts: number, lang: Lang = 'en') {
   if (!ts) return '—';
-  return new Date(ts * 1000).toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' });
+  return new Date(ts * 1000).toLocaleDateString(localeOf(lang), { year: 'numeric', month: '2-digit', day: '2-digit' });
 }
 
 function calcDays(p: Project): number | null {
@@ -94,18 +94,18 @@ function calcDays(p: Project): number | null {
 
 // Countdown to a campaign's deadline ("还有几天就下线"). Ended/non-live projects
 // show the closing date instead.
-function closingInfo(p: Project, lang: 'cn' | 'en'): { text: string; urgent: boolean; ended: boolean } | null {
+function closingInfo(p: Project, lang: Lang, copy: typeof uiCopy.en.projects): { text: string; urgent: boolean; ended: boolean } | null {
   if (!p.deadline) return null;
   const secsLeft = p.deadline - Math.floor(Date.now() / 1000);
   if (p.state !== 'live' || secsLeft <= 0) {
-    return { text: lang === 'cn' ? `已结束 · ${fmtDate(p.deadline)}` : `Ended · ${fmtDate(p.deadline)}`, urgent: false, ended: true };
+    return { text: copy.endedAt(fmtDate(p.deadline, lang)), urgent: false, ended: true };
   }
   const days = Math.floor(secsLeft / 86400);
   if (days >= 1) {
-    return { text: lang === 'cn' ? `还有 ${days} 天` : `${days}d left`, urgent: days <= 3, ended: false };
+    return { text: copy.daysLeft(days), urgent: days <= 3, ended: false };
   }
   const hours = Math.max(1, Math.floor(secsLeft / 3600));
-  return { text: lang === 'cn' ? `还有 ${hours} 小时` : `${hours}h left`, urgent: true, ended: false };
+  return { text: copy.hoursLeft(hours), urgent: true, ended: false };
 }
 
 function exportCsv(rows: Project[], filename = 'kicksonar-export.csv') {
@@ -180,6 +180,8 @@ export default function ProjectsPage() {
   const [lang] = useLanguage();
   const tr = t[lang].projects;
   const stateTr = t[lang].states;
+  const copy = uiCopy[lang].projects;
+  const common = uiCopy[lang].common;
   const { user, isLoading: authLoading, showLogin } = useAuth();
 
   const [data, setData] = useState<{ total: number; rows: Project[]; categories: string[]; categoryOptions?: { category_parent: string; category_name: string | null; total: number }[]; countries: { country: string; country_name: string }[] } | null>(null);
@@ -430,6 +432,23 @@ export default function ProjectsPage() {
     </th>
   );
 
+  const columnLabel = (id: ViewColumnId) => ({
+    thumbnail: 'Image',
+    creator: 'Creator',
+    status: tr.colStatus,
+    category: tr.colCategory,
+    agency: copy.agency,
+    goal: tr.colGoal,
+    pledged: tr.colPledged,
+    funded: tr.colFunded,
+    backers: tr.colBackers,
+    days: tr.colDays,
+    deadline: copy.closing,
+    country: tr.colCountry,
+    launch: tr.colLaunch,
+    actions: uiCopy[lang].favorites.actions,
+  }[id]);
+
   return (
     <div className="max-w-7xl mx-auto space-y-5">
       {/* Filters */}
@@ -496,9 +515,9 @@ export default function ProjectsPage() {
           </div>
 
           <div>
-            <label className="text-xs font-medium text-gray-400 mb-1 block">{lang === 'cn' ? '二级类目' : 'Subcategory'}</label>
+            <label className="text-xs font-medium text-gray-400 mb-1 block">{copy.subcategory}</label>
             <select value={categoryName} onChange={e => gate(() => { setCategoryName(e.target.value); setPage(1); })} className={selectCls}>
-              <option value="">{lang === 'cn' ? '全部二级类目' : 'All subcategories'}</option>
+              <option value="">{copy.allSubcategories}</option>
               {childCategories.map(c => (
                 <option key={`${c.category_parent}-${c.category_name}`} value={c.category_name ?? ''}>
                   {c.category_name ?? '-'} ({c.total})
@@ -518,13 +537,13 @@ export default function ProjectsPage() {
           </div>
 
           <div>
-            <label className="text-xs font-medium text-gray-400 mb-1 block">{lang === 'cn' ? '服务商' : 'Agency'}</label>
+            <label className="text-xs font-medium text-gray-400 mb-1 block">{copy.agency}</label>
             <select value={serviceAgency} onChange={e => gate(() => { setServiceAgency(e.target.value); setPage(1); })} className={selectCls}>
-              <option value="">{lang === 'cn' ? '全部服务商' : 'All agencies'}</option>
-              <option value="__has_agency__">{lang === 'cn' ? '有服务商' : 'Has agency'}</option>
-              <option value="Longham">{lang === 'cn' ? 'Longham' : 'Longham'}</option>
-              <option value="Global OneClick">{lang === 'cn' ? 'Global OneClick' : 'Global OneClick'}</option>
-              <option value="Vinyl">{lang === 'cn' ? 'Vinyl' : 'Vinyl'}</option>
+              <option value="">{copy.allAgencies}</option>
+              <option value="__has_agency__">{copy.hasAgency}</option>
+              <option value="Longham">Longham</option>
+              <option value="Global OneClick">Global OneClick</option>
+              <option value="Vinyl">Vinyl</option>
             </select>
           </div>
 
@@ -534,7 +553,7 @@ export default function ProjectsPage() {
           </button>
           <button type="button" onClick={() => gate(resetFilters)}
             className="bg-gray-100 hover:bg-gray-200 text-gray-700 px-4 py-2 rounded-lg text-sm font-semibold transition-colors">
-            {lang === 'cn' ? '重置' : 'Reset'}
+            {common.reset}
           </button>
         </form>
       </div>
@@ -543,7 +562,7 @@ export default function ProjectsPage() {
       <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
         {loading ? (
           <div className="flex items-center justify-center h-48 text-gray-400">
-            {lang === 'cn' ? '加载中...' : 'Loading...'}
+            {common.loading}
           </div>
         ) : (
           <>
@@ -552,7 +571,7 @@ export default function ProjectsPage() {
                 {tr.total(data?.total?.toLocaleString() ?? '0')}
                 {selectedIds.size > 0 && (
                   <span className="ml-2 text-ks-green font-medium">
-                    · {lang === 'cn' ? `已选 ${selectedIds.size} 项` : `${selectedIds.size} selected`}
+                    · {copy.selected(selectedIds.size)}
                   </span>
                 )}
               </span>
@@ -562,7 +581,7 @@ export default function ProjectsPage() {
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-gray-100 hover:bg-gray-200 text-gray-700 transition-colors"
                 >
                   <SlidersHorizontal className="w-3.5 h-3.5" />
-                  {lang === 'cn' ? '编辑视图' : 'Edit View'}
+                  {copy.editView}
                 </button>
                 <button
                   onClick={handleExport}
@@ -574,7 +593,7 @@ export default function ProjectsPage() {
                 {viewOpen && (
                   <div className="absolute right-0 top-9 z-20 w-64 rounded-lg border border-gray-200 bg-white p-3 shadow-xl">
                     <div className="mb-2 flex items-center justify-between">
-                      <p className="text-xs font-semibold text-gray-700">{lang === 'cn' ? '列表字段' : 'Visible columns'}</p>
+                      <p className="text-xs font-semibold text-gray-700">{copy.visibleColumns}</p>
                       <button onClick={() => setViewOpen(false)} className="text-gray-400 hover:text-gray-600">
                         <X className="w-4 h-4" />
                       </button>
@@ -588,7 +607,7 @@ export default function ProjectsPage() {
                             onChange={() => toggleColumn(col.id)}
                             className="rounded border-gray-300 accent-ks-green"
                           />
-                          <span>{lang === 'cn' ? col.labelCn : col.labelEn}</span>
+                          <span>{columnLabel(col.id)}</span>
                         </label>
                       ))}
                     </div>
@@ -634,13 +653,13 @@ export default function ProjectsPage() {
                     {showCol('creator') && <th className="px-4 py-3 whitespace-nowrap align-middle">Creator</th>}
                     {showCol('status') && <th className="px-4 py-3 whitespace-nowrap align-middle">{tr.colStatus}</th>}
                     {showCol('category') && <th className="px-4 py-3 whitespace-nowrap align-middle">{tr.colCategory}</th>}
-                    {showCol('agency') && <th className="px-4 py-3 whitespace-nowrap align-middle">{lang === 'cn' ? '服务商' : 'Agency'}</th>}
+                    {showCol('agency') && <th className="px-4 py-3 whitespace-nowrap align-middle">{copy.agency}</th>}
                     {showCol('goal') && <SortableTh col={colSortKey['goal']} right>{tr.colGoal}</SortableTh>}
                     {showCol('pledged') && <SortableTh col={colSortKey['usd_pledged']} right>{tr.colPledged}</SortableTh>}
                     {showCol('funded') && <SortableTh col={colSortKey['funding_rate']} right>{tr.colFunded}</SortableTh>}
                     {showCol('backers') && <SortableTh col={colSortKey['backers']} right>{tr.colBackers}</SortableTh>}
                     {showCol('days') && <th className="px-4 py-3 text-right whitespace-nowrap align-middle">{tr.colDays}</th>}
-                    {showCol('deadline') && <th className="px-4 py-3 whitespace-nowrap align-middle">{lang === 'cn' ? '下线时间' : 'Closing'}</th>}
+                    {showCol('deadline') && <th className="px-4 py-3 whitespace-nowrap align-middle">{copy.closing}</th>}
                     {showCol('country') && <th className="px-4 py-3 whitespace-nowrap align-middle">{tr.colCountry}</th>}
                     {showCol('launch') && <SortableTh col={colSortKey['launched']}>{tr.colLaunch}</SortableTh>}
                     {showCol('actions') && <th className="px-4 py-3 whitespace-nowrap align-middle"></th>}
@@ -713,7 +732,7 @@ export default function ProjectsPage() {
                         {showCol('agency') && <td className="px-4 py-3">
                           {p.has_service_agency ? (
                             <span className="inline-flex max-w-[9rem] items-center rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-xs font-semibold text-emerald-700">
-                              <span className="truncate">{p.service_agency_name || (lang === 'cn' ? '已识别服务商' : 'Agency detected')}</span>
+                              <span className="truncate">{p.service_agency_name || copy.detectedAgency}</span>
                             </span>
                           ) : (
                             <span className="text-xs text-gray-300">-</span>
@@ -727,7 +746,7 @@ export default function ProjectsPage() {
                           {p.live_pledged_usd != null && p.live_captured_at && (
                             <div className="text-xs text-blue-500 mt-0.5 flex items-center justify-end gap-1">
                               <span className="inline-block w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
-                              {lang === 'cn' ? '实时' : 'live'}
+                              {copy.live}
                             </div>
                           )}
                         </td>}
@@ -753,7 +772,7 @@ export default function ProjectsPage() {
                         </td>}
                         {showCol('deadline') && <td className="px-4 py-3 whitespace-nowrap">
                           {(() => {
-                            const closing = closingInfo(p, lang);
+                            const closing = closingInfo(p, lang, copy);
                             if (!closing) return <span className="text-xs text-gray-300">—</span>;
                             if (closing.ended) return <span className="text-xs text-gray-400">{closing.text}</span>;
                             return (
@@ -764,7 +783,7 @@ export default function ProjectsPage() {
                           })()}
                         </td>}
                         {showCol('country') && <td className="px-4 py-3 text-gray-500 text-xs">{p.country}</td>}
-                        {showCol('launch') && <td className="px-4 py-3 text-gray-400 whitespace-nowrap text-xs">{fmtDate(p.launched_at)}</td>}
+                        {showCol('launch') && <td className="px-4 py-3 text-gray-400 whitespace-nowrap text-xs">{fmtDate(p.launched_at, lang)}</td>}
                         {showCol('actions') && <td className="px-4 py-3">
                           <div className="flex items-center gap-1.5">
                             <button

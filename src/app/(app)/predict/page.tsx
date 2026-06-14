@@ -3,7 +3,7 @@
 import { useState, useRef } from 'react';
 import { Search, CheckCircle, Loader2, AlertCircle, Star, TrendingUp, Sparkles, RefreshCw, Eye, ShieldCheck, Target, Zap } from 'lucide-react';
 import { useLanguage } from '@/hooks/useLanguage';
-import { t } from '@/lib/i18n';
+import { t, uiCopy, type Lang } from '@/lib/i18n';
 import { useAuth } from '@/contexts/AuthContext';
 
 interface Step {
@@ -35,20 +35,62 @@ interface ProjectInfo {
   description: string;
 }
 
-const METHODOLOGY = {
+const METHODOLOGY: Record<Lang, { icon: typeof Eye; title: string; desc: string }[]> = {
+  en: [
+    { icon: Eye,         title: 'Signal Extraction',       desc: 'Only publicly visible pre-launch page data is analyzed — no external assumptions or out-of-band context.' },
+    { icon: ShieldCheck, title: 'Blind Audit',             desc: 'Each of the 5 dimensions is scored independently before aggregation, preventing score bleed across categories.' },
+    { icon: Target,      title: 'Benchmark Calibration',   desc: 'Scores are anchored against historical Kickstarter success patterns to ensure cross-project comparability.' },
+    { icon: Zap,         title: 'Eagle-Eye Validation',    desc: 'Projects landing in the gray zone trigger a secondary cross-dimension review before a final verdict is issued.' },
+  ],
   cn: [
     { icon: Eye,         title: '信号提取', desc: '仅分析预热页面公开可见的信息，不引入外部假设或背景数据，确保评分的信息隔离性。' },
     { icon: ShieldCheck, title: '独立评审', desc: '五个维度互相独立评分，评分过程不相互影响，最终再汇总为综合分。' },
     { icon: Target,      title: '基准校准', desc: '各维度分值锚定于 Kickstarter 历史众筹成功规律，确保横向可比性与客观性。' },
     { icon: Zap,         title: '鹰眼验证', desc: '综合分落入灰色区间（40–65分）时，触发额外多维交叉验证，再输出最终结论。' },
   ],
-  en: [
-    { icon: Eye,         title: 'Signal Extraction',       desc: 'Only publicly visible pre-launch page data is analyzed — no external assumptions or out-of-band context.' },
-    { icon: ShieldCheck, title: 'Blind Audit',             desc: 'Each of the 5 dimensions is scored independently before aggregation, preventing score bleed across categories.' },
-    { icon: Target,      title: 'Benchmark Calibration',   desc: 'Scores are anchored against historical Kickstarter success patterns to ensure cross-project comparability.' },
-    { icon: Zap,         title: 'Eagle-Eye Validation',    desc: 'Projects landing in the gray zone (40–65) trigger a secondary cross-dimension review before a final verdict is issued.' },
+  'zh-tw': [
+    { icon: Eye, title: '信號提取', desc: '僅分析預熱頁公開可見資訊，不引入外部假設。' },
+    { icon: ShieldCheck, title: '獨立評審', desc: '五個維度獨立評分，再彙總為綜合分。' },
+    { icon: Target, title: '基準校準', desc: '分值錨定 Kickstarter 歷史成功規律，便於橫向比較。' },
+    { icon: Zap, title: '交叉驗證', desc: '灰色區間項目會觸發額外多維檢查。' },
   ],
-} as const;
+  ja: [
+    { icon: Eye, title: 'シグナル抽出', desc: '公開前ページで見える情報のみを分析します。' },
+    { icon: ShieldCheck, title: '独立評価', desc: '5つの軸を独立して採点し、最後に合算します。' },
+    { icon: Target, title: '基準校正', desc: 'Kickstarter の成功パターンを基準に比較可能なスコアにします。' },
+    { icon: Zap, title: '追加検証', desc: 'グレーゾーンでは複数軸で再確認します。' },
+  ],
+  ko: [
+    { icon: Eye, title: '신호 추출', desc: '공개된 사전 페이지 정보만 분석합니다.' },
+    { icon: ShieldCheck, title: '독립 평가', desc: '5개 차원을 독립적으로 채점한 뒤 합산합니다.' },
+    { icon: Target, title: '기준 보정', desc: 'Kickstarter 성공 패턴에 맞춰 비교 가능한 점수로 보정합니다.' },
+    { icon: Zap, title: '교차 검증', desc: '회색 구간 프로젝트는 추가 검증을 거칩니다.' },
+  ],
+  de: [
+    { icon: Eye, title: 'Signalextraktion', desc: 'Analysiert nur öffentlich sichtbare Prelaunch-Daten.' },
+    { icon: ShieldCheck, title: 'Unabhängige Prüfung', desc: 'Fünf Dimensionen werden getrennt bewertet und dann aggregiert.' },
+    { icon: Target, title: 'Benchmark-Kalibrierung', desc: 'Scores orientieren sich an historischen Kickstarter-Mustern.' },
+    { icon: Zap, title: 'Zusatzvalidierung', desc: 'Grauzonen-Projekte erhalten eine zusätzliche Mehrfachprüfung.' },
+  ],
+  it: [
+    { icon: Eye, title: 'Estrazione segnali', desc: 'Analizza solo dati pubblici della pagina pre-lancio.' },
+    { icon: ShieldCheck, title: 'Valutazione indipendente', desc: 'Le 5 dimensioni sono valutate separatamente e poi aggregate.' },
+    { icon: Target, title: 'Calibrazione benchmark', desc: 'I punteggi sono ancorati ai pattern storici di Kickstarter.' },
+    { icon: Zap, title: 'Validazione extra', desc: 'I casi in zona grigia ricevono un controllo multi-dimensione.' },
+  ],
+  fr: [
+    { icon: Eye, title: 'Extraction des signaux', desc: 'Analyse uniquement les informations publiques de la page.' },
+    { icon: ShieldCheck, title: 'Audit indépendant', desc: 'Les 5 dimensions sont notées séparément puis agrégées.' },
+    { icon: Target, title: 'Calibration benchmark', desc: 'Les scores sont alignés sur les tendances historiques Kickstarter.' },
+    { icon: Zap, title: 'Validation croisée', desc: 'Les scores en zone grise déclenchent une vérification supplémentaire.' },
+  ],
+  es: [
+    { icon: Eye, title: 'Extracción de señales', desc: 'Analiza solo la información pública de la página.' },
+    { icon: ShieldCheck, title: 'Auditoría independiente', desc: 'Las 5 dimensiones se puntúan por separado y luego se agregan.' },
+    { icon: Target, title: 'Calibración benchmark', desc: 'Los scores se anclan en patrones históricos de Kickstarter.' },
+    { icon: Zap, title: 'Validación cruzada', desc: 'La zona gris activa una revisión adicional multi-dimensional.' },
+  ],
+};
 
 const DIM_COLORS: Record<string, string> = {
   brand: '#3B82F6',
@@ -61,6 +103,7 @@ const DIM_COLORS: Record<string, string> = {
 export default function PredictPage() {
   const [lang] = useLanguage();
   const tr = t[lang].predict;
+  const copy = uiCopy[lang].predict;
   const { user, showLogin } = useAuth();
 
   const [url, setUrl] = useState('');
@@ -313,7 +356,7 @@ export default function PredictPage() {
             <div key={dim.key} className="space-y-1.5">
               <div className="flex items-center justify-between">
                 <span className="text-sm font-medium text-gray-800">
-                  {lang === 'cn' ? dim.label_cn : dim.label_en}
+                  {copy.dimensions[dim.key as keyof typeof copy.dimensions] ?? dim.label_en}
                 </span>
                 <span className="text-sm font-bold tabular-nums" style={{ color: DIM_COLORS[dim.key] ?? '#6B7280' }}>
                   {dim.score}/{dim.max}

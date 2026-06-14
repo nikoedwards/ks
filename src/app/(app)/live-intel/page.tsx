@@ -1,9 +1,10 @@
-'use client';
+﻿'use client';
 
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { Activity, ArrowUpRight, Clock3, Filter, Flame, Gauge, RefreshCw, Rocket, TrendingUp, Users, type LucideIcon } from 'lucide-react';
 import { useLanguage } from '@/hooks/useLanguage';
+import { isZhLang } from '@/lib/i18n';
 import ImagePreview from '@/components/ImagePreview';
 import { LockedSection, useAuthGate } from '@/components/AuthGate';
 
@@ -185,7 +186,7 @@ function Section({ title, icon: Icon, children }: { title: string; icon: LucideI
 
 export default function LiveIntelPage() {
   const [lang] = useLanguage();
-  const cn = lang === 'cn';
+  const cn = isZhLang(lang);
   const [data, setData] = useState<LiveIntel | null>(null);
   const [loading, setLoading] = useState(true);
   const [categoryParent, setCategoryParent] = useState('');

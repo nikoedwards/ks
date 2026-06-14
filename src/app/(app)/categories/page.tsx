@@ -5,7 +5,7 @@ import BarChart from '@/components/charts/BarChart';
 import EmptyState from '@/components/EmptyState';
 import DataSource from '@/components/DataSource';
 import { useLanguage } from '@/hooks/useLanguage';
-import { t } from '@/lib/i18n';
+import { t, uiCopy } from '@/lib/i18n';
 
 interface CategoryRow {
   category: string;
@@ -37,7 +37,7 @@ export default function CategoriesPage() {
       .catch(() => setLoading(false));
   }, []);
 
-  if (loading) return <div className="flex items-center justify-center h-full text-gray-400">{lang === 'cn' ? '加载中...' : 'Loading...'}</div>;
+  if (loading) return <div className="flex items-center justify-center h-full text-gray-400">{uiCopy[lang].common.loading}</div>;
   if (empty) return <EmptyState />;
 
   const top12 = data.slice(0, 12);

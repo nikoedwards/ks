@@ -6,6 +6,7 @@ import {
   TrendingUp, Users, Flame, Clock, Rocket, CheckCircle2,
 } from 'lucide-react';
 import { useLanguage } from '@/hooks/useLanguage';
+import { localeOf, uiCopy } from '@/lib/i18n';
 
 interface PushProject {
   id: string;
@@ -63,9 +64,9 @@ const STEP_ICONS: Record<string, React.ComponentType<{ className?: string }>> = 
 
 export default function PushModal() {
   const [lang] = useLanguage();
+  const copy = uiCopy[lang].push;
   const [push, setPush] = useState<PushPayload | null>(null);
   const openedAt = useRef(0);
-  const cn = lang === 'cn';
 
   useEffect(() => {
     fetch('/api/push', { cache: 'no-store' })
@@ -100,7 +101,7 @@ export default function PushModal() {
 
   if (!push) return null;
 
-  const dateLabel = new Date(push.generatedAt * 1000).toLocaleDateString(cn ? 'zh-CN' : 'en-US', {
+  const dateLabel = new Date(push.generatedAt * 1000).toLocaleDateString(localeOf(lang), {
     month: 'long', day: 'numeric',
   });
 
@@ -115,27 +116,27 @@ export default function PushModal() {
           {push.template === 'favorites_digest' && (
             <>
               <div className="flex items-center gap-2 text-sm font-semibold text-white/80">
-                <Heart className="h-4 w-4" /> {cn ? '我的收藏 · 今日动态' : 'My favorites · Daily digest'}
+                <Heart className="h-4 w-4" /> {copy.favoritesNote}
               </div>
-              <p className="mt-1.5 text-2xl font-black leading-tight">{cn ? '收藏项目有新进展' : 'Your tracked projects moved'}</p>
+              <p className="mt-1.5 text-2xl font-black leading-tight">{copy.favoritesTitle}</p>
               <p className="mt-1 text-sm text-white/80">{dateLabel}</p>
             </>
           )}
           {push.template === 'platform_digest' && (
             <>
               <div className="flex items-center gap-2 text-sm font-semibold text-white/80">
-                <Radar className="h-4 w-4" /> {cn ? '平台速览 · 每日一览' : 'Platform pulse · Daily'}
+                <Radar className="h-4 w-4" /> {copy.platformNote}
               </div>
-              <p className="mt-1.5 text-2xl font-black leading-tight">{cn ? '今天的 Kickstarter 动态' : 'Today on Kickstarter'}</p>
+              <p className="mt-1.5 text-2xl font-black leading-tight">{copy.platformTitle}</p>
               <p className="mt-1 text-sm text-white/80">{dateLabel}</p>
             </>
           )}
           {push.template === 'onboarding_guide' && (
             <>
               <div className="flex items-center gap-2 text-sm font-semibold text-white/80">
-                <Sparkles className="h-4 w-4" /> {cn ? '欢迎使用 Kicksonar' : 'Welcome to Kicksonar'}
+                <Sparkles className="h-4 w-4" /> {copy.onboardingNote}
               </div>
-              <p className="mt-1.5 text-2xl font-black leading-tight">{cn ? '一分钟上手核心功能' : 'Get started in a minute'}</p>
+              <p className="mt-1.5 text-2xl font-black leading-tight">{copy.onboardingTitle}</p>
             </>
           )}
         </div>
@@ -150,11 +151,11 @@ export default function PushModal() {
           {push.favorites && (
             <div>
               <div className="mb-4 grid grid-cols-2 gap-3">
-                <SummaryStat icon={TrendingUp} label={cn ? '今日合计筹款' : 'Pledged today'} value={`+${fmtUsd(push.favorites.totalPledgedDelta)}`} tone="green" />
-                <SummaryStat icon={Users} label={cn ? '今日新增支持者' : 'New backers'} value={`+${fmtNum(push.favorites.totalBackersDelta)}`} tone="blue" />
+                <SummaryStat icon={TrendingUp} label={copy.pledgedToday} value={`+${fmtUsd(push.favorites.totalPledgedDelta)}`} tone="green" />
+                <SummaryStat icon={Users} label={copy.newBackers} value={`+${fmtNum(push.favorites.totalBackersDelta)}`} tone="blue" />
               </div>
               <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400">
-                {cn ? `${push.favorites.liveCount} 个进行中收藏` : `${push.favorites.liveCount} live favorites`}
+                {copy.liveFavorites(push.favorites.liveCount)}
               </p>
               <ul className="space-y-2">
                 {push.favorites.items.map(p => (
@@ -175,7 +176,7 @@ export default function PushModal() {
                             <Chip tone="gray">{Math.round(p.fundedPct)}%</Chip>
                           )}
                           {push.favorites!.show.daysLeft && p.daysLeft != null && (
-                            <Chip tone="amber"><Clock className="h-3 w-3" />{cn ? `剩 ${p.daysLeft} 天` : `${p.daysLeft}d left`}</Chip>
+                            <Chip tone="amber"><Clock className="h-3 w-3" />{copy.daysLeftShort(p.daysLeft)}</Chip>
                           )}
                         </div>
                       </div>
@@ -191,18 +192,18 @@ export default function PushModal() {
           {push.digest && (
             <div>
               <div className="mb-4 grid grid-cols-3 gap-2">
-                <SummaryStat icon={Radar} label={cn ? '进行中' : 'Live'} value={fmtNum(push.digest.summary.live_projects)} tone="green" small />
-                <SummaryStat icon={Rocket} label={cn ? '今日新上线' : 'Launched'} value={fmtNum(push.digest.summary.launched_24h)} tone="blue" small />
-                <SummaryStat icon={CheckCircle2} label={cn ? '已达标' : 'Funded'} value={fmtNum(push.digest.summary.overfunded_projects)} tone="emerald" small />
-                <SummaryStat icon={TrendingUp} label={cn ? '24h 筹款' : '24h pledged'} value={`+${fmtUsd(push.digest.summary.pledged_delta_24h)}`} tone="green" small />
-                <SummaryStat icon={Users} label={cn ? '24h 支持者' : '24h backers'} value={`+${fmtNum(push.digest.summary.backers_delta_24h)}`} tone="blue" small />
-                <SummaryStat icon={Clock} label={cn ? '24h 内结束' : 'Ending'} value={fmtNum(push.digest.summary.ending_24h)} tone="amber" small />
+                <SummaryStat icon={Radar} label={copy.live} value={fmtNum(push.digest.summary.live_projects)} tone="green" small />
+                <SummaryStat icon={Rocket} label={copy.launched} value={fmtNum(push.digest.summary.launched_24h)} tone="blue" small />
+                <SummaryStat icon={CheckCircle2} label={copy.funded} value={fmtNum(push.digest.summary.overfunded_projects)} tone="emerald" small />
+                <SummaryStat icon={TrendingUp} label={copy.pledged24h} value={`+${fmtUsd(push.digest.summary.pledged_delta_24h)}`} tone="green" small />
+                <SummaryStat icon={Users} label={copy.backers24h} value={`+${fmtNum(push.digest.summary.backers_delta_24h)}`} tone="blue" small />
+                <SummaryStat icon={Clock} label={copy.ending} value={fmtNum(push.digest.summary.ending_24h)} tone="amber" small />
               </div>
               <div className="space-y-4">
                 {push.digest.sections.map(sec => (
                   <div key={sec.key}>
                     <p className="mb-1.5 flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-gray-500">
-                      <SectionIcon k={sec.key} /> {sectionTitle(sec.key, cn) ?? sec.title}
+                      <SectionIcon k={sec.key} /> {sectionTitle(sec.key, copy) ?? sec.title}
                     </p>
                     <ul className="space-y-1.5">
                       {sec.items.map(p => (
@@ -211,7 +212,7 @@ export default function PushModal() {
                              className="flex items-center gap-2.5 rounded-lg px-1.5 py-1 hover:bg-gray-50">
                             <Thumb p={p} small />
                             <span className="min-w-0 flex-1 truncate text-sm font-semibold text-gray-800">{p.name}</span>
-                            <DigestMetric metric={sec.metric} p={p} cn={cn} />
+                            <DigestMetric metric={sec.metric} p={p} copy={copy} />
                           </a>
                         </li>
                       ))}
@@ -257,12 +258,12 @@ export default function PushModal() {
         {/* Footer */}
         <div className="flex shrink-0 items-center justify-between gap-3 border-t border-gray-100 px-6 py-4">
           <button onClick={close} className="text-sm font-semibold text-gray-400 hover:text-gray-700">
-            {cn ? '稍后再看' : 'Maybe later'}
+            {copy.maybeLater}
           </button>
           {push.ctaUrl && (
             <a href={push.ctaUrl} onClick={clickCta}
                className="inline-flex items-center gap-2 rounded-lg bg-gray-900 px-4 py-2.5 text-sm font-bold text-white hover:bg-gray-800">
-              {push.ctaLabel || (cn ? '去看看' : 'Explore')}
+              {push.ctaLabel || copy.explore}
               <ArrowRight className="h-4 w-4" />
             </a>
           )}
@@ -317,20 +318,17 @@ function SectionIcon({ k }: { k: string }) {
   return <Icon className="h-3.5 w-3.5" />;
 }
 
-function sectionTitle(k: string, cn: boolean): string | null {
-  const map: Record<string, [string, string]> = {
-    fastestFunding: ['昨日增长最快', 'Top movers'],
-    fastestBackers: ['支持者增长最快', 'Most backers gained'],
-    newlyLaunched: ['新上线项目', 'Newly launched'],
-    endingSoon: ['即将结束', 'Ending soon'],
-  };
-  const t = map[k];
-  return t ? (cn ? t[0] : t[1]) : null;
+function sectionTitle(k: string, copy: ReturnType<typeof getPushCopy>): string | null {
+  return copy.sections[k as keyof typeof copy.sections] ?? null;
 }
 
-function DigestMetric({ metric, p, cn }: { metric: string; p: PushProject; cn: boolean }) {
+function getPushCopy() {
+  return uiCopy.en.push;
+}
+
+function DigestMetric({ metric, p, copy }: { metric: string; p: PushProject; copy: ReturnType<typeof getPushCopy> }) {
   if (metric === 'pledged') return <Chip tone="green"><TrendingUp className="h-3 w-3" />+{fmtUsd(p.pledgedDelta24h)}</Chip>;
   if (metric === 'backers') return <Chip tone="blue"><Users className="h-3 w-3" />+{fmtNum(p.backersDelta24h)}</Chip>;
-  if (metric === 'days') return <Chip tone="amber"><Clock className="h-3 w-3" />{p.daysLeft != null ? (cn ? `剩 ${p.daysLeft} 天` : `${p.daysLeft}d`) : '—'}</Chip>;
+  if (metric === 'days') return <Chip tone="amber"><Clock className="h-3 w-3" />{p.daysLeft != null ? copy.daysLeftShort(p.daysLeft) : '—'}</Chip>;
   return <Chip tone="gray">{fmtUsd(p.pledgedUsd)}</Chip>;
 }

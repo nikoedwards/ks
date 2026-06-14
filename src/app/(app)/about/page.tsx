@@ -1,8 +1,9 @@
-'use client';
+﻿'use client';
 
 import Image from 'next/image';
 import { Github, Mail } from 'lucide-react';
 import { useLanguage } from '@/hooks/useLanguage';
+import { isZhLang } from '@/lib/i18n';
 
 const CONTENT = {
   en: {
@@ -59,7 +60,7 @@ const CONTENT = {
 
 export default function AboutPage() {
   const [lang] = useLanguage();
-  const c = CONTENT[lang];
+  const c = CONTENT[isZhLang(lang) ? 'cn' : 'en'];
 
   return (
     <div className="max-w-3xl mx-auto space-y-6">
@@ -106,7 +107,7 @@ export default function AboutPage() {
           </p>
         ))}
         <div className="pt-2 flex flex-wrap gap-3 text-xs text-gray-500">
-          {(lang === 'cn'
+          {(isZhLang(lang)
             ? ['个人创作者 / 工作室', '创业者 / 品牌方', '营销团队']
             : ['Solo creators & studios', 'Founders & brand owners', 'Marketing teams']
           ).map(tag => (

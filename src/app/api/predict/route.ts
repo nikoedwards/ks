@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { guardApi } from '@/lib/apiAuth';
+import { localeOf, normalizeLang, uiCopy } from '@/lib/i18n';
 
 const MODEL = 'claude-sonnet-4-6';
 
@@ -34,7 +35,9 @@ export async function POST(req: NextRequest) {
   if (limited) return limited;
   if (isGuest) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   const body = await req.json().catch(() => ({}));
-  const { url, lang = 'cn' } = body as { url?: string; lang?: string };
+  const { url, lang: rawLang = 'cn' } = body as { url?: string; lang?: string };
+  const lang = normalizeLang(rawLang);
+  const copy = uiCopy[lang].predict.api;
 
   const stream = new ReadableStream({
     async start(controller) {
@@ -50,7 +53,7 @@ export async function POST(req: NextRequest) {
       try {
         // Validate URL
         if (!url || !url.includes('kickstarter.com')) {
-          send({ type: 'error', message: lang === 'cn' ? '请输入有效的 Kickstarter 链接' : 'Please enter a valid Kickstarter URL' });
+          send({ type: 'error', message: copy.invalidUrl });
           controller.close();
           return;
         }
@@ -62,7 +65,7 @@ export async function POST(req: NextRequest) {
         }
 
         // Step 1: Fetch page
-        send({ type: 'step', label: lang === 'cn' ? '正在获取页面内容...' : 'Fetching page content...', done: false });
+        send({ type: 'step', label: copy.fetching, done: false });
 
         let html = '';
         try {
@@ -70,7 +73,7 @@ export async function POST(req: NextRequest) {
             headers: {
               'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
               'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-              'Accept-Language': 'en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7',
+              'Accept-Language': `${localeOf(lang)},en-US;q=0.8,en;q=0.7`,
               'Cache-Control': 'no-cache',
             },
             signal: AbortSignal.timeout(12000),
@@ -92,12 +95,11 @@ export async function POST(req: NextRequest) {
         const description = ogDesc.slice(0, 400);
 
         send({ type: 'project', title, creator: creatorSlug, description });
-        send({ type: 'step', label: lang === 'cn' ? '页面内容获取完成' : 'Page content retrieved', done: true });
+        send({ type: 'step', label: copy.fetched, done: true });
 
         // Step 2: AI analysis
-        send({ type: 'step', label: lang === 'cn' ? 'AI 正在深度分析中...' : 'AI deep analysis in progress...', done: false });
+        send({ type: 'step', label: copy.analyzing, done: false });
 
-        const isCn = lang === 'cn';
         const prompt = `You are a Kickstarter crowdfunding expert analyst. Analyze the following pre-launch campaign page and provide a structured scoring.
 
 URL: ${url}
@@ -108,7 +110,7 @@ Page content excerpt: ${bodyText ? bodyText.slice(0, 1800) : '(page could not be
 
 Score this campaign on exactly 5 dimensions (0–20 each). Be specific and evidence-based. If page content is limited, note that and score conservatively.
 
-${isCn ? 'Write the "reasoning" field in Chinese (中文). Write the "verdict" field in Chinese.' : 'Write all text fields in English.'}
+${copy.promptInstruction}
 
 Respond with ONLY valid JSON, no extra text:
 {
@@ -188,7 +190,7 @@ Scoring guide:
           return;
         }
 
-        send({ type: 'step', label: lang === 'cn' ? '分析完成' : 'Analysis complete', done: true });
+        send({ type: 'step', label: copy.complete, done: true });
 
         // Send each dimension with a small delay for animation
         for (const dim of (result.dimensions ?? [])) {

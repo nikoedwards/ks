@@ -1,4 +1,4 @@
-'use client';
+﻿'use client';
 
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
@@ -18,6 +18,7 @@ import {
   Users,
 } from 'lucide-react';
 import { useLanguage } from '@/hooks/useLanguage';
+import { isZhLang } from '@/lib/i18n';
 import ImagePreview from '@/components/ImagePreview';
 import { useAuthGate } from '@/components/AuthGate';
 import { useAuth } from '@/contexts/AuthContext';
@@ -195,7 +196,7 @@ function TrendMark({ state }: { state: string }) {
 
 export default function LeaderboardPage() {
   const [lang] = useLanguage();
-  const cn = lang === 'cn';
+  const cn = isZhLang(lang);
   const { user, isLoading: authLoading } = useAuth();
   const yearNow = currentYear();
   const defaultRange = yearRange(yearNow);
@@ -646,7 +647,7 @@ export default function LeaderboardPage() {
 
   // Localized caption that travels with the image when a platform accepts text.
   const shareCaption = () => {
-    const cnShare = shareLang === 'cn';
+    const cnShare = isZhLang(shareLang);
     const cat = categoryParent ? `${categoryParent}${categoryName ? ` · ${categoryName}` : ''} ` : '';
     return cnShare
       ? `Kicksonar ${activeYear} ${cat}Kickstarter TOP${shareCount} 榜单（金额已统一换算为美元）`
@@ -716,7 +717,7 @@ export default function LeaderboardPage() {
 
   const shareToPlatform = async (platform: SharePlatform) => {
     setShareHint(null);
-    const cnShare = shareLang === 'cn';
+    const cnShare = isZhLang(shareLang);
     // 1) Prefer the native sheet so the chosen app opens directly (mobile).
     const result = await tryNativeImageShare();
     if (result === 'shared' || result === 'aborted') return;
@@ -1094,7 +1095,7 @@ export default function LeaderboardPage() {
                       <Send className="h-4 w-4" />{cn ? '一键分享' : 'Share'}
                     </button>
                   )}
-                  {(shareLang === 'cn' ? CN_PLATFORMS : EN_PLATFORMS).map(p => (
+                  {(isZhLang(shareLang) ? CN_PLATFORMS : EN_PLATFORMS).map(p => (
                     <button
                       key={p.id}
                       onClick={() => shareToPlatform(p)}

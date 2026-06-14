@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { ArrowRight, Sparkles, X } from 'lucide-react';
 import { useLanguage } from '@/hooks/useLanguage';
+import { uiCopy } from '@/lib/i18n';
 
 interface Announcement {
   id: number;
@@ -15,6 +16,7 @@ interface Announcement {
 
 export default function UpdateAnnouncementModal() {
   const [lang] = useLanguage();
+  const copy = uiCopy[lang].announcements;
   const [announcement, setAnnouncement] = useState<Announcement | null>(null);
   const openedAt = useRef(0);
 
@@ -73,7 +75,7 @@ export default function UpdateAnnouncementModal() {
           <div className="bg-gradient-to-br from-ks-green to-emerald-500 px-6 py-7 text-white">
             <div className="flex items-center gap-2 text-sm font-semibold text-white/80">
               <Sparkles className="h-4 w-4" />
-              {lang === 'cn' ? 'Kicksonar 最近更新' : 'What is new in Kicksonar'}
+              {copy.recentUpdates}
             </div>
             <p className="mt-3 text-2xl font-black leading-tight">{announcement.title}</p>
           </div>
@@ -84,7 +86,7 @@ export default function UpdateAnnouncementModal() {
               {announcement.image_url && (
                 <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-ks-green">
                   <Sparkles className="h-4 w-4" />
-                  {lang === 'cn' ? '新功能更新' : 'Feature update'}
+                  {copy.featureUpdate}
                 </div>
               )}
               {announcement.image_url && <h2 className="text-xl font-black text-gray-900">{announcement.title}</h2>}
@@ -97,7 +99,7 @@ export default function UpdateAnnouncementModal() {
 
           <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
             <button onClick={close} className="text-sm font-semibold text-gray-400 hover:text-gray-700">
-              {lang === 'cn' ? '稍后再看' : 'Maybe later'}
+              {copy.maybeLater}
             </button>
             {announcement.cta_url && (
               <a
@@ -105,7 +107,7 @@ export default function UpdateAnnouncementModal() {
                 onClick={clickCta}
                 className="inline-flex items-center gap-2 rounded-lg bg-gray-900 px-4 py-2.5 text-sm font-bold text-white hover:bg-gray-800"
               >
-                {announcement.cta_label || (lang === 'cn' ? '去看看' : 'Explore')}
+                {announcement.cta_label || copy.explore}
                 <ArrowRight className="h-4 w-4" />
               </a>
             )}

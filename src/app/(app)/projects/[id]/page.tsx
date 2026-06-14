@@ -1,4 +1,4 @@
-'use client';
+﻿'use client';
 
 import { useEffect, useState, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
@@ -14,7 +14,7 @@ import {
 import DataSource from '@/components/DataSource';
 import ImagePreview from '@/components/ImagePreview';
 import { useLanguage } from '@/hooks/useLanguage';
-import { t } from '@/lib/i18n';
+import { isZhLang, localeOf, t, uiCopy, type Lang } from '@/lib/i18n';
 import { useAuth } from '@/contexts/AuthContext';
 import type { FundingPrediction, DeviationPoint } from '@/lib/prediction';
 
@@ -144,15 +144,15 @@ function fmtUsd(v: number) {
   return fmtMoney(v, 'USD');
 }
 
-function fmtDate(ts: number | null, lang: string) {
+function fmtDate(ts: number | null, lang: Lang) {
   if (!ts) return '—';
-  return new Date(ts * 1000).toLocaleDateString(lang === 'cn' ? 'zh-CN' : 'en-US', {
+  return new Date(ts * 1000).toLocaleDateString(localeOf(lang), {
     year: 'numeric', month: 'short', day: 'numeric',
   });
 }
 
-function fmtDateTime(ts: number) {
-  return new Date(ts * 1000).toLocaleString('en-US', {
+function fmtDateTime(ts: number, lang: Lang) {
+  return new Date(ts * 1000).toLocaleString(localeOf(lang), {
     month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
   });
 }
@@ -172,14 +172,14 @@ function calcDuration(p: Project): number | null {
   return Math.round((p.deadline - p.launched_at) / 86400);
 }
 
-function fmtTimeLeft(deadline: number | null, lang: string) {
+function fmtTimeLeft(deadline: number | null, lang: Lang) {
   if (!deadline) return null;
   const seconds = deadline - Math.floor(Date.now() / 1000);
-  if (seconds <= 0) return lang === 'cn' ? '已结束' : 'Ended';
+  if (seconds <= 0) return isZhLang(lang) ? '已结束' : 'Ended';
   const days = Math.floor(seconds / 86400);
-  if (days >= 1) return lang === 'cn' ? `${days} 天` : `${days}d`;
+  if (days >= 1) return isZhLang(lang) ? `${days} 天` : `${days}d`;
   const hours = Math.max(1, Math.floor(seconds / 3600));
-  return lang === 'cn' ? `${hours} 小时` : `${hours}h`;
+  return isZhLang(lang) ? `${hours} 小时` : `${hours}h`;
 }
 
 function fundingGrade(rate: number): { grade: string; color: string } {
@@ -225,7 +225,7 @@ function KicktraqDebugConsole({
   message,
   onRefresh,
 }: {
-  lang: string;
+  lang: Lang;
   debug: KicktraqDebug | null;
   importing: boolean;
   phase: string;
@@ -233,7 +233,7 @@ function KicktraqDebugConsole({
   message: string;
   onRefresh: () => void;
 }) {
-  const cn = lang === 'cn';
+  const cn = isZhLang(lang);
   const images = debug?.images ?? [];
   const structuredRows = debug?.structuredRows ?? [];
   const writtenSnapshots = debug?.writtenSnapshots ?? [];
@@ -393,7 +393,7 @@ export default function ProjectDetailPage() {
   const [ktDebug, setKtDebug] = useState<KicktraqDebug | null>(null);
 
   const id = params?.id;
-  const detailCopy = lang === 'cn' ? {
+  const detailCopy = isZhLang(lang) ? {
     sharedTitle: '平台共享追踪',
     sharedActive: '该项目已经进入共享追踪队列',
     sharedInactive: '该项目尚未进入共享追踪队列',
@@ -550,11 +550,11 @@ export default function ProjectDetailPage() {
     if (payload.phase) setKtPhase(payload.phase);
     if (payload.status === 'running') {
       setKtImporting(true);
-      setKtInfo(lang === 'cn' ? 'Kicktraq 导入任务正在服务器运行。' : 'Kicktraq import is running on the server.');
+      setKtInfo(isZhLang(lang) ? 'Kicktraq 导入任务正在服务器运行。' : 'Kicktraq import is running on the server.');
     } else if (payload.status === 'complete') {
       setKtImporting(false);
       setKtNoData(false);
-      setKtInfo(lang === 'cn' ? `导入完成${payload.structuredDays?.length ? `，${payload.structuredDays.length} 条结构化数据已写入。` : '。'}` : 'Import complete.');
+      setKtInfo(isZhLang(lang) ? `导入完成${payload.structuredDays?.length ? `，${payload.structuredDays.length} 条结构化数据已写入。` : '。'}` : 'Import complete.');
     } else if (payload.status === 'failed') {
       setKtImporting(false);
       setKtNoData(true);
@@ -594,12 +594,12 @@ export default function ProjectDetailPage() {
 
   const friendlyKicktraqMessage = (message?: string) => {
     if (message?.includes('cannot read OPENAI_API_KEY') || message?.includes('cannot read')) {
-      return lang === 'cn'
+      return isZhLang(lang)
         ? '当前线上服务还没有读到 OCR Key。请确认变量加在同一个 Railway Service/Environment，并重新部署或 Restart 后再导入。'
         : 'OCR is not active in the running Railway service. Make sure the key is on this service/environment, then redeploy or restart and import again.';
     }
     if (message?.includes('OCR is configured')) {
-      return lang === 'cn'
+      return isZhLang(lang)
         ? 'OCR 已启用，但这张 Kicktraq 图表没有解析出可用数据，可能是图表被拦截、图片不可读或项目暂无公开 daily chart。'
         : 'OCR is active, but no usable daily rows were extracted. Kicktraq may have blocked the chart image, returned an unreadable image, or not exposed a public daily chart.';
     }
@@ -612,9 +612,9 @@ export default function ProjectDetailPage() {
     setKtError('');
     setKtNoData(false);
     setKtNoDataMessage('');
-    setKtInfo(lang === 'cn' ? '正在连接 Kicktraq 并读取图表...' : 'Connecting to Kicktraq and reading charts...');
+    setKtInfo(isZhLang(lang) ? '正在连接 Kicktraq 并读取图表...' : 'Connecting to Kicktraq and reading charts...');
     setKtProgress(8);
-    setKtPhase(lang === 'cn' ? '准备导入' : 'Preparing import');
+    setKtPhase(isZhLang(lang) ? '准备导入' : 'Preparing import');
     setKtDebug(null);
     try {
       const res = await fetch(`/api/kicktraq/${id}`, { method: 'POST' });
@@ -633,7 +633,7 @@ export default function ProjectDetailPage() {
       await loadSnapshots();
       const cached = await loadCachedKicktraqDebug();
       if (!cached || cached.status !== 'running') setKtImporting(false);
-      setKtInfo(lang === 'cn'
+      setKtInfo(isZhLang(lang)
         ? '导入请求连接中断，但后台可能已经写入成功；已自动刷新快照并尝试读取调试信息。'
         : 'The import request disconnected, but the server may have completed it. Snapshots were refreshed and debug data was retried.');
     }
@@ -686,8 +686,8 @@ export default function ProjectDetailPage() {
 
   const curveModeLabel = (mode: CurveMode) => (
     mode === 'daily'
-      ? (lang === 'cn' ? '新增数据' : 'New')
-      : (lang === 'cn' ? '加总数据' : 'Cumulative')
+      ? (isZhLang(lang) ? '新增数据' : 'New')
+      : (isZhLang(lang) ? '加总数据' : 'Cumulative')
   );
 
   const setCurveChartType = (metric: CurveMetric, type: CurveChartType) => {
@@ -696,8 +696,8 @@ export default function ProjectDetailPage() {
 
   const curveChartTypeLabel = (type: CurveChartType) => (
     type === 'line'
-      ? (lang === 'cn' ? '折线' : 'Line')
-      : (lang === 'cn' ? '柱状' : 'Bar')
+      ? (isZhLang(lang) ? '折线' : 'Line')
+      : (isZhLang(lang) ? '柱状' : 'Bar')
   );
 
   // Table data: most recent first, delta columns
@@ -750,7 +750,7 @@ export default function ProjectDetailPage() {
     ? project.goal * (project.usd_pledged / project.pledged)
     : project.goal;
   const displayGoal = nativeKicktraqLooksCurrent ? project.goal : inferredGoalUsd;
-  const displayGoalText = displayGoal > 0 ? fmtMoney(displayGoal, displayCurrency) : (lang === 'cn' ? '未知' : 'unknown');
+  const displayGoalText = displayGoal > 0 ? fmtMoney(displayGoal, displayCurrency) : (isZhLang(lang) ? '未知' : 'unknown');
   const fundingRate = displayGoal > 0 ? (displayPledged / displayGoal) * 100 : 0;
   const duration = calcDuration(project);
   const avgDailyPledged = duration && duration > 0 ? displayPledged / duration : null;
@@ -767,7 +767,7 @@ export default function ProjectDetailPage() {
   const cadenceLabel = (platformTracking?.priority === 2 || (platformTracking?.priority_score ?? 0) >= 20)
     ? tr.every1h
     : (subscriberCount >= 2 || (platformTracking?.priority_score ?? 0) >= 8)
-      ? (lang === 'cn' ? '每 2 小时' : 'Every 2h')
+      ? (isZhLang(lang) ? '每 2 小时' : 'Every 2h')
       : tr.every4h;
 
   // Text diff: group by field, pair consecutive entries
@@ -837,7 +837,7 @@ export default function ProjectDetailPage() {
               <span>{project.currency}</span>
               {sharedLastFetched && (
                 <span className="flex items-center gap-1 text-ks-green/80">
-                  <Radio className="w-3 h-3" /> {tr.lastSynced} {fmtDateTime(sharedLastFetched)}
+                  <Radio className="w-3 h-3" /> {tr.lastSynced} {fmtDateTime(sharedLastFetched, lang)}
                 </span>
               )}
             </div>
@@ -896,7 +896,7 @@ export default function ProjectDetailPage() {
           {timeLeft && (
             <div className="shrink-0">
               <p className="text-3xl font-black text-white">{timeLeft}</p>
-              <p className="text-xs text-gray-500">{lang === 'cn' ? '剩余时间' : 'time left'}</p>
+              <p className="text-xs text-gray-500">{isZhLang(lang) ? '剩余时间' : 'time left'}</p>
             </div>
           )}
           {avgDailyPledged && (
@@ -991,20 +991,20 @@ export default function ProjectDetailPage() {
                   <table className="w-full text-xs">
                     <thead>
                       <tr className="bg-gray-50 text-gray-500 font-semibold uppercase tracking-wide">
-                        <th className="text-left px-4 py-3">{lang === 'cn' ? '快照时间' : 'Snapshot Time'}</th>
-                        <th className="text-right px-4 py-3">{lang === 'cn' ? '累计已筹' : 'Total Pledged'}</th>
-                        <th className="text-right px-4 py-3">{lang === 'cn' ? '筹款增量' : 'Pledged Change'}</th>
-                        <th className="text-right px-4 py-3">{lang === 'cn' ? '累计支持者' : 'Total Backers'}</th>
-                        <th className="text-right px-4 py-3">{lang === 'cn' ? '支持者增量' : 'Backer Change'}</th>
-                        <th className="text-right px-4 py-3">{lang === 'cn' ? '剩余天数' : 'Days Left'}</th>
-                        <th className="text-right px-4 py-3">{lang === 'cn' ? '评论增量' : 'Comment Change'}</th>
-                        <th className="text-center px-4 py-3">{lang === 'cn' ? '数据来源' : 'Source'}</th>
+                        <th className="text-left px-4 py-3">{isZhLang(lang) ? '快照时间' : 'Snapshot Time'}</th>
+                        <th className="text-right px-4 py-3">{isZhLang(lang) ? '累计已筹' : 'Total Pledged'}</th>
+                        <th className="text-right px-4 py-3">{isZhLang(lang) ? '筹款增量' : 'Pledged Change'}</th>
+                        <th className="text-right px-4 py-3">{isZhLang(lang) ? '累计支持者' : 'Total Backers'}</th>
+                        <th className="text-right px-4 py-3">{isZhLang(lang) ? '支持者增量' : 'Backer Change'}</th>
+                        <th className="text-right px-4 py-3">{isZhLang(lang) ? '剩余天数' : 'Days Left'}</th>
+                        <th className="text-right px-4 py-3">{isZhLang(lang) ? '评论增量' : 'Comment Change'}</th>
+                        <th className="text-center px-4 py-3">{isZhLang(lang) ? '数据来源' : 'Source'}</th>
                       </tr>
                     </thead>
                     <tbody>
                       {tableData.map((s, i) => (
                         <tr key={s.captured_at} className={i % 2 === 0 ? 'bg-white' : 'bg-gray-50/50'}>
-                          <td className="px-4 py-2.5 text-gray-600">{fmtDateTime(s.captured_at)}</td>
+                          <td className="px-4 py-2.5 text-gray-600">{fmtDateTime(s.captured_at, lang)}</td>
                           <td className="px-4 py-2.5 text-right font-semibold text-gray-800">{fmtMoney(s.pledged_usd, s.source === 'kicktraq_active' && nativeCurrency !== 'USD' ? nativeCurrency : 'USD')}</td>
                           <td className={`px-4 py-2.5 text-right font-semibold ${s.delta_pledged == null ? 'text-gray-400' : s.delta_pledged >= 0 ? 'text-ks-green' : 'text-red-500'}`}>
                             {s.delta_pledged == null ? '—' : `${s.delta_pledged >= 0 ? '+' : ''}${fmtMoney(s.delta_pledged, s.source === 'kicktraq_active' && nativeCurrency !== 'USD' ? nativeCurrency : 'USD')}`}
@@ -1033,17 +1033,17 @@ export default function ProjectDetailPage() {
                 <p className="text-gray-500 text-sm">{tr.noHistoricalData}</p>
                 <div className="hidden">
                   <button onClick={triggerScrape} disabled={scraping}
-                    title={lang === 'cn' ? '立刻从 Kickstarter 项目 JSON 抓取一次最新快照和奖励。' : 'Fetch the latest Kickstarter JSON snapshot and rewards once.'}
+                    title={isZhLang(lang) ? '立刻从 Kickstarter 项目 JSON 抓取一次最新快照和奖励。' : 'Fetch the latest Kickstarter JSON snapshot and rewards once.'}
                     className="flex items-center gap-2 px-4 py-2 bg-ks-green text-white rounded-lg text-sm font-semibold hover:bg-ks-green-dark disabled:opacity-50">
                     <RefreshCw className={`w-4 h-4 ${scraping ? 'animate-spin' : ''}`} />
                     {scraping ? tr.fetchingFromKS : tr.fetchFromKS}
                   </button>
                   <button onClick={importKicktraq} disabled={ktImporting}
-                    title={lang === 'cn' ? '尝试从 Kicktraq 的公开日图表读取历史逐日数据；不是所有项目都有可读取数据。' : 'Try to import public daily chart data from Kicktraq. Not every project exposes readable data.'}
+                    title={isZhLang(lang) ? '尝试从 Kicktraq 的公开日图表读取历史逐日数据；不是所有项目都有可读取数据。' : 'Try to import public daily chart data from Kicktraq. Not every project exposes readable data.'}
                     className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700 disabled:opacity-50">
                     <TrendingUp className={`w-4 h-4 ${ktImporting ? 'animate-pulse' : ''}`} />
                     {ktImporting
-                      ? (lang === 'cn' ? '正在读取图表数据...' : 'Reading chart data...')
+                      ? (isZhLang(lang) ? '正在读取图表数据...' : 'Reading chart data...')
                       : tr.importFromKT}
                   </button>
                 </div>
@@ -1052,13 +1052,13 @@ export default function ProjectDetailPage() {
                 )}
                 {false && ktNoData && (
                   <p className="text-xs text-gray-400 bg-gray-50 rounded-lg px-3 py-2 max-w-md mx-auto">
-                    {lang === 'cn'
+                    {isZhLang(lang)
                       ? (ktNoDataMessage || 'Kicktraq 的逐日图表没有可解析数据；如果页面只有图片图表，需要配置 OCR key 后再导入。')
                       : 'Kicktraq chart data loads via browser-side JS and cannot be fetched server-side. Use "Fetch from Kickstarter" to start collecting daily snapshots.'}
                   </p>
                 )}
                 <p className="text-xs text-gray-400">
-                  {lang === 'cn'
+                  {isZhLang(lang)
                     ? 'Kicktraq 导入适合已经被 Kicktraq 收录并公开 dailychart 的项目；如果没有数据，按钮会返回原因。'
                     : 'Kicktraq import works for projects indexed by Kicktraq with public dailychart data; if no data is available, the button returns the reason.'}
                 </p>
@@ -1092,7 +1092,7 @@ export default function ProjectDetailPage() {
 
               <div className="border-t border-gray-100 pt-4">
                 <p className="text-sm text-gray-500">
-                  {lang === 'cn'
+                  {isZhLang(lang)
                     ? '进行中的项目会自动进入平台追踪队列，后台会持续同步快照、奖励和文案变化。'
                     : 'Live projects enter the shared tracking queue automatically. The crawler keeps syncing snapshots, rewards, and text changes in the background.'}
                 </p>
@@ -1120,10 +1120,10 @@ export default function ProjectDetailPage() {
                   <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
                     <p className="text-xs text-gray-400 font-semibold uppercase tracking-wide">
                       {curveModes.pledged === 'daily'
-                        ? (lang === 'cn'
+                        ? (isZhLang(lang)
                           ? `每日新增金额 · 平均 ${fmtMoney(avgPledgedDaily, displayCurrency)}`
                           : `Daily pledged change · Avg ${fmtMoney(avgPledgedDaily, displayCurrency)}`)
-                        : (lang === 'cn' ? '累计众筹金额' : 'Cumulative pledged')}
+                        : (isZhLang(lang) ? '累计众筹金额' : 'Cumulative pledged')}
                     </p>
                     <div className="flex items-center gap-2">
                       <div className="rounded-lg bg-gray-100 p-1">
@@ -1150,9 +1150,9 @@ export default function ProjectDetailPage() {
                         <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
                         <XAxis dataKey="date" tick={{ fontSize: 10 }} interval="preserveStartEnd" />
                         <YAxis tick={{ fontSize: 10 }} tickFormatter={v => fmtMoney(v as number, displayCurrency)} width={65} />
-                        <Tooltip formatter={(v: number) => [fmtMoney(v, displayCurrency), curveModes.pledged === 'daily' ? (lang === 'cn' ? '金额增量' : 'Pledged Change') : (lang === 'cn' ? '累计金额' : 'Total Pledged')]} />
+                        <Tooltip formatter={(v: number) => [fmtMoney(v, displayCurrency), curveModes.pledged === 'daily' ? (isZhLang(lang) ? '金额增量' : 'Pledged Change') : (isZhLang(lang) ? '累计金额' : 'Total Pledged')]} />
                         {curveModes.pledged === 'daily' && (
-                          <ReferenceLine y={avgPledgedDaily} stroke="#64748b" strokeDasharray="5 5" label={{ value: lang === 'cn' ? '平均' : 'Avg', fontSize: 10, fill: '#64748b' }} />
+                          <ReferenceLine y={avgPledgedDaily} stroke="#64748b" strokeDasharray="5 5" label={{ value: isZhLang(lang) ? '平均' : 'Avg', fontSize: 10, fill: '#64748b' }} />
                         )}
                         <Bar dataKey={curveModes.pledged === 'daily' ? 'pledgedDaily' : 'pledgedTotal'} fill="#05CE78" radius={[2, 2, 0, 0]} />
                       </BarChart>
@@ -1167,9 +1167,9 @@ export default function ProjectDetailPage() {
                         <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
                         <XAxis dataKey="date" tick={{ fontSize: 10 }} interval="preserveStartEnd" />
                         <YAxis tick={{ fontSize: 10 }} tickFormatter={v => fmtMoney(v as number, displayCurrency)} width={65} />
-                        <Tooltip formatter={(v: number) => [fmtMoney(v, displayCurrency), curveModes.pledged === 'daily' ? (lang === 'cn' ? '金额增量' : 'Pledged Change') : (lang === 'cn' ? '累计金额' : 'Total Pledged')]} />
+                        <Tooltip formatter={(v: number) => [fmtMoney(v, displayCurrency), curveModes.pledged === 'daily' ? (isZhLang(lang) ? '金额增量' : 'Pledged Change') : (isZhLang(lang) ? '累计金额' : 'Total Pledged')]} />
                         {curveModes.pledged === 'daily' && (
-                          <ReferenceLine y={avgPledgedDaily} stroke="#64748b" strokeDasharray="5 5" label={{ value: lang === 'cn' ? '平均' : 'Avg', fontSize: 10, fill: '#64748b' }} />
+                          <ReferenceLine y={avgPledgedDaily} stroke="#64748b" strokeDasharray="5 5" label={{ value: isZhLang(lang) ? '平均' : 'Avg', fontSize: 10, fill: '#64748b' }} />
                         )}
                         <Area type="monotone" dataKey={curveModes.pledged === 'daily' ? 'pledgedDaily' : 'pledgedTotal'} stroke="#05CE78" strokeWidth={2} fill="url(#gPledged)" />
                       </AreaChart>
@@ -1182,10 +1182,10 @@ export default function ProjectDetailPage() {
                   <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
                     <p className="text-xs text-gray-400 font-semibold uppercase tracking-wide">
                       {curveModes.backers === 'daily'
-                        ? (lang === 'cn'
+                        ? (isZhLang(lang)
                           ? `每日新增 Backer · 平均 ${Math.round(avgBackersDaily).toLocaleString()}`
                           : `Daily backer change · Avg ${Math.round(avgBackersDaily).toLocaleString()}`)
-                        : (lang === 'cn' ? '累计支持者' : 'Cumulative backers')}
+                        : (isZhLang(lang) ? '累计支持者' : 'Cumulative backers')}
                     </p>
                     <div className="flex items-center gap-2">
                       <div className="rounded-lg bg-gray-100 p-1">
@@ -1212,22 +1212,22 @@ export default function ProjectDetailPage() {
                         <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
                         <XAxis dataKey="date" tick={{ fontSize: 10 }} interval="preserveStartEnd" />
                         <YAxis tick={{ fontSize: 10 }} width={45} />
-                        <Tooltip formatter={(v: number) => [Number(v).toLocaleString(), curveModes.backers === 'daily' ? (lang === 'cn' ? '支持者增量' : 'Backer Change') : (lang === 'cn' ? '累计支持者' : 'Total Backers')]} />
+                        <Tooltip formatter={(v: number) => [Number(v).toLocaleString(), curveModes.backers === 'daily' ? (isZhLang(lang) ? '支持者增量' : 'Backer Change') : (isZhLang(lang) ? '累计支持者' : 'Total Backers')]} />
                         {curveModes.backers === 'daily' && (
-                          <ReferenceLine y={avgBackersDaily} stroke="#6366f1" strokeDasharray="5 5" label={{ value: lang === 'cn' ? '平均' : 'Avg', fontSize: 10, fill: '#6366f1' }} />
+                          <ReferenceLine y={avgBackersDaily} stroke="#6366f1" strokeDasharray="5 5" label={{ value: isZhLang(lang) ? '平均' : 'Avg', fontSize: 10, fill: '#6366f1' }} />
                         )}
-                        <Bar dataKey={curveModes.backers === 'daily' ? 'backersDaily' : 'backersTotal'} fill="#6366f1" radius={[2, 2, 0, 0]} name={curveModes.backers === 'daily' ? (lang === 'cn' ? '支持者增量' : 'Backer Change') : (lang === 'cn' ? '累计支持者' : 'Total Backers')} />
+                        <Bar dataKey={curveModes.backers === 'daily' ? 'backersDaily' : 'backersTotal'} fill="#6366f1" radius={[2, 2, 0, 0]} name={curveModes.backers === 'daily' ? (isZhLang(lang) ? '支持者增量' : 'Backer Change') : (isZhLang(lang) ? '累计支持者' : 'Total Backers')} />
                       </BarChart>
                     ) : (
                       <LineChart data={chartData} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
                         <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
                         <XAxis dataKey="date" tick={{ fontSize: 10 }} interval="preserveStartEnd" />
                         <YAxis tick={{ fontSize: 10 }} width={45} />
-                        <Tooltip formatter={(v: number) => [Number(v).toLocaleString(), curveModes.backers === 'daily' ? (lang === 'cn' ? '支持者增量' : 'Backer Change') : (lang === 'cn' ? '累计支持者' : 'Total Backers')]} />
+                        <Tooltip formatter={(v: number) => [Number(v).toLocaleString(), curveModes.backers === 'daily' ? (isZhLang(lang) ? '支持者增量' : 'Backer Change') : (isZhLang(lang) ? '累计支持者' : 'Total Backers')]} />
                         {curveModes.backers === 'daily' && (
-                          <ReferenceLine y={avgBackersDaily} stroke="#6366f1" strokeDasharray="5 5" label={{ value: lang === 'cn' ? '平均' : 'Avg', fontSize: 10, fill: '#6366f1' }} />
+                          <ReferenceLine y={avgBackersDaily} stroke="#6366f1" strokeDasharray="5 5" label={{ value: isZhLang(lang) ? '平均' : 'Avg', fontSize: 10, fill: '#6366f1' }} />
                         )}
-                        <Line type="monotone" dataKey={curveModes.backers === 'daily' ? 'backersDaily' : 'backersTotal'} stroke="#6366f1" strokeWidth={2} dot={false} name={curveModes.backers === 'daily' ? (lang === 'cn' ? '支持者增量' : 'Backer Change') : (lang === 'cn' ? '累计支持者' : 'Total Backers')} />
+                        <Line type="monotone" dataKey={curveModes.backers === 'daily' ? 'backersDaily' : 'backersTotal'} stroke="#6366f1" strokeWidth={2} dot={false} name={curveModes.backers === 'daily' ? (isZhLang(lang) ? '支持者增量' : 'Backer Change') : (isZhLang(lang) ? '累计支持者' : 'Total Backers')} />
                       </LineChart>
                     )}
                   </ResponsiveContainer>
@@ -1238,10 +1238,10 @@ export default function ProjectDetailPage() {
                   <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
                     <p className="text-xs text-gray-400 font-semibold uppercase tracking-wide">
                       {curveModes.comments === 'daily'
-                        ? (lang === 'cn'
+                        ? (isZhLang(lang)
                           ? `每日新增 Comments · 平均 ${Math.round(avgCommentsDaily).toLocaleString()}`
                           : `Daily comment change · Avg ${Math.round(avgCommentsDaily).toLocaleString()}`)
-                        : (lang === 'cn' ? '累计评论数' : 'Cumulative comments')}
+                        : (isZhLang(lang) ? '累计评论数' : 'Cumulative comments')}
                     </p>
                     <div className="flex items-center gap-2">
                       <div className="rounded-lg bg-gray-100 p-1">
@@ -1268,22 +1268,22 @@ export default function ProjectDetailPage() {
                         <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
                         <XAxis dataKey="date" tick={{ fontSize: 10 }} interval="preserveStartEnd" />
                         <YAxis tick={{ fontSize: 10 }} width={45} />
-                        <Tooltip formatter={(v: number) => [Number(v).toLocaleString(), curveModes.comments === 'daily' ? (lang === 'cn' ? '评论增量' : 'Comment Change') : (lang === 'cn' ? '累计评论' : 'Total Comments')]} />
+                        <Tooltip formatter={(v: number) => [Number(v).toLocaleString(), curveModes.comments === 'daily' ? (isZhLang(lang) ? '评论增量' : 'Comment Change') : (isZhLang(lang) ? '累计评论' : 'Total Comments')]} />
                         {curveModes.comments === 'daily' && (
-                          <ReferenceLine y={avgCommentsDaily} stroke="#f59e0b" strokeDasharray="5 5" label={{ value: lang === 'cn' ? '平均' : 'Avg', fontSize: 10, fill: '#f59e0b' }} />
+                          <ReferenceLine y={avgCommentsDaily} stroke="#f59e0b" strokeDasharray="5 5" label={{ value: isZhLang(lang) ? '平均' : 'Avg', fontSize: 10, fill: '#f59e0b' }} />
                         )}
-                        <Bar dataKey={curveModes.comments === 'daily' ? 'commentsDaily' : 'commentsTotal'} fill="#f59e0b" radius={[2, 2, 0, 0]} name={curveModes.comments === 'daily' ? (lang === 'cn' ? '评论增量' : 'Comment Change') : (lang === 'cn' ? '累计评论' : 'Total Comments')} />
+                        <Bar dataKey={curveModes.comments === 'daily' ? 'commentsDaily' : 'commentsTotal'} fill="#f59e0b" radius={[2, 2, 0, 0]} name={curveModes.comments === 'daily' ? (isZhLang(lang) ? '评论增量' : 'Comment Change') : (isZhLang(lang) ? '累计评论' : 'Total Comments')} />
                       </BarChart>
                     ) : (
                       <LineChart data={chartData} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
                         <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
                         <XAxis dataKey="date" tick={{ fontSize: 10 }} interval="preserveStartEnd" />
                         <YAxis tick={{ fontSize: 10 }} width={45} />
-                        <Tooltip formatter={(v: number) => [Number(v).toLocaleString(), curveModes.comments === 'daily' ? (lang === 'cn' ? '评论增量' : 'Comment Change') : (lang === 'cn' ? '累计评论' : 'Total Comments')]} />
+                        <Tooltip formatter={(v: number) => [Number(v).toLocaleString(), curveModes.comments === 'daily' ? (isZhLang(lang) ? '评论增量' : 'Comment Change') : (isZhLang(lang) ? '累计评论' : 'Total Comments')]} />
                         {curveModes.comments === 'daily' && (
-                          <ReferenceLine y={avgCommentsDaily} stroke="#f59e0b" strokeDasharray="5 5" label={{ value: lang === 'cn' ? '平均' : 'Avg', fontSize: 10, fill: '#f59e0b' }} />
+                          <ReferenceLine y={avgCommentsDaily} stroke="#f59e0b" strokeDasharray="5 5" label={{ value: isZhLang(lang) ? '平均' : 'Avg', fontSize: 10, fill: '#f59e0b' }} />
                         )}
-                        <Line type="monotone" dataKey={curveModes.comments === 'daily' ? 'commentsDaily' : 'commentsTotal'} stroke="#f59e0b" strokeWidth={2} dot={false} name={curveModes.comments === 'daily' ? (lang === 'cn' ? '评论增量' : 'Comment Change') : (lang === 'cn' ? '累计评论' : 'Total Comments')} />
+                        <Line type="monotone" dataKey={curveModes.comments === 'daily' ? 'commentsDaily' : 'commentsTotal'} stroke="#f59e0b" strokeWidth={2} dot={false} name={curveModes.comments === 'daily' ? (isZhLang(lang) ? '评论增量' : 'Comment Change') : (isZhLang(lang) ? '累计评论' : 'Total Comments')} />
                       </LineChart>
                     )}
                   </ResponsiveContainer>
@@ -1345,15 +1345,15 @@ export default function ProjectDetailPage() {
             {rewards.length ? (
               <div className="space-y-4">
                 <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-                  <StatCard label={lang === 'cn' ? 'SKU 数量' : 'SKU Count'} value={rewards.length.toLocaleString()} sub={lang === 'cn' ? `${limitedRewardCount} 个限量档位` : `${limitedRewardCount} limited tiers`} />
-                  <StatCard label={lang === 'cn' ? '档位支持者' : 'Reward Backers'} value={totalRewardBackers.toLocaleString()} sub={lang === 'cn' ? '来自奖励档位数据' : 'from reward tiers'} />
-                  <StatCard label={lang === 'cn' ? '档位均价' : 'Avg Tier Price'} value={fmtMoney(rewards.reduce((sum, r) => sum + r.amount_usd, 0) / Math.max(1, rewards.length), nativeCurrency)} sub={lang === 'cn' ? '简单平均' : 'simple average'} />
-                  <StatCard label={lang === 'cn' ? '估算档位金额' : 'Tier Value Est.'} value={fmtMoney(totalRewardValue, nativeCurrency)} sub={lang === 'cn' ? '价格 × backer' : 'price x backers'} />
+                  <StatCard label={isZhLang(lang) ? 'SKU 数量' : 'SKU Count'} value={rewards.length.toLocaleString()} sub={isZhLang(lang) ? `${limitedRewardCount} 个限量档位` : `${limitedRewardCount} limited tiers`} />
+                  <StatCard label={isZhLang(lang) ? '档位支持者' : 'Reward Backers'} value={totalRewardBackers.toLocaleString()} sub={isZhLang(lang) ? '来自奖励档位数据' : 'from reward tiers'} />
+                  <StatCard label={isZhLang(lang) ? '档位均价' : 'Avg Tier Price'} value={fmtMoney(rewards.reduce((sum, r) => sum + r.amount_usd, 0) / Math.max(1, rewards.length), nativeCurrency)} sub={isZhLang(lang) ? '简单平均' : 'simple average'} />
+                  <StatCard label={isZhLang(lang) ? '估算档位金额' : 'Tier Value Est.'} value={fmtMoney(totalRewardValue, nativeCurrency)} sub={isZhLang(lang) ? '价格 × backer' : 'price x backers'} />
                 </div>
 
                 <div className="grid gap-4 lg:grid-cols-2">
                   <div className="rounded-xl border border-gray-100 bg-white p-5 shadow-sm">
-                    <h4 className="text-sm font-semibold text-gray-800">{lang === 'cn' ? '价格带分布' : 'Price Band Distribution'}</h4>
+                    <h4 className="text-sm font-semibold text-gray-800">{isZhLang(lang) ? '价格带分布' : 'Price Band Distribution'}</h4>
                     <div className="mt-4 space-y-3">
                       {rewardPriceBands.map(band => (
                         <div key={band.label}>
@@ -1370,10 +1370,10 @@ export default function ProjectDetailPage() {
                   </div>
 
                   <div className="rounded-xl border border-gray-100 bg-white p-5 shadow-sm">
-                    <h4 className="text-sm font-semibold text-gray-800">{lang === 'cn' ? 'Backer 集中度' : 'Backer Concentration'}</h4>
+                    <h4 className="text-sm font-semibold text-gray-800">{isZhLang(lang) ? 'Backer 集中度' : 'Backer Concentration'}</h4>
                     {topReward && (
                       <p className="mt-1 text-xs text-gray-400">
-                        {lang === 'cn'
+                        {isZhLang(lang)
                           ? `最热档位：${topReward.title || 'Untitled'}，${topReward.backers_count.toLocaleString()} 位支持者。`
                           : `Top tier: ${topReward.title || 'Untitled'}, ${topReward.backers_count.toLocaleString()} backers.`}
                       </p>
@@ -1453,7 +1453,7 @@ export default function ProjectDetailPage() {
                         const prev = changes[i - 1];
                         return (
                           <div key={change.captured_at} className="px-5 py-4">
-                            <p className="text-xs text-gray-400 mb-2">{fmtDateTime(change.captured_at)}</p>
+                            <p className="text-xs text-gray-400 mb-2">{fmtDateTime(change.captured_at, lang)}</p>
                             {prev ? (
                               <DiffBlock before={prev.content} after={change.content} />
                             ) : (
@@ -1479,9 +1479,9 @@ export default function ProjectDetailPage() {
         {activeTab === 'collaborators' && (
           <div className="space-y-4">
             <div>
-              <h3 className="font-semibold text-gray-700">{lang === 'cn' ? '项目合作者' : 'Collaborators'}</h3>
+              <h3 className="font-semibold text-gray-700">{isZhLang(lang) ? '项目合作者' : 'Collaborators'}</h3>
               <p className="text-xs text-gray-400 mt-0.5">
-                {lang === 'cn'
+                {isZhLang(lang)
                   ? '从 Kickstarter Creator 数据中识别到的合作方、服务商和参与者。'
                   : 'Collaborators, vendors, and partners detected from Kickstarter creator data.'}
               </p>
@@ -1508,12 +1508,12 @@ export default function ProjectDetailPage() {
                         <span className="block truncate text-sm font-bold text-gray-900">{c.name}</span>
                         {c.is_service_agency ? (
                           <span className="shrink-0 rounded-full bg-emerald-600 px-2 py-0.5 text-[10px] font-bold text-white">
-                            {lang === 'cn' ? '服务商 Agency' : 'Agency'}
+                            {isZhLang(lang) ? '服务商 Agency' : 'Agency'}
                           </span>
                         ) : null}
                       </span>
                       <span className="block truncate text-xs text-gray-400">
-                        {c.is_service_agency ? (lang === 'cn' ? '本次项目众筹服务商' : 'Crowdfunding service provider') : (c.role || (lang === 'cn' ? '合作者' : 'Collaborator'))}
+                        {c.is_service_agency ? (isZhLang(lang) ? '本次项目众筹服务商' : 'Crowdfunding service provider') : (c.role || (isZhLang(lang) ? '合作者' : 'Collaborator'))}
                       </span>
                     </span>
                     {c.profile_url && <ExternalLink className="ml-auto h-4 w-4 text-gray-300" />}
@@ -1523,7 +1523,7 @@ export default function ProjectDetailPage() {
             ) : (
               <div className="rounded-xl border border-gray-100 bg-white p-6 text-center shadow-sm">
                 <p className="text-sm text-gray-400">
-                  {lang === 'cn'
+                  {isZhLang(lang)
                     ? '暂未抓取到合作者数据。若 Kickstarter 页面被服务器环境拦截，下一次成功同步后会自动补充。'
                     : 'No collaborator data has been captured yet. A successful Kickstarter sync will fill this when the page exposes it.'}
                 </p>
@@ -1591,17 +1591,17 @@ export default function ProjectDetailPage() {
         <div className="fixed bottom-4 right-4 z-50 w-[min(620px,calc(100vw-2rem))] max-h-[78vh] overflow-hidden rounded-xl border border-gray-200 bg-white shadow-2xl">
           <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
             <div>
-              <h3 className="text-sm font-bold text-gray-900">{lang === 'cn' ? 'Kicktraq 导入调试' : 'Kicktraq Import Debug'}</h3>
-              <p className="text-[11px] text-gray-400">{lang === 'cn' ? '临时面板：图片、模型输出、结构化结果' : 'Temporary panel: images, model output, structured rows'}</p>
+              <h3 className="text-sm font-bold text-gray-900">{isZhLang(lang) ? 'Kicktraq 导入调试' : 'Kicktraq Import Debug'}</h3>
+              <p className="text-[11px] text-gray-400">{isZhLang(lang) ? '临时面板：图片、模型输出、结构化结果' : 'Temporary panel: images, model output, structured rows'}</p>
             </div>
             <button onClick={() => setKtDebug(null)} className="rounded-lg px-2 py-1 text-xs font-semibold text-gray-500 hover:bg-gray-100">
-              {lang === 'cn' ? '关闭' : 'Close'}
+              {isZhLang(lang) ? '关闭' : 'Close'}
             </button>
           </div>
           <div className="max-h-[68vh] space-y-4 overflow-y-auto p-4">
             <section>
               <h4 className="mb-2 text-xs font-bold uppercase tracking-wide text-gray-500">
-                {lang === 'cn' ? '1. 原始图片数据' : '1. Raw Image Data'}
+                {isZhLang(lang) ? '1. 原始图片数据' : '1. Raw Image Data'}
               </h4>
               {ktDebug?.images?.length ? (
                 <div className="space-y-3">
@@ -1619,22 +1619,22 @@ export default function ProjectDetailPage() {
                   ))}
                 </div>
               ) : (
-                <p className="rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-400">{lang === 'cn' ? '没有捕获到图片。' : 'No images captured.'}</p>
+                <p className="rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-400">{isZhLang(lang) ? '没有捕获到图片。' : 'No images captured.'}</p>
               )}
             </section>
 
             <section>
               <h4 className="mb-2 text-xs font-bold uppercase tracking-wide text-gray-500">
-                {lang === 'cn' ? '2. 模型原始输出' : '2. Model Raw Output'}
+                {isZhLang(lang) ? '2. 模型原始输出' : '2. Model Raw Output'}
               </h4>
               <pre className="max-h-56 overflow-auto rounded-lg bg-gray-950 p-3 text-[11px] leading-relaxed text-gray-100 whitespace-pre-wrap">
-                {ktDebug?.modelOutput || (lang === 'cn' ? '没有捕获到模型输出。' : 'No model output captured.')}
+                {ktDebug?.modelOutput || (isZhLang(lang) ? '没有捕获到模型输出。' : 'No model output captured.')}
               </pre>
             </section>
 
             <section>
               <h4 className="mb-2 text-xs font-bold uppercase tracking-wide text-gray-500">
-                {lang === 'cn' ? '3. 结构化数据' : '3. Structured Rows'}
+                {isZhLang(lang) ? '3. 结构化数据' : '3. Structured Rows'}
               </h4>
               <pre className="max-h-56 overflow-auto rounded-lg bg-emerald-50 p-3 text-[11px] leading-relaxed text-emerald-950">
                 {JSON.stringify(ktDebug?.structuredRows ?? [], null, 2)}

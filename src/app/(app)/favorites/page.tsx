@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { ChevronDown, ChevronRight, Heart, ExternalLink, Loader2 } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLanguage } from '@/hooks/useLanguage';
-import { t } from '@/lib/i18n';
+import { localeOf, t, uiCopy } from '@/lib/i18n';
 import ImagePreview from '@/components/ImagePreview';
 
 interface Project {
@@ -31,6 +31,7 @@ export default function FavoritesPage() {
   const [lang] = useLanguage();
   const tr = t[lang].favorites;
   const authTr = t[lang].auth;
+  const copy = uiCopy[lang].favorites;
 
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading]   = useState(true);
@@ -84,7 +85,7 @@ export default function FavoritesPage() {
   if (loading) return (
     <div className="flex items-center justify-center h-48 text-gray-400">
       <Loader2 className="w-5 h-5 animate-spin mr-2" />
-      {lang === 'cn' ? '加载中...' : 'Loading...'}
+      {uiCopy[lang].common.loading}
     </div>
   );
 
@@ -96,7 +97,7 @@ export default function FavoritesPage() {
           <p className="text-gray-500 font-medium">{tr.empty}</p>
           <p className="text-gray-400 text-sm mt-1">{tr.emptyHint}</p>
           <Link href="/projects" className="inline-flex items-center gap-1.5 mt-4 text-ks-green font-semibold text-sm hover:underline">
-            {lang === 'cn' ? '浏览项目' : 'Browse Projects'}
+            {copy.browse}
           </Link>
         </div>
       ) : (
@@ -107,12 +108,12 @@ export default function FavoritesPage() {
               <thead>
                 <tr className="bg-gray-50 text-left text-xs font-semibold text-gray-400 uppercase tracking-wide">
                   <th className="px-5 py-3"></th>
-                  <th className="px-5 py-3">{lang === 'cn' ? '项目名称' : 'Project'}</th>
-                  <th className="px-5 py-3">{lang === 'cn' ? '状态' : 'Status'}</th>
-                  <th className="px-5 py-3">{lang === 'cn' ? '类目' : 'Category'}</th>
-                  <th className="px-5 py-3 text-right">{lang === 'cn' ? '众筹金额' : 'Pledged'}</th>
-                  <th className="px-5 py-3 text-right">{lang === 'cn' ? '支持人数' : 'Backers'}</th>
-                  <th className="px-5 py-3 text-center">{lang === 'cn' ? '操作' : 'Actions'}</th>
+                  <th className="px-5 py-3">{copy.projectName}</th>
+                  <th className="px-5 py-3">{copy.status}</th>
+                  <th className="px-5 py-3">{copy.category}</th>
+                  <th className="px-5 py-3 text-right">{copy.pledged}</th>
+                  <th className="px-5 py-3 text-right">{copy.backers}</th>
+                  <th className="px-5 py-3 text-center">{copy.actions}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50">
@@ -169,7 +170,7 @@ export default function FavoritesPage() {
                         <button
                           onClick={() => toggleExpanded(p.id)}
                           className="p-1.5 text-gray-400 hover:text-gray-700 transition-colors"
-                          title={expanded ? (lang === 'cn' ? '收起详情' : 'Collapse') : (lang === 'cn' ? '展开详情' : 'Expand')}
+                          title={expanded ? copy.collapse : copy.expand}
                         >
                           {expanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
                         </button>
@@ -182,27 +183,27 @@ export default function FavoritesPage() {
                       <td colSpan={6} className="px-5 py-4">
                         <div className="grid grid-cols-2 gap-3 text-xs md:grid-cols-6">
                           <div>
-                            <p className="font-semibold text-gray-400">{lang === 'cn' ? '二级类目' : 'Subcategory'}</p>
+                            <p className="font-semibold text-gray-400">{copy.subcategory}</p>
                             <p className="mt-1 text-gray-800">{p.category_name || '-'}</p>
                           </div>
                           <div>
-                            <p className="font-semibold text-gray-400">{lang === 'cn' ? '国家' : 'Country'}</p>
+                            <p className="font-semibold text-gray-400">{copy.country}</p>
                             <p className="mt-1 text-gray-800">{p.country || '-'}</p>
                           </div>
                           <div>
-                            <p className="font-semibold text-gray-400">{lang === 'cn' ? '目标' : 'Goal'}</p>
+                            <p className="font-semibold text-gray-400">{copy.goal}</p>
                             <p className="mt-1 text-gray-800">${Number(p.goal ?? 0).toLocaleString()}</p>
                           </div>
                           <div>
-                            <p className="font-semibold text-gray-400">{lang === 'cn' ? '完成率' : 'Funded'}</p>
+                            <p className="font-semibold text-gray-400">{copy.funded}</p>
                             <p className="mt-1 text-gray-800">{pct !== null ? `${pct}%` : '-'}</p>
                           </div>
                           <div>
-                            <p className="font-semibold text-gray-400">{lang === 'cn' ? '截止时间' : 'Deadline'}</p>
-                            <p className="mt-1 text-gray-800">{p.deadline ? new Date(p.deadline * 1000).toLocaleDateString('zh-CN') : '-'}</p>
+                            <p className="font-semibold text-gray-400">{copy.deadline}</p>
+                            <p className="mt-1 text-gray-800">{p.deadline ? new Date(p.deadline * 1000).toLocaleDateString(localeOf(lang)) : '-'}</p>
                           </div>
                           <div>
-                            <p className="font-semibold text-gray-400">{lang === 'cn' ? '项目 ID' : 'Project ID'}</p>
+                            <p className="font-semibold text-gray-400">{copy.projectId}</p>
                             <p className="mt-1 truncate text-gray-800">{p.id}</p>
                           </div>
                         </div>

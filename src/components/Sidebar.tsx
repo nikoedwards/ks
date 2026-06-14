@@ -9,7 +9,7 @@ import {
   BarChart2,
   SlidersHorizontal,
   Info,
-  Github,
+  // Github,
   Flame,
   Trophy,
   Award,
@@ -27,6 +27,7 @@ import { useLanguage } from '@/hooks/useLanguage';
 import { t } from '@/lib/i18n';
 import { useAuth } from '@/contexts/AuthContext';
 import LoginModal from '@/components/LoginModal';
+import LanguageSelect from '@/components/LanguageSelect';
 
 export default function Sidebar({
   mobileOpen = false,
@@ -38,7 +39,7 @@ export default function Sidebar({
   onNavigate?: () => void;
 } = {}) {
   const pathname = usePathname();
-  const [lang, setLang] = useLanguage();
+  const [lang] = useLanguage();
   const tr = t[lang].nav;
   const { user, logout, showLogin } = useAuth();
   const [navConfig, setNavConfig] = useState<{ nav_key: string }[]>([]);
@@ -46,17 +47,17 @@ export default function Sidebar({
   const navMap = useMemo(() => ({
     dashboard: { href: '/dashboard', label: tr.overview, icon: LayoutDashboard, adminOnly: false },
     projects: { href: '/projects', label: tr.projects, icon: Search, adminOnly: false },
-    leaderboard: { href: '/leaderboard', label: lang === 'cn' ? '排行榜' : 'Leaderboard', icon: Trophy, adminOnly: false },
-    awards: { href: '/awards', label: lang === 'cn' ? '声纳奖' : 'Awards', icon: Award, adminOnly: false },
-    'live-intel': { href: '/live-intel', label: lang === 'cn' ? 'Live 情报' : 'Live Intel', icon: Flame, adminOnly: false },
+    leaderboard: { href: '/leaderboard', label: tr.leaderboard, icon: Trophy, adminOnly: false },
+    awards: { href: '/awards', label: tr.awards, icon: Award, adminOnly: false },
+    'live-intel': { href: '/live-intel', label: tr.liveIntel, icon: Flame, adminOnly: false },
     analysis: { href: '/analysis', label: tr.analysis, icon: BarChart2, adminOnly: false },
     predict: { href: '/predict', label: tr.predict, icon: Sparkles, adminOnly: false },
-    favorites: { href: '/favorites', label: lang === 'cn' ? '收藏夹' : 'Favorites', icon: Heart, adminOnly: false },
-    'data-quality': { href: '/data-quality', label: lang === 'cn' ? '数据质量' : 'Data Quality', icon: RadioTower, adminOnly: true },
-    'admin-analytics': { href: '/admin/analytics', label: lang === 'cn' ? '站点分析' : 'Analytics', icon: Activity, adminOnly: true },
-    'admin-users': { href: '/admin/users', label: lang === 'cn' ? '用户看板' : 'Users', icon: Users, adminOnly: true },
-    'admin-updates': { href: '/admin/updates', label: lang === 'cn' ? '更新推送' : 'Updates', icon: Megaphone, adminOnly: true },
-    'admin-nav': { href: '/admin/nav', label: lang === 'cn' ? '全局配置' : 'Global Config', icon: SlidersHorizontal, adminOnly: true },
+    favorites: { href: '/favorites', label: tr.favorites, icon: Heart, adminOnly: false },
+    'data-quality': { href: '/data-quality', label: tr.dataQuality, icon: RadioTower, adminOnly: true },
+    'admin-analytics': { href: '/admin/analytics', label: tr.analytics, icon: Activity, adminOnly: true },
+    'admin-users': { href: '/admin/users', label: tr.users, icon: Users, adminOnly: true },
+    'admin-updates': { href: '/admin/updates', label: tr.updates, icon: Megaphone, adminOnly: true },
+    'admin-nav': { href: '/admin/nav', label: tr.globalConfig, icon: SlidersHorizontal, adminOnly: true },
   }), [lang, tr]);
 
   useEffect(() => {
@@ -126,7 +127,7 @@ export default function Sidebar({
                   <div className="my-3 px-3">
                     <div className="border-t border-white/10" />
                     <div className="pt-2 text-[10px] font-semibold uppercase tracking-wide text-white/25">
-                      {lang === 'cn' ? '管理员视图' : 'Admin Views'}
+                      {tr.adminViews}
                     </div>
                   </div>
                 )}
@@ -165,6 +166,7 @@ export default function Sidebar({
             <Info className="w-3.5 h-3.5 shrink-0" />
             {tr.about}
           </Link>
+          {/*
           <a
             href="https://github.com/nikoedwards/ks"
             target="_blank"
@@ -174,23 +176,9 @@ export default function Sidebar({
             <Github className="w-3.5 h-3.5 shrink-0" />
             {tr.github}
           </a>
+          */}
 
-          <div className="flex items-center gap-1 px-3 py-2">
-            <span className="text-[10px] text-white/30 mr-1">LANG</span>
-            {(['en', 'cn'] as const).map(l => (
-              <button
-                key={l}
-                onClick={() => setLang(l)}
-                className={`px-2 py-0.5 rounded text-[11px] font-bold uppercase transition-all ${
-                  lang === l
-                    ? 'bg-ks-green text-white'
-                    : 'text-white/30 hover:text-white/60 hover:bg-white/8'
-                }`}
-              >
-                {l.toUpperCase()}
-              </button>
-            ))}
-          </div>
+          <LanguageSelect variant="dark" className="px-3 py-2" />
 
           <div className="px-3 py-2">
             {user ? (

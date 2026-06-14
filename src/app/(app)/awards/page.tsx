@@ -1,9 +1,10 @@
-'use client';
+﻿'use client';
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { ArrowLeft, ArrowUpRight, Sparkles, Trophy } from 'lucide-react';
 import { useLanguage } from '@/hooks/useLanguage';
+import { isZhLang } from '@/lib/i18n';
 
 interface AwardWinner {
   award_key: string;
@@ -40,7 +41,7 @@ function fmtUsd(v: number | null) {
 
 export default function AwardsPage() {
   const [lang] = useLanguage();
-  const cn = lang === 'cn';
+  const cn = isZhLang(lang);
   const [data, setData] = useState<AwardsData | null>(null);
   const [year, setYear] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
