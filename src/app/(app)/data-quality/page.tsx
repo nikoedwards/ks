@@ -1,9 +1,10 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { AlertTriangle, CheckCircle2, ChevronLeft, ChevronRight, Database, ExternalLink, HardDrive, Info, RefreshCw, RadioTower, Search, ShieldCheck, Trash2, UploadCloud, type LucideIcon } from 'lucide-react';
+import { Activity, AlertTriangle, CheckCircle2, ChevronLeft, ChevronRight, Database, ExternalLink, Globe2, HardDrive, Info, Layers, Lock, RefreshCw, RadioTower, Search, Server, ShieldCheck, Trash2, UploadCloud, type LucideIcon } from 'lucide-react';
 import { useLanguage } from '@/hooks/useLanguage';
 import DataSourceSync from '@/components/DataSourceSync';
+import { PLATFORM_VIEWS, type PlatformViewId } from '@/lib/platforms';
 
 interface SourceHealth {
   source: string;
@@ -224,6 +225,43 @@ interface QualityReport {
   diagnostics?: DiagnosticsReport | null;
 }
 
+interface PlatformQualityPayload {
+  ok: true;
+  view: PlatformViewId;
+  scope: 'legacy' | 'source' | 'global';
+  platform: {
+    id: string;
+    label: string;
+    shortLabel: string;
+    region: string;
+    status: 'legacy_active' | 'planned';
+    samplePlatform: boolean;
+    capabilities: Record<string, boolean>;
+  } | null;
+  database: {
+    path: string;
+    exists: boolean;
+    fileBytes: number | null;
+    walBytes: number | null;
+    shmBytes: number | null;
+    tableCounts: { table: string; rows: number }[];
+  };
+  status: {
+    state: 'legacy_active' | 'planned_empty' | 'initialized' | 'aggregate_empty';
+    message: string;
+  };
+  isolation: {
+    writesToLegacyKickstarterDb: boolean;
+    canInitialize: boolean;
+    canRunCrawler: boolean;
+    canImport: boolean;
+    canExport: boolean;
+    automaticJobsEnabled: boolean;
+  };
+  recentRuns: unknown[];
+  recentErrors: unknown[];
+}
+
 function fmtNum(value: number | null | undefined) {
   return Number(value ?? 0).toLocaleString();
 }
@@ -296,6 +334,317 @@ function sourceLabel(source: string) {
     kicktraq_full_scan: 'Kicktraq Full Scan',
   };
   return labels[source] ?? source;
+}
+
+function platformStatusLabel(status: string, cn: boolean) {
+  const map: Record<string, { cn: string; en: string; tone: string }> = {
+    aggregate: { cn: '聚合视角', en: 'Aggregate', tone: 'bg-indigo-50 text-indigo-700 border-indigo-100' },
+    legacy_active: { cn: '稳定运行', en: 'Legacy active', tone: 'bg-green-50 text-green-700 border-green-100' },
+    planned: { cn: '预留接入', en: 'Planned', tone: 'bg-gray-50 text-gray-600 border-gray-100' },
+    initialized: { cn: '已初始化', en: 'Initialized', tone: 'bg-green-50 text-green-700 border-green-100' },
+    planned_empty: { cn: '未初始化', en: 'Not initialized', tone: 'bg-amber-50 text-amber-700 border-amber-100' },
+    aggregate_empty: { cn: '空聚合库', en: 'Empty aggregate', tone: 'bg-indigo-50 text-indigo-700 border-indigo-100' },
+  };
+  return map[status] ?? { cn: status, en: status, tone: 'bg-gray-50 text-gray-600 border-gray-100' };
+}
+
+function PlatformSwitcher({
+  value,
+  onChange,
+  cn,
+}: {
+  value: PlatformViewId;
+  onChange: (value: PlatformViewId) => void;
+  cn: boolean;
+}) {
+  return (
+    <section className="rounded-xl border border-gray-100 bg-white p-3 shadow-sm">
+      <div className="mb-3 flex items-center gap-2 px-1">
+        <Globe2 className="h-4 w-4 text-ks-green" />
+        <div>
+          <h2 className="text-sm font-bold text-gray-900">{cn ? '平台数据域' : 'Platform data domains'}</h2>
+          <p className="text-xs text-gray-400">
+            {cn ? 'Global 只做聚合读取；各平台写入相互隔离。' : 'Global is read-only aggregation; platform writes are isolated.'}
+          </p>
+        </div>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        {PLATFORM_VIEWS.map(view => {
+          const meta = platformStatusLabel(view.status, cn);
+          const active = value === view.id;
+          return (
+            <button
+              key={view.id}
+              type="button"
+              onClick={() => onChange(view.id)}
+              className={`flex min-w-[132px] items-center justify-between gap-3 rounded-lg border px-3 py-2 text-left transition-colors ${
+                active
+                  ? 'border-ks-green bg-ks-green-light text-ks-green-dark shadow-sm'
+                  : 'border-gray-100 bg-white text-gray-600 hover:border-gray-200 hover:bg-gray-50'
+              }`}
+            >
+              <span>
+                <span className="block text-sm font-semibold">{view.label}</span>
+                <span className="block text-[11px] text-gray-400">{view.shortLabel} · {view.region.toUpperCase()}</span>
+              </span>
+              <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${active ? 'border-ks-green/30 bg-white/70 text-ks-green-dark' : meta.tone}`}>
+                {cn ? meta.cn : meta.en}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function PlatformIsolationPanel({
+  cn,
+  quality,
+  loading,
+  actionBusy,
+  actionMessage,
+  onAction,
+}: {
+  cn: boolean;
+  quality: PlatformQualityPayload | null;
+  loading: boolean;
+  actionBusy: string | null;
+  actionMessage: { kind: 'success' | 'error'; text: string } | null;
+  onAction: (action: 'init_db' | 'validate_config' | 'dry_run_capabilities' | 'crawl' | 'import' | 'export') => void;
+}) {
+  if (loading && !quality) {
+    return (
+      <section className="rounded-xl border border-gray-100 bg-white p-5">
+        <div className="flex items-center gap-2 text-sm text-gray-500">
+          <RefreshCw className="h-4 w-4 animate-spin" />
+          {cn ? '正在读取平台隔离状态...' : 'Loading platform isolation status...'}
+        </div>
+      </section>
+    );
+  }
+
+  if (!quality) {
+    return (
+      <section className="rounded-xl border border-red-100 bg-red-50 p-5 text-sm text-red-700">
+        {cn ? '平台状态暂不可用。' : 'Platform status is unavailable.'}
+      </section>
+    );
+  }
+
+  const statusMeta = platformStatusLabel(quality.status.state, cn);
+  const tableCounts = quality.database.tableCounts.length
+    ? quality.database.tableCounts
+    : [
+        { table: quality.scope === 'global' ? 'global_projects' : 'platform_projects', rows: 0 },
+        { table: quality.scope === 'global' ? 'global_snapshots' : 'platform_snapshots', rows: 0 },
+        { table: quality.scope === 'global' ? 'global_refresh_runs' : 'platform_crawl_runs', rows: 0 },
+      ];
+  const actionDisabled = Boolean(actionBusy);
+  const capabilityRows = [
+    {
+      label: cn ? '隔离数据库' : 'Isolated source DB',
+      enabled: quality.scope === 'global' || Boolean(quality.platform?.capabilities.isolatedDb),
+      note: quality.scope === 'global'
+        ? (cn ? 'Global 使用独立聚合库' : 'Global uses its own aggregation DB')
+        : quality.database.path,
+    },
+    {
+      label: cn ? 'Global 聚合' : 'Global aggregation',
+      enabled: quality.scope === 'global' || Boolean(quality.platform?.capabilities.globalAggregation),
+      note: cn ? '只读 source DB，可重建' : 'Reads source DBs and remains rebuildable',
+    },
+    {
+      label: cn ? '真实爬取' : 'Real crawler',
+      enabled: quality.isolation.canRunCrawler,
+      note: quality.isolation.canRunCrawler
+        ? (cn ? '沿用现有稳定链路' : 'Uses the existing stable pipeline')
+        : (cn ? '第一阶段未接入' : 'Not wired in phase one'),
+    },
+    {
+      label: cn ? '导入/导出' : 'Import/export',
+      enabled: quality.isolation.canImport || quality.isolation.canExport,
+      note: quality.isolation.canImport || quality.isolation.canExport
+        ? (cn ? '沿用现有稳定链路' : 'Uses the existing stable pipeline')
+        : (cn ? '接口保留，真实动作返回 501' : 'Reserved API; real actions return 501'),
+    },
+    {
+      label: cn ? '自动任务' : 'Automatic jobs',
+      enabled: quality.isolation.automaticJobsEnabled,
+      note: quality.isolation.automaticJobsEnabled
+        ? (cn ? '仅 Kickstarter 旧链路' : 'Only the Kickstarter legacy flow')
+        : (cn ? '不开 cron，不启动后台 crawl' : 'No cron or background crawl is started'),
+    },
+  ];
+
+  return (
+    <div className="space-y-5">
+      {actionMessage && (
+        <div className={`flex items-center gap-2 rounded-lg px-3 py-2 text-sm ${actionMessage.kind === 'success' ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
+          {actionMessage.kind === 'success' ? <CheckCircle2 className="h-4 w-4" /> : <AlertTriangle className="h-4 w-4" />}
+          {actionMessage.text}
+        </div>
+      )}
+
+      <section className="rounded-xl border border-gray-100 bg-white p-5 shadow-sm">
+        <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              {quality.scope === 'global' ? <Layers className="h-5 w-5 text-indigo-500" /> : <Server className="h-5 w-5 text-ks-green" />}
+              <h2 className="text-lg font-bold text-gray-900">
+                {quality.scope === 'global' ? 'Global' : quality.platform?.label}
+              </h2>
+              <span className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${statusMeta.tone}`}>
+                {cn ? statusMeta.cn : statusMeta.en}
+              </span>
+              {quality.platform?.samplePlatform && (
+                <span className="rounded-full border border-blue-100 bg-blue-50 px-2.5 py-1 text-xs font-semibold text-blue-700">
+                  {cn ? '样板优先' : 'Sample first'}
+                </span>
+              )}
+            </div>
+            <p className="mt-2 max-w-3xl text-sm text-gray-500">
+              {quality.status.message}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => onAction('init_db')}
+            disabled={!quality.isolation.canInitialize || actionDisabled}
+            className="inline-flex items-center justify-center gap-2 rounded-lg bg-gray-900 px-4 py-2 text-sm font-semibold text-white hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <Database className={`h-4 w-4 ${actionBusy === 'init_db' ? 'animate-pulse' : ''}`} />
+            {quality.database.exists ? (cn ? '重新确认 DB' : 'Confirm DB') : (cn ? '初始化 DB' : 'Initialize DB')}
+          </button>
+        </div>
+      </section>
+
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+        <StatTile
+          icon={Database}
+          label={cn ? '隔离数据库' : 'Isolated database'}
+          value={quality.database.exists ? (cn ? '已存在' : 'Exists') : (cn ? '未创建' : 'Missing')}
+          hint={quality.database.path}
+          tone={quality.database.exists ? 'green' : 'amber'}
+        />
+        <StatTile
+          icon={HardDrive}
+          label={cn ? '文件大小' : 'File size'}
+          value={fmtBytes(quality.database.fileBytes)}
+          hint={`WAL ${fmtBytes(quality.database.walBytes)} · SHM ${fmtBytes(quality.database.shmBytes)}`}
+          tone="blue"
+        />
+        <StatTile
+          icon={Lock}
+          label={cn ? 'Kickstarter 写入' : 'Kickstarter writes'}
+          value={quality.isolation.writesToLegacyKickstarterDb ? (cn ? '旧链路' : 'Legacy') : (cn ? '禁止' : 'Blocked')}
+          hint={quality.isolation.writesToLegacyKickstarterDb
+            ? (cn ? '仅 Kickstarter tab 使用旧库' : 'Only Kickstarter tab uses the legacy DB')
+            : (cn ? '该平台不会写入 kickstarter.db' : 'This view does not write to kickstarter.db')}
+          tone={quality.isolation.writesToLegacyKickstarterDb ? 'amber' : 'green'}
+        />
+      </div>
+
+      <section className="rounded-xl border border-gray-100 bg-white p-5">
+        <div className="mb-4 flex items-center gap-2">
+          <Database className="h-4 w-4 text-gray-500" />
+          <h3 className="font-semibold text-gray-900">{cn ? '标准化表结构' : 'Standardized schema'}</h3>
+        </div>
+        <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
+          {tableCounts.map(item => (
+            <div key={item.table} className="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2">
+              <p className="font-mono text-xs text-gray-500">{item.table}</p>
+              <p className="mt-1 text-lg font-black text-gray-900">{fmtNum(item.rows)}</p>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-gray-100 bg-white p-5">
+        <div className="mb-4 flex items-center gap-2">
+          <ShieldCheck className="h-4 w-4 text-ks-green" />
+          <h3 className="font-semibold text-gray-900">{cn ? '第一阶段操作接口' : 'Phase-one action interface'}</h3>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => onAction('validate_config')}
+            disabled={actionDisabled}
+            className="rounded-lg border border-gray-200 px-3 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+          >
+            {cn ? '校验配置' : 'Validate config'}
+          </button>
+          <button
+            type="button"
+            onClick={() => onAction('dry_run_capabilities')}
+            disabled={actionDisabled}
+            className="rounded-lg border border-gray-200 px-3 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+          >
+            {cn ? 'Dry-run 能力检查' : 'Dry-run capabilities'}
+          </button>
+          {(['crawl', 'import', 'export'] as const).map(action => (
+            <button
+              key={action}
+              type="button"
+              onClick={() => onAction(action)}
+              disabled={actionDisabled}
+              className="rounded-lg border border-dashed border-gray-200 px-3 py-2 text-sm font-semibold text-gray-400 hover:bg-gray-50 disabled:opacity-50"
+              title={cn ? '第一阶段未接入真实执行逻辑' : 'Real execution is not wired in phase one'}
+            >
+              {action.toUpperCase()} · {cn ? '未接入' : '501'}
+            </button>
+          ))}
+        </div>
+        <p className="mt-3 text-xs text-gray-400">
+          {cn ? '这些接口不会启动自动任务。crawl/import/export 会返回 501，并且不会写任何平台数据。' : 'No automatic jobs are started. crawl/import/export return 501 and write no platform data.'}
+        </p>
+      </section>
+
+      <section className="rounded-xl border border-gray-100 bg-white p-5">
+        <div className="mb-4 flex items-center gap-2">
+          <Lock className="h-4 w-4 text-gray-500" />
+          <h3 className="font-semibold text-gray-900">{cn ? '能力清单' : 'Capability checklist'}</h3>
+        </div>
+        <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+          {capabilityRows.map(item => (
+            <div key={item.label} className="flex items-start gap-3 rounded-lg border border-gray-100 bg-gray-50 px-3 py-2">
+              {item.enabled ? (
+                <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-ks-green" />
+              ) : (
+                <Info className="mt-0.5 h-4 w-4 shrink-0 text-gray-400" />
+              )}
+              <div>
+                <p className="text-sm font-semibold text-gray-800">{item.label}</p>
+                <p className="text-xs text-gray-400">{item.note}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-gray-100 bg-white p-5">
+        <div className="mb-3 flex items-center gap-2">
+          <Activity className="h-4 w-4 text-gray-500" />
+          <h3 className="font-semibold text-gray-900">{cn ? '运行记录' : 'Run history'}</h3>
+        </div>
+        <div className="rounded-lg border border-dashed border-gray-200 bg-gray-50 px-4 py-6 text-center text-sm text-gray-400">
+          {cn ? '第一阶段暂无真实爬取运行记录。' : 'No real crawl runs exist in phase one.'}
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-gray-100 bg-white p-5">
+        <div className="mb-3 flex items-center gap-2">
+          <AlertTriangle className="h-4 w-4 text-gray-500" />
+          <h3 className="font-semibold text-gray-900">{cn ? '错误摘要' : 'Error summary'}</h3>
+        </div>
+        <div className="rounded-lg border border-dashed border-gray-200 bg-gray-50 px-4 py-6 text-center text-sm text-gray-400">
+          {quality.recentErrors.length
+            ? (cn ? '已有错误记录，后续接入真实爬虫后会在这里展示。' : 'Error records exist and will be shown here when real crawlers are wired.')
+            : (cn ? '暂无平台爬取错误。' : 'No platform crawler errors yet.')}
+        </div>
+      </section>
+    </div>
+  );
 }
 
 function fmtRelative(ts: number | null | undefined, cn: boolean) {
@@ -846,7 +1195,7 @@ function StatTile({
 
 export default function DataQualityPage() {
   const [lang] = useLanguage();
-  const [report, setReport] = useState<QualityReport | null>(null);
+  const [reportState, setReport] = useState<QualityReport | null>(null);
   const [workbench, setWorkbench] = useState<WorkbenchPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [workbenchLoading, setWorkbenchLoading] = useState(false);
@@ -901,6 +1250,11 @@ export default function DataQualityPage() {
   const ERRORS_PAGE_SIZE = 5;
 
   const cn = lang === 'cn';
+  const [selectedPlatform, setSelectedPlatform] = useState<PlatformViewId>('kickstarter');
+  const [platformQuality, setPlatformQuality] = useState<PlatformQualityPayload | null>(null);
+  const [platformLoading, setPlatformLoading] = useState(false);
+  const [platformActionBusy, setPlatformActionBusy] = useState<string | null>(null);
+  const [platformActionMessage, setPlatformActionMessage] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
 
   const loadWorkbench = async (
     filter = workbenchFilter,
@@ -940,6 +1294,21 @@ export default function DataQualityPage() {
     }
   };
 
+  const loadPlatformQuality = async (platform = selectedPlatform) => {
+    if (platform === 'kickstarter') return;
+    setPlatformLoading(true);
+    try {
+      const res = await fetch(`/api/platforms/${platform}/quality`, { cache: 'no-store' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to load platform quality.');
+      setPlatformQuality(data);
+    } catch (err) {
+      setPlatformActionMessage({ kind: 'error', text: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setPlatformLoading(false);
+    }
+  };
+
   // Click a sortable header: first click sorts descending, click again to flip to
   // ascending, a third click clears back to the default ordering. Resets to page 1.
   const toggleWorkbenchSort = (key: string) => {
@@ -957,12 +1326,55 @@ export default function DataQualityPage() {
   const sortIndicator = (key: string) => (workbenchSort === key ? (workbenchDir === 'desc' ? ' ↓' : ' ↑') : '');
 
   useEffect(() => {
+    if (selectedPlatform !== 'kickstarter') return;
     load();
     loadWorkbench();
     const id = setInterval(load, 30_000);
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [selectedPlatform]);
+
+  useEffect(() => {
+    if (selectedPlatform === 'kickstarter') return;
+    loadPlatformQuality(selectedPlatform);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedPlatform]);
+
+  const changePlatform = (platform: PlatformViewId) => {
+    setSelectedPlatform(platform);
+    setPlatformActionMessage(null);
+    if (platform !== 'kickstarter') setPlatformQuality(null);
+  };
+
+  const runPlatformAction = async (action: 'init_db' | 'validate_config' | 'dry_run_capabilities' | 'crawl' | 'import' | 'export') => {
+    if (selectedPlatform === 'kickstarter') return;
+    setPlatformActionBusy(action);
+    setPlatformActionMessage(null);
+    try {
+      const res = await fetch(`/api/platforms/${selectedPlatform}/actions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action }),
+      });
+      const data = await res.json().catch(() => ({})) as {
+        ok?: boolean;
+        message?: string;
+        error?: string;
+        quality?: PlatformQualityPayload;
+      };
+      if (!res.ok || !data.ok) {
+        setPlatformActionMessage({ kind: 'error', text: data.error ?? data.message ?? 'Action failed.' });
+      } else {
+        setPlatformActionMessage({ kind: 'success', text: data.message ?? 'Action completed.' });
+        if (data.quality) setPlatformQuality(data.quality);
+        else await loadPlatformQuality(selectedPlatform);
+      }
+    } catch (err) {
+      setPlatformActionMessage({ kind: 'error', text: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setPlatformActionBusy(null);
+    }
+  };
 
   const applyWorkbenchFilter = async (filter: string) => {
     setWorkbenchFilter(filter);
@@ -1296,9 +1708,18 @@ export default function DataQualityPage() {
     }
   };
 
-  if (!report) {
+  if (selectedPlatform === 'kickstarter' && !reportState) {
     return (
-      <div className="max-w-6xl mx-auto">
+      <div className="max-w-6xl mx-auto space-y-6">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h1 className="text-2xl font-bold text-gray-900">{cn ? '数据质量' : 'Data Quality'}</h1>
+            <p className="text-sm text-gray-500 mt-1">
+              {cn ? '按平台隔离管理众筹数据源。' : 'Manage crowdfunding data sources by isolated platform.'}
+            </p>
+          </div>
+        </div>
+        <PlatformSwitcher value={selectedPlatform} onChange={changePlatform} cn={cn} />
         <div className="flex items-center gap-2 text-gray-500">
           <RefreshCw className="w-4 h-4 animate-spin" />
           <span>{cn ? '正在读取数据质量状态...' : 'Loading data quality status...'}</span>
@@ -1306,6 +1727,42 @@ export default function DataQualityPage() {
       </div>
     );
   }
+
+  if (selectedPlatform !== 'kickstarter') {
+    return (
+      <div className="max-w-6xl mx-auto space-y-6">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h1 className="text-2xl font-bold text-gray-900">{cn ? '数据质量' : 'Data Quality'}</h1>
+            <p className="text-sm text-gray-500 mt-1">
+              {cn ? '按平台隔离管理众筹数据源。' : 'Manage crowdfunding data sources by isolated platform.'}
+            </p>
+          </div>
+          <button
+            onClick={() => loadPlatformQuality(selectedPlatform)}
+            disabled={platformLoading}
+            className="inline-flex items-center gap-2 rounded-lg bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-gray-800 disabled:opacity-50"
+          >
+            <RefreshCw className={`w-4 h-4 ${platformLoading ? 'animate-spin' : ''}`} />
+            {cn ? '刷新' : 'Refresh'}
+          </button>
+        </div>
+
+        <PlatformSwitcher value={selectedPlatform} onChange={changePlatform} cn={cn} />
+        <PlatformIsolationPanel
+          cn={cn}
+          quality={platformQuality}
+          loading={platformLoading}
+          actionBusy={platformActionBusy}
+          actionMessage={platformActionMessage}
+          onAction={runPlatformAction}
+        />
+      </div>
+    );
+  }
+
+  const report = reportState;
+  if (!report) return null;
 
   const workbenchPageLimit = workbench?.limit ?? workbenchLimit;
   const workbenchPage = Math.floor((workbench?.offset ?? 0) / Math.max(1, workbenchPageLimit));
@@ -1341,6 +1798,8 @@ export default function DataQualityPage() {
           {cn ? '刷新' : 'Refresh'}
         </button>
       </div>
+
+      <PlatformSwitcher value={selectedPlatform} onChange={changePlatform} cn={cn} />
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <StatTile
