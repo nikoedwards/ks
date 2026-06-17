@@ -161,6 +161,21 @@ interface StoredProject extends NormalizedProject {
   queue_detail: boolean;
 }
 
+type IndiegogoNativeSource = 'webrobots' | 'active_api' | 'detail_api';
+
+interface NativeProjectDetail {
+  source_project_id: string;
+  project_url_name: string | null;
+  source: IndiegogoNativeSource;
+  fetched_at: number;
+  status_code: number | null;
+  raw_json: string;
+  detail_json: string | null;
+  webrobots_json: string | null;
+  webrobots_run_id: string | null;
+  payload_bytes: number;
+}
+
 interface QueueRow {
   project_url_name: string;
   source_project_id: string | null;
@@ -524,6 +539,112 @@ function queueInsertStatement(db: Database) {
   `);
 }
 
+function nativeProjectDetailInsertStatement(db: Database) {
+  return db.prepare(`
+    INSERT INTO indiegogo_project_details (
+      platform_id, source_project_id, project_url_name, source, fetched_at, status_code,
+      raw_json, detail_json, webrobots_json, webrobots_run_id, payload_bytes, updated_at
+    ) VALUES (
+      @platform_id, @source_project_id, @project_url_name, @source, @fetched_at, @status_code,
+      @raw_json, @detail_json, @webrobots_json, @webrobots_run_id, @payload_bytes, @updated_at
+    )
+    ON CONFLICT(platform_id, source_project_id, source, fetched_at) DO UPDATE SET
+      project_url_name = COALESCE(excluded.project_url_name, indiegogo_project_details.project_url_name),
+      status_code = COALESCE(excluded.status_code, indiegogo_project_details.status_code),
+      raw_json = excluded.raw_json,
+      detail_json = COALESCE(excluded.detail_json, indiegogo_project_details.detail_json),
+      webrobots_json = COALESCE(excluded.webrobots_json, indiegogo_project_details.webrobots_json),
+      webrobots_run_id = COALESCE(excluded.webrobots_run_id, indiegogo_project_details.webrobots_run_id),
+      payload_bytes = excluded.payload_bytes,
+      updated_at = excluded.updated_at
+  `);
+}
+
+function upsertIndiegogoProjectDetails(db: Database, rows: NativeProjectDetail[]): number {
+  if (!rows.length) return 0;
+  const insert = nativeProjectDetailInsertStatement(db);
+  let stored = 0;
+  const tx = db.transaction((items: NativeProjectDetail[]) => {
+    const seen = new Set<string>();
+    const updatedAt = nowSec();
+    for (const row of items) {
+      const key = `${row.source_project_id}:${row.source}:${row.fetched_at}`;
+      if (seen.has(key)) continue;
+      insert.run({
+        platform_id: PLATFORM_ID,
+        ...row,
+        updated_at: updatedAt,
+      });
+      seen.add(key);
+      stored++;
+    }
+  });
+  tx(rows);
+  return stored;
+}
+
+function jsonPayload(value: unknown): string {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value ?? '');
+  }
+}
+
+function nativeWebrobotsDetail(parsed: WebrobotsOuterRow, row: StoredProject): NativeProjectDetail {
+  const payload = jsonPayload(parsed);
+  return {
+    source_project_id: row.source_project_id,
+    project_url_name: row.project_url_name,
+    source: 'webrobots',
+    fetched_at: row.captured_at,
+    status_code: null,
+    raw_json: payload,
+    detail_json: null,
+    webrobots_json: payload,
+    webrobots_run_id: row.webrobots_run_id,
+    payload_bytes: Buffer.byteLength(payload),
+  };
+}
+
+function nativeApiProjectDetail(
+  project: ApiProject,
+  row: StoredProject,
+  source: Extract<IndiegogoNativeSource, 'active_api' | 'detail_api'>,
+  statusCode: number,
+  rawText?: string,
+): NativeProjectDetail {
+  const payload = rawText?.trim() || jsonPayload(project);
+  return {
+    source_project_id: row.source_project_id,
+    project_url_name: row.project_url_name,
+    source,
+    fetched_at: row.captured_at,
+    status_code: statusCode,
+    raw_json: payload,
+    detail_json: source === 'detail_api' ? payload : null,
+    webrobots_json: null,
+    webrobots_run_id: null,
+    payload_bytes: Buffer.byteLength(payload),
+  };
+}
+
+function nativeDetailResponse(row: QueueRow, statusCode: number, rawText: string): NativeProjectDetail {
+  const payload = rawText || '';
+  return {
+    source_project_id: row.source_project_id ?? `slug:${row.project_url_name}`,
+    project_url_name: row.project_url_name,
+    source: 'detail_api',
+    fetched_at: nowSec(),
+    status_code: statusCode,
+    raw_json: payload,
+    detail_json: statusCode >= 200 && statusCode < 300 ? payload : null,
+    webrobots_json: null,
+    webrobots_run_id: null,
+    payload_bytes: Buffer.byteLength(payload),
+  };
+}
+
 function upsertStoredProjects(db: Database, rows: StoredProject[]): { imported: number; snapshots: number; queued: number } {
   if (!rows.length) return { imported: 0, snapshots: 0, queued: 0 };
   const insertProject = projectInsertStatement(db);
@@ -763,6 +884,7 @@ async function importDataset(db: Database, dataset: IndiegogoWebrobotsDataset): 
     const stream = Readable.fromWeb(res.body as unknown as Parameters<typeof Readable.fromWeb>[0]).pipe(createGunzip());
     const rl = createInterface({ input: stream, crlfDelay: Infinity });
     let batch: StoredProject[] = [];
+    let nativeBatch: NativeProjectDetail[] = [];
     for await (const line of rl) {
       rowsRead++;
       try {
@@ -772,6 +894,7 @@ async function importDataset(db: Database, dataset: IndiegogoWebrobotsDataset): 
           uniqueProjects.add(row.source_project_id);
           if (row.queue_detail && row.project_url_name) uniqueQueuedSlugs.add(row.project_url_name);
           batch.push(row);
+          nativeBatch.push(nativeWebrobotsDetail(parsed as WebrobotsOuterRow, row));
         }
       } catch (err) {
         recordError(db, {
@@ -783,12 +906,15 @@ async function importDataset(db: Database, dataset: IndiegogoWebrobotsDataset): 
       }
       if (batch.length >= 1000) {
         const stored = upsertStoredProjects(db, batch);
+        upsertIndiegogoProjectDetails(db, nativeBatch);
         snapshots += stored.snapshots;
         batch = [];
+        nativeBatch = [];
       }
     }
     if (batch.length) {
       const stored = upsertStoredProjects(db, batch);
+      upsertIndiegogoProjectDetails(db, nativeBatch);
       snapshots += stored.snapshots;
     }
     imported = uniqueProjects.size;
@@ -933,14 +1059,18 @@ export async function syncIndiegogoActive(): Promise<IndiegogoActiveResult> {
       return { ok: false, activeCount: 0, imported: 0, snapshots: 0, message };
     }
     const projects = JSON.parse(body) as ApiProject[];
-    const normalized = projects
-      .map(project => {
-        const slug = text(project.projectUrlName, 300) ?? projectUrlNameFromHomeUrl(project.projectHomeUrl);
-        return normalizeIndiegogoApiProject(project, existingSourceIdForSlug(db, slug));
-      })
-      .filter((project): project is StoredProject => Boolean(project))
-      .map(project => ({ ...project, snapshot_source: 'indiegogo_active' as const }));
+    const normalized: StoredProject[] = [];
+    const nativeRows: NativeProjectDetail[] = [];
+    for (const project of projects) {
+      const slug = text(project.projectUrlName, 300) ?? projectUrlNameFromHomeUrl(project.projectHomeUrl);
+      const normalizedProject = normalizeIndiegogoApiProject(project, existingSourceIdForSlug(db, slug));
+      if (!normalizedProject) continue;
+      const activeProject = { ...normalizedProject, snapshot_source: 'indiegogo_active' as const };
+      normalized.push(activeProject);
+      nativeRows.push(nativeApiProjectDetail(project, activeProject, 'active_api', res.status));
+    }
     const stored = upsertStoredProjects(db, normalized);
+    upsertIndiegogoProjectDetails(db, nativeRows);
     completeRun(db, runId, {
       status: 'completed',
       discovered: projects.length,
@@ -1082,11 +1212,13 @@ export async function refreshIndiegogoDetails(options: IndiegogoDetailOptions = 
           preview: result.text.slice(0, 1000),
         });
         if (result.status === 400) {
+          upsertIndiegogoProjectDetails(db, [nativeDetailResponse(row, result.status, result.text)]);
           invalid++;
           markDetailInvalid(db, row, result.text.slice(0, 500));
           continue;
         }
         if (!result.project) {
+          upsertIndiegogoProjectDetails(db, [nativeDetailResponse(row, result.status, result.text)]);
           failed++;
           const message = `Detail API returned HTTP ${result.status} without a usable project.`;
           markDetailFailure(db, row, message);
@@ -1098,6 +1230,7 @@ export async function refreshIndiegogoDetails(options: IndiegogoDetailOptions = 
           row.source_project_id ?? existingSourceIdForSlug(db, row.project_url_name),
         );
         if (!normalized) {
+          upsertIndiegogoProjectDetails(db, [nativeDetailResponse(row, result.status, result.text)]);
           failed++;
           const message = 'Detail API response did not include projectUrlName.';
           markDetailFailure(db, row, message);
@@ -1105,6 +1238,7 @@ export async function refreshIndiegogoDetails(options: IndiegogoDetailOptions = 
           continue;
         }
         const stored = upsertStoredProjects(db, [normalized]);
+        upsertIndiegogoProjectDetails(db, [nativeApiProjectDetail(result.project, normalized, 'detail_api', result.status, result.text)]);
         markDetailOk(db, row, normalized.source_project_id);
         refreshed += stored.imported > 0 ? 1 : 0;
       } catch (err) {

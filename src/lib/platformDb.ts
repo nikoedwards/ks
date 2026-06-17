@@ -124,6 +124,7 @@ const SOURCE_TABLES = [
   'platform_snapshots',
   'platform_detail_queue',
   'platform_raw_payloads',
+  'indiegogo_project_details',
   'platform_crawl_runs',
   'platform_crawler_errors',
 ];
@@ -256,6 +257,34 @@ function ensureSourceSchema(db: Database, platform: PlatformId) {
     CREATE INDEX IF NOT EXISTS idx_platform_runs_platform ON platform_crawl_runs(platform_id, started_at);
     CREATE INDEX IF NOT EXISTS idx_platform_errors_platform ON platform_crawler_errors(platform_id, occurred_at);
   `);
+
+  if (platform === 'indiegogo') {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS indiegogo_project_details (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        platform_id TEXT NOT NULL DEFAULT 'indiegogo',
+        source_project_id TEXT NOT NULL,
+        project_url_name TEXT,
+        source TEXT NOT NULL,
+        fetched_at INTEGER NOT NULL,
+        status_code INTEGER,
+        raw_json TEXT NOT NULL,
+        detail_json TEXT,
+        webrobots_json TEXT,
+        webrobots_run_id TEXT,
+        payload_bytes INTEGER DEFAULT 0,
+        created_at INTEGER DEFAULT (unixepoch()),
+        updated_at INTEGER DEFAULT (unixepoch()),
+        CHECK (platform_id = 'indiegogo'),
+        UNIQUE(platform_id, source_project_id, source, fetched_at)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_igg_project_details_slug
+        ON indiegogo_project_details(platform_id, project_url_name, fetched_at);
+      CREATE INDEX IF NOT EXISTS idx_igg_project_details_source
+        ON indiegogo_project_details(platform_id, source, fetched_at);
+    `);
+  }
 
   const projectColumns = [
     'ALTER TABLE platform_projects ADD COLUMN project_url_name TEXT',
