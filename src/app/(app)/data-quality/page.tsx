@@ -234,7 +234,7 @@ interface PlatformQualityPayload {
     label: string;
     shortLabel: string;
     region: string;
-    status: 'legacy_active' | 'planned';
+    status: 'legacy_active' | 'source_active' | 'planned';
     samplePlatform: boolean;
     capabilities: Record<string, boolean>;
   } | null;
@@ -340,6 +340,7 @@ function platformStatusLabel(status: string, cn: boolean) {
   const map: Record<string, { cn: string; en: string; tone: string }> = {
     aggregate: { cn: '聚合视角', en: 'Aggregate', tone: 'bg-indigo-50 text-indigo-700 border-indigo-100' },
     legacy_active: { cn: '稳定运行', en: 'Legacy active', tone: 'bg-green-50 text-green-700 border-green-100' },
+    source_active: { cn: '数据接入', en: 'Data pipeline', tone: 'bg-emerald-50 text-emerald-700 border-emerald-100' },
     planned: { cn: '预留接入', en: 'Planned', tone: 'bg-gray-50 text-gray-600 border-gray-100' },
     initialized: { cn: '已初始化', en: 'Initialized', tone: 'bg-green-50 text-green-700 border-green-100' },
     planned_empty: { cn: '未初始化', en: 'Not initialized', tone: 'bg-amber-50 text-amber-700 border-amber-100' },

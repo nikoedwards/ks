@@ -10,7 +10,7 @@ export const PLATFORM_IDS = [
 
 export type PlatformId = typeof PLATFORM_IDS[number];
 export type PlatformViewId = 'global' | PlatformId;
-export type PlatformStatus = 'legacy_active' | 'planned';
+export type PlatformStatus = 'legacy_active' | 'source_active' | 'planned';
 export type PlatformRegion = 'global' | 'us' | 'jp' | 'tw' | 'kr' | 'eu';
 
 export interface PlatformCapabilities {
@@ -44,6 +44,16 @@ const plannedCapabilities: PlatformCapabilities = {
   liveTracking: false,
 };
 
+const indiegogoCapabilities: PlatformCapabilities = {
+  isolatedDb: true,
+  globalAggregation: false,
+  manualInit: true,
+  crawlerImplemented: true,
+  importImplemented: true,
+  exportImplemented: false,
+  liveTracking: true,
+};
+
 export const PLATFORMS: readonly PlatformDefinition[] = [
   {
     id: 'kickstarter',
@@ -63,7 +73,7 @@ export const PLATFORMS: readonly PlatformDefinition[] = [
       liveTracking: true,
     },
   },
-  { id: 'indiegogo', label: 'Indiegogo', shortLabel: 'IGG', region: 'global', status: 'planned', priority: 1, samplePlatform: true, capabilities: plannedCapabilities },
+  { id: 'indiegogo', label: 'Indiegogo', shortLabel: 'IGG', region: 'global', status: 'source_active', priority: 1, samplePlatform: false, capabilities: indiegogoCapabilities },
   { id: 'makuake', label: 'Makuake', shortLabel: 'MK', region: 'jp', status: 'planned', priority: 2, samplePlatform: false, capabilities: plannedCapabilities },
   { id: 'gamefound', label: 'Gamefound', shortLabel: 'GF', region: 'eu', status: 'planned', priority: 3, samplePlatform: false, capabilities: plannedCapabilities },
   { id: 'campfire', label: 'CAMPFIRE', shortLabel: 'CF', region: 'jp', status: 'planned', priority: 4, samplePlatform: false, capabilities: plannedCapabilities },

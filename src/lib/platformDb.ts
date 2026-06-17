@@ -17,6 +17,14 @@ const LEGACY_KICKSTARTER_DB_PATH = path.join(DATA_DIR, 'kickstarter.db');
 
 export type PlatformAction = 'init_db' | 'validate_config' | 'dry_run_capabilities' | 'crawl' | 'import' | 'export';
 
+export interface PlatformActionOptions {
+  mode?: 'latest' | 'all_available';
+  maxDatasets?: number;
+  wait?: boolean;
+  detailLimit?: number;
+  staleBefore?: number;
+}
+
 interface TableCount {
   table: string;
   rows: number;
@@ -75,6 +83,19 @@ function openDb(dbPath: string): Database {
   return db;
 }
 
+export function getPlatformDbPath(platform: PlatformId) {
+  return platformDbPath(platform);
+}
+
+export function openPlatformSourceDb(platform: PlatformId): Database {
+  if (platform === 'kickstarter') {
+    throw new Error('Kickstarter is managed by the legacy database and cannot be opened as an isolated platform database.');
+  }
+  const db = openDb(platformDbPath(platform));
+  ensureSourceSchema(db, platform);
+  return db;
+}
+
 function tableExists(db: Database, table: string) {
   const row = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table) as { name?: string } | undefined;
   return Boolean(row?.name);
@@ -101,6 +122,7 @@ function countTables(dbPath: string, tables: string[]): TableCount[] {
 const SOURCE_TABLES = [
   'platform_projects',
   'platform_snapshots',
+  'platform_detail_queue',
   'platform_raw_payloads',
   'platform_crawl_runs',
   'platform_crawler_errors',
@@ -133,6 +155,19 @@ function ensureSourceSchema(db: Database, platform: PlatformId) {
       source_url TEXT,
       image_url TEXT,
       raw_status TEXT,
+      project_url_name TEXT,
+      creator_url_name TEXT,
+      project_type TEXT,
+      is_indemand INTEGER DEFAULT 0,
+      is_prelaunch INTEGER DEFAULT 0,
+      percent_raised REAL,
+      comments_count INTEGER,
+      updates_count INTEGER,
+      rewards_count INTEGER,
+      detail_status TEXT,
+      detail_fetched_at INTEGER,
+      webrobots_run_id TEXT,
+      last_api_seen_at INTEGER,
       first_seen_at INTEGER DEFAULT (unixepoch()),
       last_seen_at INTEGER DEFAULT (unixepoch()),
       PRIMARY KEY (platform_id, source_project_id),
@@ -148,6 +183,7 @@ function ensureSourceSchema(db: Database, platform: PlatformId) {
       pledged_usd REAL,
       backers_count INTEGER,
       comments_count INTEGER,
+      updates_count INTEGER,
       state TEXT,
       source TEXT NOT NULL,
       CHECK (platform_id = '${platform}'),
@@ -165,6 +201,21 @@ function ensureSourceSchema(db: Database, platform: PlatformId) {
       payload_bytes INTEGER DEFAULT 0,
       checksum TEXT,
       payload_preview TEXT,
+      CHECK (platform_id = '${platform}')
+    );
+
+    CREATE TABLE IF NOT EXISTS platform_detail_queue (
+      platform_id TEXT NOT NULL,
+      project_url_name TEXT NOT NULL,
+      source_project_id TEXT,
+      status TEXT NOT NULL DEFAULT 'queued',
+      priority INTEGER DEFAULT 1,
+      attempts INTEGER DEFAULT 0,
+      next_fetch INTEGER,
+      last_error TEXT,
+      created_at INTEGER DEFAULT (unixepoch()),
+      updated_at INTEGER DEFAULT (unixepoch()),
+      PRIMARY KEY (platform_id, project_url_name),
       CHECK (platform_id = '${platform}')
     );
 
@@ -199,10 +250,32 @@ function ensureSourceSchema(db: Database, platform: PlatformId) {
     );
 
     CREATE INDEX IF NOT EXISTS idx_platform_projects_state ON platform_projects(platform_id, state, last_seen_at);
+    CREATE INDEX IF NOT EXISTS idx_platform_projects_slug ON platform_projects(platform_id, project_url_name);
     CREATE INDEX IF NOT EXISTS idx_platform_snapshots_project ON platform_snapshots(platform_id, source_project_id, captured_at);
+    CREATE INDEX IF NOT EXISTS idx_platform_detail_queue_due ON platform_detail_queue(platform_id, status, next_fetch, priority);
     CREATE INDEX IF NOT EXISTS idx_platform_runs_platform ON platform_crawl_runs(platform_id, started_at);
     CREATE INDEX IF NOT EXISTS idx_platform_errors_platform ON platform_crawler_errors(platform_id, occurred_at);
   `);
+
+  const projectColumns = [
+    'ALTER TABLE platform_projects ADD COLUMN project_url_name TEXT',
+    'ALTER TABLE platform_projects ADD COLUMN creator_url_name TEXT',
+    'ALTER TABLE platform_projects ADD COLUMN project_type TEXT',
+    'ALTER TABLE platform_projects ADD COLUMN is_indemand INTEGER DEFAULT 0',
+    'ALTER TABLE platform_projects ADD COLUMN is_prelaunch INTEGER DEFAULT 0',
+    'ALTER TABLE platform_projects ADD COLUMN percent_raised REAL',
+    'ALTER TABLE platform_projects ADD COLUMN comments_count INTEGER',
+    'ALTER TABLE platform_projects ADD COLUMN updates_count INTEGER',
+    'ALTER TABLE platform_projects ADD COLUMN rewards_count INTEGER',
+    'ALTER TABLE platform_projects ADD COLUMN detail_status TEXT',
+    'ALTER TABLE platform_projects ADD COLUMN detail_fetched_at INTEGER',
+    'ALTER TABLE platform_projects ADD COLUMN webrobots_run_id TEXT',
+    'ALTER TABLE platform_projects ADD COLUMN last_api_seen_at INTEGER',
+  ];
+  for (const sql of projectColumns) {
+    try { db.exec(sql); } catch { /* already exists */ }
+  }
+  try { db.exec('ALTER TABLE platform_snapshots ADD COLUMN updates_count INTEGER'); } catch { /* already exists */ }
 }
 
 function ensureGlobalSchema(db: Database) {
@@ -266,6 +339,21 @@ export function initializePlatformSourceDb(platform: PlatformId) {
     ensureSourceSchema(db, platform);
   } finally {
     db.close();
+  }
+}
+
+function recentRows(dbPath: string, table: string, orderColumn: string, limit = 10): unknown[] {
+  if (!fs.existsSync(dbPath)) return [];
+  try {
+    const db = new BetterSqlite3(dbPath, { readonly: true, fileMustExist: true });
+    try {
+      if (!tableExists(db, table)) return [];
+      return db.prepare(`SELECT * FROM ${table} ORDER BY ${orderColumn} DESC, id DESC LIMIT ?`).all(limit) as unknown[];
+    } finally {
+      db.close();
+    }
+  } catch {
+    return [];
   }
 }
 
@@ -357,6 +445,8 @@ export function getPlatformQuality(view: PlatformViewId): PlatformQuality {
 
   const dbPath = platformDbPath(view);
   const exists = fs.existsSync(dbPath);
+  const canRunCrawler = platform.capabilities.crawlerImplemented;
+  const canImport = platform.capabilities.importImplemented;
   return {
     ok: true,
     view,
@@ -373,25 +463,87 @@ export function getPlatformQuality(view: PlatformViewId): PlatformQuality {
     status: {
       state: exists ? 'initialized' : 'planned_empty',
       message: exists
-        ? `${platform.label} isolated source database is initialized. Crawlers remain disabled in phase one.`
+        ? `${platform.label} isolated source database is initialized.${canRunCrawler || canImport ? ' Manual crawler/import actions are available.' : ' Crawlers remain disabled in phase one.'}`
         : `${platform.label} is registered but has no source database yet. Use init_db to create an isolated empty DB.`,
     },
     isolation: {
       writesToLegacyKickstarterDb: false,
       canInitialize: true,
-      canRunCrawler: false,
-      canImport: false,
+      canRunCrawler,
+      canImport,
       canExport: false,
-      automaticJobsEnabled: false,
+      automaticJobsEnabled: view === 'indiegogo' && process.env.INDIEGOGO_CRAWLER_ENABLED === '1',
     },
-    recentRuns: [],
-    recentErrors: [],
+    recentRuns: recentRows(dbPath, 'platform_crawl_runs', 'started_at'),
+    recentErrors: recentRows(dbPath, 'platform_crawler_errors', 'occurred_at'),
   };
 }
 
-export function runPlatformAction(view: PlatformViewId, action: PlatformAction) {
+export async function runPlatformAction(view: PlatformViewId, action: PlatformAction, options: PlatformActionOptions = {}) {
   if (!isPlatformViewId(view)) {
     return { status: 404, payload: { ok: false, error: `Unknown platform: ${view}` } };
+  }
+
+  if (view === 'indiegogo') {
+    const igg = await import('./indiegogo');
+    if (action === 'validate_config' || action === 'dry_run_capabilities') {
+      const validation = await igg.validateIndiegogoConfig();
+      return {
+        status: 200,
+        payload: {
+          ok: true,
+          action,
+          quality: getPlatformQuality(view),
+          validation,
+          message: 'Indiegogo configuration is readable. No crawler/import/export side effect was performed.',
+        },
+      };
+    }
+    if (action === 'import') {
+      const importOptions = {
+        mode: options.mode ?? 'all_available',
+        maxDatasets: options.maxDatasets,
+      };
+      if (!options.wait) {
+        igg.importIndiegogoWebrobots(importOptions).catch(err => console.error('[indiegogo] Webrobots import failed:', err));
+        return {
+          status: 202,
+          payload: {
+            ok: true,
+            action,
+            message: `Indiegogo Webrobots import started (${importOptions.mode}).`,
+          },
+        };
+      }
+      const result = await igg.importIndiegogoWebrobots(importOptions);
+      return { status: result.ok ? 200 : 500, payload: { ok: result.ok, action, result } };
+    }
+    if (action === 'crawl') {
+      const detailOptions = {
+        limit: options.detailLimit ?? 25,
+        staleBefore: options.staleBefore,
+      };
+      if (!options.wait) {
+        (async () => {
+          await igg.syncIndiegogoActive();
+          await igg.refreshIndiegogoDetails(detailOptions);
+        })().catch(err => console.error('[indiegogo] crawl pipeline failed:', err));
+        return {
+          status: 202,
+          payload: {
+            ok: true,
+            action,
+            message: 'Indiegogo active sync and detail refresh started.',
+          },
+        };
+      }
+      const active = await igg.syncIndiegogoActive();
+      const details = await igg.refreshIndiegogoDetails(detailOptions);
+      return {
+        status: active.ok && details.ok ? 200 : 500,
+        payload: { ok: active.ok && details.ok, action, result: { active, details } },
+      };
+    }
   }
 
   if (action === 'crawl' || action === 'import' || action === 'export') {
