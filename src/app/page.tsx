@@ -172,7 +172,7 @@ function LandingHeader() {
       <nav className="mx-auto flex min-h-[72px] max-w-7xl items-center gap-3 px-4 sm:px-6">
         <Link href="/" className="flex min-h-12 min-w-12 items-center gap-2" aria-label="Kicksonar home">
           <span className="flex h-12 w-12 items-center justify-center rounded-xl bg-ks-green">
-            <img src="/logo.svg" alt="" width="32" height="32" className="h-8 w-8" />
+            <img src="/logo.svg" alt="Kicksonar logo" width="32" height="32" className="h-8 w-8" />
           </span>
           <span className="hidden text-xl font-black text-gray-900 sm:block">Kicksonar</span>
         </Link>
