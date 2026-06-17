@@ -1,7 +1,6 @@
 import type { Metadata } from 'next';
 import Script from 'next/script';
 import './globals.css';
-import { AuthProvider } from '@/contexts/AuthContext';
 import GoogleAnalyticsPageview from '@/components/GoogleAnalyticsPageview';
 
 const GA_MEASUREMENT_ID = 'G-J06YFPTGV9';
@@ -29,9 +28,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           `}
         </Script>
         <GoogleAnalyticsPageview measurementId={GA_MEASUREMENT_ID} />
-        <AuthProvider>
-          {children}
-        </AuthProvider>
+        {children}
       </body>
     </html>
   );
