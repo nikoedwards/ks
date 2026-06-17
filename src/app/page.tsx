@@ -91,7 +91,7 @@ const features = [
     icon: Search,
     badge: 'Project Explorer',
     title: 'Every campaign. Every outcome.',
-    desc: 'Search 200K+ Kickstarter campaigns by keyword, status, category, and country. Sort by funding amount, backers, or launch date, then export campaign data when you need a deeper spreadsheet workflow.',
+    desc: 'Search 200K+ Kickstarter campaigns by keyword, status, category, and country. Sort by funding amount, backers, or launch date. Export campaign data when you need a deeper spreadsheet workflow.',
     bullets: ['Full-text campaign search', 'Status, category, country, and date filters', 'CSV export for deeper research'],
     mockup: 'table',
   },
@@ -402,7 +402,7 @@ export default function Page() {
               </p>
               <h2 className="mt-3 text-2xl font-black text-gray-900 md:text-3xl">What is Kicksonar?</h2>
               <p className="mt-5 text-base leading-8 text-gray-600">
-                Kicksonar is a Kickstarter analytics platform for founders, researchers, and crowdfunding teams that need fast evidence before choosing a category, funding goal, launch window, or campaign benchmark. The product combines historical Kickstarter campaign records from public Webrobots datasets with live project tracking, searchable campaign tables, category and country analysis, leaderboard views, award-style discovery, and AI-assisted pre-launch scoring. Users can explore more than 200,000 Kickstarter campaigns, compare success rates across categories, inspect funding patterns, and find comparable projects before they launch. Kicksonar is not affiliated with Kickstarter or Webrobots; it uses public campaign data for research, benchmarking, and planning. The most useful pages are the project explorer, live intelligence dashboard, leaderboard, trends, category analysis, country analysis, and AI prediction tool. Because the pages summarize comparable outcomes and route users to source-level campaign records, the site is useful for market sizing, launch timing, and evidence-based crowdfunding strategy.
+                Kicksonar is a Kickstarter analytics platform for founders, researchers, and crowdfunding teams. It helps them find evidence before choosing a category, funding goal, launch window, or campaign benchmark. The product combines historical Kickstarter campaign records from public Webrobots datasets with live project tracking and searchable campaign tables. It also includes category analysis, country analysis, leaderboard views, award-style discovery, and AI-assisted pre-launch scoring. Users can explore more than 200,000 Kickstarter campaigns, compare success rates across categories, and inspect funding patterns. They can also find comparable projects before they launch. Kicksonar is not affiliated with Kickstarter or Webrobots; it uses public campaign data for research, benchmarking, and planning. The most useful pages are the project explorer, live intelligence dashboard, leaderboard, trends, category analysis, country analysis, and AI prediction tool. These pages summarize comparable outcomes and route users to source-level campaign records. That makes the site useful for market sizing, launch timing, and evidence-based crowdfunding strategy.
               </p>
             </div>
           </section>
@@ -412,8 +412,16 @@ export default function Page() {
               <div className="mx-auto max-w-3xl text-center">
                 <p className="text-xs font-semibold uppercase tracking-wide text-ks-green">Data transparency</p>
                 <h2 className="mt-3 text-2xl font-black text-gray-900 md:text-3xl">Why trust Kicksonar?</h2>
+                <img
+                  src="/logo.svg"
+                  alt="Kicksonar trust mark"
+                  width={36}
+                  height={36}
+                  loading="lazy"
+                  className="mx-auto mt-4 h-9 w-9 opacity-70"
+                />
                 <p className="mt-4 text-base leading-7 text-gray-600">
-                  Kicksonar is built for research, so the data trail is visible: public Webrobots snapshots provide the historical Kickstarter dataset, live tracking fills gaps between monthly updates, and source links remain available for project-level verification.
+                  Kicksonar is built for research, so the data trail is visible. Public Webrobots snapshots provide the historical Kickstarter dataset. Live tracking fills gaps between monthly updates, and source links remain available for project-level verification.
                 </p>
                 <p className="author mt-3 text-sm leading-6 text-gray-500" itemProp="author">
                   Maintained by the Kicksonar research team for founders, analysts, and crowdfunding specialists.
