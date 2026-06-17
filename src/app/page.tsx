@@ -9,8 +9,6 @@ import {
   Sparkles,
   Trophy,
 } from 'lucide-react';
-import LandingHeaderClient from '@/components/LandingHeaderClient';
-import LandingStatsClient from '@/components/LandingStatsClient';
 
 const SITE_URL = 'https://kicksonar.com';
 const SITE_NAME = 'Kicksonar';
@@ -161,6 +159,82 @@ const faqs = [
   },
 ];
 
+const stats = [
+  { icon: Database, value: '200K+', label: 'Campaigns analyzed' },
+  { icon: Trophy, value: '$3.48B', label: 'Historical pledged volume' },
+  { icon: BarChart3, value: '180+', label: 'Countries and regions' },
+  { icon: Search, value: '15+', label: 'Research dimensions' },
+] as const;
+
+function LandingHeader() {
+  return (
+    <header className="sticky top-0 z-50 border-b border-gray-200 bg-white/95 backdrop-blur">
+      <nav className="mx-auto flex min-h-[72px] max-w-7xl items-center gap-3 px-4 sm:px-6">
+        <Link href="/" className="flex min-h-12 min-w-12 items-center gap-2" aria-label="Kicksonar home">
+          <span className="flex h-12 w-12 items-center justify-center rounded-xl bg-ks-green">
+            <img src="/logo.svg" alt="" width="32" height="32" className="h-8 w-8" />
+          </span>
+          <span className="hidden text-xl font-black text-gray-900 sm:block">Kicksonar</span>
+        </Link>
+
+        <form action="/projects" className="mx-2 flex min-w-0 flex-1 items-center" role="search">
+          <label htmlFor="homepage-search" className="sr-only">
+            Search Kickstarter campaigns
+          </label>
+          <div className="relative w-full">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+            <input
+              id="homepage-search"
+              name="search"
+              type="search"
+              placeholder="Search"
+              className="h-12 w-full rounded-xl border border-gray-200 bg-gray-50 pl-10 pr-4 text-sm outline-none transition-colors focus:border-ks-green focus:bg-white"
+            />
+          </div>
+        </form>
+
+        <div className="hidden items-center gap-2 md:flex">
+          <Link href="/projects" className="flex min-h-12 items-center px-3 text-sm font-semibold text-gray-600 hover:text-ks-green">
+            Projects
+          </Link>
+          <Link href="/analysis" className="flex min-h-12 items-center px-3 text-sm font-semibold text-gray-600 hover:text-ks-green">
+            Analysis
+          </Link>
+          <Link href="/predict" className="flex min-h-12 items-center px-3 text-sm font-semibold text-gray-600 hover:text-ks-green">
+            Predict
+          </Link>
+        </div>
+
+        <Link
+          href="/dashboard"
+          className="inline-flex min-h-12 items-center justify-center rounded-xl bg-ks-green px-4 text-sm font-bold text-white transition-colors hover:bg-ks-green-dark"
+        >
+          Sign in
+        </Link>
+      </nav>
+    </header>
+  );
+}
+
+function LandingStats() {
+  return (
+    <section className="border-b border-gray-100 bg-white py-8">
+      <div className="mx-auto grid max-w-6xl grid-cols-2 gap-3 px-6 md:grid-cols-4">
+        {stats.map(stat => {
+          const Icon = stat.icon;
+          return (
+            <div key={stat.label} className="rounded-lg border border-gray-100 bg-gray-50 p-4 text-center">
+              <Icon className="mx-auto mb-3 h-5 w-5 text-ks-green" />
+              <div className="text-2xl font-black tabular-nums text-gray-900 sm:text-3xl">{stat.value}</div>
+              <div className="mt-1 text-xs font-semibold uppercase tracking-wide text-gray-400">{stat.label}</div>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 function TableMockup() {
   const rows = [
     ['1', 'Creality K2 Plus', 'Technology', '$4.2M', '4200%'],
@@ -273,7 +347,7 @@ export default function Page() {
         dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
       />
       <div className="min-h-screen bg-white text-gray-900">
-        <LandingHeaderClient />
+        <LandingHeader />
 
         <main>
           <section className="relative overflow-hidden bg-gradient-to-br from-[#011a10] via-[#022c1c] to-[#03402a]">
@@ -319,7 +393,7 @@ export default function Page() {
             </div>
           </section>
 
-          <LandingStatsClient />
+          <LandingStats />
 
           <section className="bg-white py-14 sm:py-16">
             <div className="mx-auto max-w-3xl px-6 text-center">
@@ -340,6 +414,9 @@ export default function Page() {
                 <h2 className="mt-3 text-2xl font-black text-gray-900 md:text-3xl">Why trust Kicksonar?</h2>
                 <p className="mt-4 text-base leading-7 text-gray-600">
                   Kicksonar is built for research, so the data trail is visible: public Webrobots snapshots provide the historical Kickstarter dataset, live tracking fills gaps between monthly updates, and source links remain available for project-level verification.
+                </p>
+                <p className="author mt-3 text-sm leading-6 text-gray-500" itemProp="author">
+                  Maintained by the Kicksonar research team for founders, analysts, and crowdfunding specialists.
                 </p>
               </div>
               <div className="mt-8 grid gap-4 md:grid-cols-3">
@@ -474,7 +551,7 @@ export default function Page() {
         <footer className="border-t border-gray-100 bg-white py-8">
           <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-4 px-6 text-xs text-gray-400 sm:flex-row">
             <div className="flex items-center gap-2">
-              <img src="/logo.svg" alt="Kicksonar logo" width={16} height={16} className="opacity-50" />
+              <img src="/logo.svg" alt="Kicksonar logo" width={16} height={16} loading="lazy" className="opacity-50" />
               <span>
                 Copyright 2026 Kicksonar. Data:{' '}
                 <a href="https://webrobots.io" target="_blank" rel="noopener noreferrer" className="hover:text-gray-600">
@@ -485,6 +562,10 @@ export default function Page() {
             <div className="flex flex-wrap items-center justify-center gap-4">
               <Link href="/live-intel" className="hover:text-gray-600">Dashboard</Link>
               <Link href="/about" className="hover:text-gray-600">About</Link>
+              <Link href="/trust#contact" className="hover:text-gray-600">Contact</Link>
+              <Link href="/trust#privacy" className="hover:text-gray-600">Privacy</Link>
+              <Link href="/trust#terms" className="hover:text-gray-600">Terms</Link>
+              <Link href="/trust#security" className="hover:text-gray-600">Security</Link>
               <a href="https://github.com/nikoedwards/ks" target="_blank" rel="noopener noreferrer" className="hover:text-gray-600">
                 GitHub
               </a>

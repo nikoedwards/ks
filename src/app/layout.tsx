@@ -1,7 +1,6 @@
 import type { Metadata } from 'next';
 import Script from 'next/script';
 import './globals.css';
-import GoogleAnalyticsPageview from '@/components/GoogleAnalyticsPageview';
 
 const GA_MEASUREMENT_ID = 'G-J06YFPTGV9';
 
@@ -24,10 +23,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             window.dataLayer = window.dataLayer || [];
             window.gtag = window.gtag || function(){window.dataLayer.push(arguments);}
             window.gtag('js', new Date());
-            window.gtag('config', '${GA_MEASUREMENT_ID}', { send_page_view: false });
+            window.gtag('config', '${GA_MEASUREMENT_ID}');
           `}
         </Script>
-        <GoogleAnalyticsPageview measurementId={GA_MEASUREMENT_ID} />
         {children}
       </body>
     </html>

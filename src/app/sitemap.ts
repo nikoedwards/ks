@@ -5,6 +5,7 @@ const SITE_URL = 'https://kicksonar.com';
 const routes = [
   '/',
   '/about',
+  '/trust',
   '/projects',
   '/leaderboard',
   '/awards',

@@ -10,9 +10,15 @@ declare global {
   }
 }
 
-export default function GoogleAnalyticsPageview({ measurementId }: { measurementId: string }) {
+export default function GoogleAnalyticsPageview({
+  measurementId,
+  skipInitial = false,
+}: {
+  measurementId: string;
+  skipInitial?: boolean;
+}) {
   const pathname = usePathname();
-  const lastPath = useRef<string>('');
+  const lastPath = useRef<string>(skipInitial ? pathname || '' : '');
 
   useEffect(() => {
     if (!pathname || pathname === lastPath.current) return;
