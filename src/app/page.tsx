@@ -235,6 +235,22 @@ function LandingStats() {
   );
 }
 
+function IntroSection() {
+  return (
+    <section className="bg-white py-14 sm:py-16">
+      <div className="mx-auto max-w-3xl px-6 text-center">
+        <p className="text-xs font-semibold uppercase tracking-wide text-ks-green">
+          Last updated: June 17, 2026
+        </p>
+        <h2 className="mt-3 text-2xl font-black text-gray-900 md:text-3xl">What is Kicksonar?</h2>
+        <p className="mt-5 text-base leading-8 text-gray-600">
+          Kicksonar is a Kickstarter analytics platform for founders, researchers, and crowdfunding teams. It helps them find evidence before choosing a category, funding goal, launch window, or campaign benchmark. The product combines historical Kickstarter campaign records from public Webrobots datasets with live project tracking and searchable campaign tables. It also includes category analysis, country analysis, leaderboard views, award-style discovery, and AI-assisted pre-launch scoring. Users can explore more than 200,000 Kickstarter campaigns, compare success rates across categories, and inspect funding patterns. They can also find comparable projects before they launch. Kicksonar is not affiliated with Kickstarter or Webrobots; it uses public campaign data for research, benchmarking, and planning. The most useful pages are the project explorer, live intelligence dashboard, leaderboard, trends, category analysis, country analysis, and AI prediction tool. These pages summarize comparable outcomes and route users to source-level campaign records. That makes the site useful for market sizing, launch timing, and evidence-based crowdfunding strategy.
+        </p>
+      </div>
+    </section>
+  );
+}
+
 function TableMockup() {
   const rows = [
     ['1', 'Creality K2 Plus', 'Technology', '$4.2M', '4200%'],
@@ -395,18 +411,6 @@ export default function Page() {
 
           <LandingStats />
 
-          <section className="bg-white py-14 sm:py-16">
-            <div className="mx-auto max-w-3xl px-6 text-center">
-              <p className="text-xs font-semibold uppercase tracking-wide text-ks-green">
-                Last updated: June 17, 2026
-              </p>
-              <h2 className="mt-3 text-2xl font-black text-gray-900 md:text-3xl">What is Kicksonar?</h2>
-              <p className="mt-5 text-base leading-8 text-gray-600">
-                Kicksonar is a Kickstarter analytics platform for founders, researchers, and crowdfunding teams. It helps them find evidence before choosing a category, funding goal, launch window, or campaign benchmark. The product combines historical Kickstarter campaign records from public Webrobots datasets with live project tracking and searchable campaign tables. It also includes category analysis, country analysis, leaderboard views, award-style discovery, and AI-assisted pre-launch scoring. Users can explore more than 200,000 Kickstarter campaigns, compare success rates across categories, and inspect funding patterns. They can also find comparable projects before they launch. Kicksonar is not affiliated with Kickstarter or Webrobots; it uses public campaign data for research, benchmarking, and planning. The most useful pages are the project explorer, live intelligence dashboard, leaderboard, trends, category analysis, country analysis, and AI prediction tool. These pages summarize comparable outcomes and route users to source-level campaign records. That makes the site useful for market sizing, launch timing, and evidence-based crowdfunding strategy.
-              </p>
-            </div>
-          </section>
-
           <section className="bg-gray-50 py-14 sm:py-16">
             <div className="mx-auto max-w-6xl px-6">
               <div className="mx-auto max-w-3xl text-center">
@@ -443,9 +447,6 @@ export default function Page() {
               <div className="mt-6 flex flex-wrap justify-center gap-3 text-sm font-semibold">
                 <a href="https://webrobots.io" target="_blank" rel="noopener noreferrer" className="text-ks-green hover:text-ks-green-dark">
                   Webrobots source
-                </a>
-                <a href="https://github.com/nikoedwards/ks" target="_blank" rel="noopener noreferrer" className="text-ks-green hover:text-ks-green-dark">
-                  GitHub repository
                 </a>
                 <a href="mailto:nikoedwards75@gmail.com" className="text-ks-green hover:text-ks-green-dark">
                   Feedback
@@ -554,6 +555,8 @@ export default function Page() {
               </div>
             </div>
           </section>
+
+          <IntroSection />
         </main>
 
         <footer className="border-t border-gray-100 bg-white py-8">
@@ -574,9 +577,6 @@ export default function Page() {
               <Link href="/trust#privacy" className="hover:text-gray-600">Privacy</Link>
               <Link href="/trust#terms" className="hover:text-gray-600">Terms</Link>
               <Link href="/trust#security" className="hover:text-gray-600">Security</Link>
-              <a href="https://github.com/nikoedwards/ks" target="_blank" rel="noopener noreferrer" className="hover:text-gray-600">
-                GitHub
-              </a>
             </div>
           </div>
         </footer>
