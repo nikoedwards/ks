@@ -442,6 +442,31 @@ function PlatformIsolationPanel({
         { table: quality.scope === 'global' ? 'global_refresh_runs' : 'platform_crawl_runs', rows: 0 },
       ];
   const actionDisabled = Boolean(actionBusy);
+  const platformActions: Array<{
+    action: 'crawl' | 'import' | 'export';
+    enabled: boolean;
+    label: string;
+    title: string;
+  }> = [
+    {
+      action: 'crawl',
+      enabled: quality.isolation.canRunCrawler,
+      label: cn ? 'CRAWL · 活跃同步' : 'CRAWL · active sync',
+      title: cn ? '同步当前活跃项目，并刷新一批详情队列' : 'Sync currently active projects and refresh a detail batch',
+    },
+    {
+      action: 'import',
+      enabled: quality.isolation.canImport,
+      label: cn ? 'IMPORT · 历史导入' : 'IMPORT · history import',
+      title: cn ? '从 Webrobots Indiegogo 历史数据集后台导入' : 'Import Webrobots Indiegogo history in the background',
+    },
+    {
+      action: 'export',
+      enabled: quality.isolation.canExport,
+      label: cn ? 'EXPORT · 未接入' : 'EXPORT · not wired',
+      title: cn ? '导出能力尚未接入' : 'Export is not wired yet',
+    },
+  ];
   const capabilityRows = [
     {
       label: cn ? '隔离数据库' : 'Isolated source DB',
@@ -583,21 +608,25 @@ function PlatformIsolationPanel({
           >
             {cn ? 'Dry-run 能力检查' : 'Dry-run capabilities'}
           </button>
-          {(['crawl', 'import', 'export'] as const).map(action => (
+          {platformActions.map(item => (
             <button
-              key={action}
+              key={item.action}
               type="button"
-              onClick={() => onAction(action)}
-              disabled={actionDisabled}
-              className="rounded-lg border border-dashed border-gray-200 px-3 py-2 text-sm font-semibold text-gray-400 hover:bg-gray-50 disabled:opacity-50"
-              title={cn ? '第一阶段未接入真实执行逻辑' : 'Real execution is not wired in phase one'}
+              onClick={() => onAction(item.action)}
+              disabled={actionDisabled || !item.enabled}
+              className={
+                item.enabled
+                  ? 'rounded-lg border border-ks-green/30 bg-ks-green-light px-3 py-2 text-sm font-semibold text-ks-green-dark hover:bg-green-100 disabled:opacity-50'
+                  : 'rounded-lg border border-dashed border-gray-200 px-3 py-2 text-sm font-semibold text-gray-400 hover:bg-gray-50 disabled:opacity-50'
+              }
+              title={item.title}
             >
-              {action.toUpperCase()} · {cn ? '未接入' : '501'}
+              {item.label}
             </button>
           ))}
         </div>
         <p className="mt-3 text-xs text-gray-400">
-          {cn ? '这些接口不会启动自动任务。crawl/import/export 会返回 501，并且不会写任何平台数据。' : 'No automatic jobs are started. crawl/import/export return 501 and write no platform data.'}
+          {cn ? '不会开启自动 cron。已接入的平台可手动触发 crawl/import；未接入的动作会保持禁用。' : 'No automatic cron is started. Wired platforms can run crawl/import manually; unavailable actions stay disabled.'}
         </p>
       </section>
 
