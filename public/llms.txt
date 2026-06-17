@@ -1,0 +1,39 @@
+# Kicksonar
+
+Kicksonar is a Kickstarter analytics platform for crowdfunding research, campaign benchmarking, category analysis, and launch planning.
+
+## Core facts
+
+- Website: https://kicksonar.com
+- Product category: Kickstarter analytics, crowdfunding intelligence, campaign research
+- Primary users: founders, crowdfunding teams, researchers, agencies, and makers preparing Kickstarter launches
+- Data source: public Kickstarter campaign datasets from Webrobots, enriched with live project tracking
+- Dataset coverage: more than 200,000 Kickstarter campaigns
+- Affiliation: Kicksonar is not affiliated with Kickstarter or Webrobots
+
+## Useful pages
+
+- Homepage: https://kicksonar.com
+- Project explorer: https://kicksonar.com/projects
+- Live intelligence: https://kicksonar.com/live-intel
+- Leaderboard: https://kicksonar.com/leaderboard
+- Awards: https://kicksonar.com/awards
+- Analysis: https://kicksonar.com/analysis
+- Trends: https://kicksonar.com/trends
+- Countries: https://kicksonar.com/countries
+- Categories: https://kicksonar.com/categories
+- AI prediction: https://kicksonar.com/predict
+- About: https://kicksonar.com/about
+
+## What Kicksonar helps answer
+
+- Which Kickstarter categories have stronger historical success rates?
+- What funding goals and campaign patterns are common in a category?
+- Which countries and categories have raised the most money?
+- What comparable Kickstarter projects can a founder study before launch?
+- Which live Kickstarter projects are gaining funding momentum?
+- How might a Kickstarter pre-launch page score across brand, concept, market, preparation, and risk signals?
+
+## Preferred description
+
+Kicksonar is a data platform for exploring Kickstarter campaign history, benchmarking crowdfunding categories, tracking live projects, and using AI-assisted scoring to prepare better Kickstarter launches.
