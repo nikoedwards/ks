@@ -27,6 +27,8 @@ PROBE_RUN_ON_BOOT=0
 PROBE_CLEAR_MS=90000
 PROBE_SCROLLS=3
 PROBE_TARGET_URL=https://www.indiegogo.com/en/projects/search
+PROBE_ACTIVE_API_URL=https://www.indiegogo.com/api/public/projects/getActiveCrowdfundingProjects
+PROBE_DISCOVER_API_URL=https://www.indiegogo.com/private_api/discover
 ```
 
 Run it:
@@ -41,5 +43,8 @@ curl https://<railway-probe-url>/report
 
 - `cleared: true` means the browser was not stuck on Cloudflare and the page could be inspected.
 - `blocked: true` means the run still appeared to be on a challenge/access-denied page when the timeout expired.
-- `sampleProjects` contains project links extracted from the DOM.
+- `searchPageProjectCount` counts project links extracted from the search page DOM.
+- `dataAccess` shows whether public/candidate Indiegogo JSON endpoints were reachable from Railway.
+- `projectSource` tells where top-level `sampleProjects` came from, such as `search_page_dom` or `active_api:node_fetch`.
+- `sampleProjects` contains search DOM projects when available, otherwise the best reachable JSON endpoint sample.
 - `networkEndpoints` contains interesting JSON/API/GraphQL responses observed during the run.

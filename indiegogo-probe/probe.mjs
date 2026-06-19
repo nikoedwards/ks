@@ -7,6 +7,8 @@ chromium.use(StealthPlugin());
 const PORT = Number(process.env.PORT || 8080);
 const TOKEN = (process.env.PROBE_TOKEN || '').trim();
 const TARGET_URL = process.env.PROBE_TARGET_URL || 'https://www.indiegogo.com/en/projects/search';
+const ACTIVE_API_URL = process.env.PROBE_ACTIVE_API_URL || 'https://www.indiegogo.com/api/public/projects/getActiveCrowdfundingProjects';
+const DISCOVER_API_URL = process.env.PROBE_DISCOVER_API_URL || 'https://www.indiegogo.com/private_api/discover';
 const CLEAR_MAX_MS = clampNumber(process.env.PROBE_CLEAR_MS, 15_000, 180_000, 90_000);
 const SCROLLS = clampNumber(process.env.PROBE_SCROLLS, 0, 12, 3);
 const RUN_ON_BOOT = /^(1|true|yes)$/i.test(process.env.PROBE_RUN_ON_BOOT || '0');
@@ -50,8 +52,15 @@ function baseReport(status) {
     blocked: null,
     pageTitle: null,
     finalUrl: null,
+    projectSource: null,
+    searchPageProjectCount: 0,
     projectCount: 0,
     sampleProjects: [],
+    dataAccess: {
+      ok: false,
+      projectCount: 0,
+      sources: [],
+    },
     networkEndpoints: [],
     jsonProjectHints: [],
     errors: [],
@@ -134,6 +143,222 @@ function collectProjectHints(value, out = [], seen = new Set(), depth = 0) {
 
 function stableEndpointKey(item) {
   return `${item.method || 'GET'} ${item.status || 0} ${item.url}`;
+}
+
+function normalizeIndiegogoProject(project, source) {
+  if (!project || typeof project !== 'object') return null;
+  const title = project.projectName || project.title || project.name || project.project_name || null;
+  const href = project.projectHomeUrl || project.url || project.href || project.clickthrough_url || null;
+  const slug = project.projectUrlName || project.project_url_name || null;
+  const normalizedHref = href
+    ? String(href)
+    : slug
+      ? `https://www.indiegogo.com/projects/${slug}`
+      : null;
+  if (!title && !normalizedHref) return null;
+  return {
+    source,
+    title,
+    href: normalizedHref,
+    image: project.projectImageUrl || project.image_url || project.imageUrl || project.image || null,
+    category: project.category || project.categoryName || project.category_name || null,
+    currency: project.currencyShortName || project.currency || null,
+    amount: project.fundsGathered ?? project.funds_raised_amount ?? project.pledged ?? null,
+    goal: project.campaignGoal ?? project.goal ?? null,
+    startDate: project.campaignStartDate || project.open_date || null,
+    endDate: project.campaignEndDate || project.close_date || null,
+    text: compactText(project.shortDescription || project.tagline || project.description || '', 700),
+  };
+}
+
+function normalizeProjectArray(value, source) {
+  const rows = Array.isArray(value)
+    ? value
+    : Array.isArray(value?.projects)
+      ? value.projects
+      : Array.isArray(value?.response?.projects)
+        ? value.response.projects
+        : Array.isArray(value?.data)
+          ? value.data
+          : [];
+  const projects = rows
+    .map((project) => normalizeIndiegogoProject(project, source))
+    .filter(Boolean);
+  return projects;
+}
+
+function discoverPayload() {
+  return {
+    category_main: null,
+    category_top_level: null,
+    page_num: 1,
+    per_page: SAMPLE_LIMIT,
+    project_timing: 'all',
+    project_type: 'campaign',
+    q: '',
+    sort: 'trending',
+    tags: [],
+  };
+}
+
+async function probeJsonEndpointFromNode({ label, url, method = 'GET', body = null }) {
+  try {
+    const res = await fetch(url, {
+      method,
+      headers: {
+        Accept: 'application/json, text/plain, */*',
+        'Content-Type': 'application/json;charset=UTF-8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        Origin: 'https://www.indiegogo.com',
+        Referer: TARGET_URL,
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+      },
+      body: body ? JSON.stringify(body) : null,
+    });
+    const contentType = res.headers.get('content-type') || '';
+    const text = await res.text();
+    let parsed = null;
+    if (/json/i.test(contentType)) {
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        parsed = null;
+      }
+    }
+    const projects = parsed ? normalizeProjectArray(parsed, label) : [];
+    return {
+      source: label,
+      transport: 'node_fetch',
+      ok: res.ok && projects.length > 0,
+      status: res.status,
+      contentType,
+      projectCount: projects.length,
+      sampleProjects: projects.slice(0, SAMPLE_LIMIT),
+      bodyPreview: compactText(text, RESPONSE_PREVIEW_CHARS),
+    };
+  } catch (err) {
+    return {
+      source: label,
+      transport: 'node_fetch',
+      ok: false,
+      status: null,
+      contentType: null,
+      projectCount: 0,
+      sampleProjects: [],
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+async function probeJsonEndpointFromBrowser(page, { label, url, method = 'GET', body = null }) {
+  try {
+    return await page.evaluate(
+      async ({ label: innerLabel, url: innerUrl, method: innerMethod, body: innerBody, limit, previewChars, targetUrl }) => {
+        const clean = (value, max = 500) => String(value || '').replace(/\s+/g, ' ').trim().slice(0, max);
+        const normalize = (project) => {
+          if (!project || typeof project !== 'object') return null;
+          const title = project.projectName || project.title || project.name || project.project_name || null;
+          const href = project.projectHomeUrl || project.url || project.href || project.clickthrough_url || null;
+          const slug = project.projectUrlName || project.project_url_name || null;
+          const normalizedHref = href ? String(href) : slug ? `https://www.indiegogo.com/projects/${slug}` : null;
+          if (!title && !normalizedHref) return null;
+          return {
+            source: innerLabel,
+            title,
+            href: normalizedHref,
+            image: project.projectImageUrl || project.image_url || project.imageUrl || project.image || null,
+            category: project.category || project.categoryName || project.category_name || null,
+            currency: project.currencyShortName || project.currency || null,
+            amount: project.fundsGathered ?? project.funds_raised_amount ?? project.pledged ?? null,
+            goal: project.campaignGoal ?? project.goal ?? null,
+            startDate: project.campaignStartDate || project.open_date || null,
+            endDate: project.campaignEndDate || project.close_date || null,
+            text: clean(project.shortDescription || project.tagline || project.description || '', 700),
+          };
+        };
+        const normalizeRows = (value) => {
+          const rows = Array.isArray(value)
+            ? value
+            : Array.isArray(value?.projects)
+              ? value.projects
+              : Array.isArray(value?.response?.projects)
+                ? value.response.projects
+                : Array.isArray(value?.data)
+                  ? value.data
+                  : [];
+          return rows.map(normalize).filter(Boolean);
+        };
+        const res = await fetch(innerUrl, {
+          method: innerMethod,
+          headers: {
+            Accept: 'application/json, text/plain, */*',
+            'Content-Type': 'application/json;charset=UTF-8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            Referer: targetUrl,
+          },
+          body: innerBody ? JSON.stringify(innerBody) : null,
+        });
+        const contentType = res.headers.get('content-type') || '';
+        const text = await res.text();
+        let parsed = null;
+        if (/json/i.test(contentType)) {
+          try {
+            parsed = JSON.parse(text);
+          } catch {
+            parsed = null;
+          }
+        }
+        const projects = parsed ? normalizeRows(parsed) : [];
+        return {
+          source: innerLabel,
+          transport: 'browser_fetch',
+          ok: res.ok && projects.length > 0,
+          status: res.status,
+          contentType,
+          projectCount: projects.length,
+          sampleProjects: projects.slice(0, limit),
+          bodyPreview: clean(text, previewChars),
+        };
+      },
+      {
+        label,
+        url,
+        method,
+        body,
+        limit: SAMPLE_LIMIT,
+        previewChars: RESPONSE_PREVIEW_CHARS,
+        targetUrl: TARGET_URL,
+      },
+    );
+  } catch (err) {
+    return {
+      source: label,
+      transport: 'browser_fetch',
+      ok: false,
+      status: null,
+      contentType: null,
+      projectCount: 0,
+      sampleProjects: [],
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+async function probeDataAccess(page) {
+  const checks = [
+    await probeJsonEndpointFromBrowser(page, { label: 'active_api', url: ACTIVE_API_URL }),
+    await probeJsonEndpointFromNode({ label: 'active_api', url: ACTIVE_API_URL }),
+    await probeJsonEndpointFromBrowser(page, { label: 'discover_api', url: DISCOVER_API_URL, method: 'POST', body: discoverPayload() }),
+    await probeJsonEndpointFromNode({ label: 'discover_api', url: DISCOVER_API_URL, method: 'POST', body: discoverPayload() }),
+  ];
+  const best = checks.find((check) => check.ok) || null;
+  return {
+    ok: Boolean(best),
+    projectCount: best?.projectCount ?? 0,
+    bestSource: best ? `${best.source}:${best.transport}` : null,
+    sampleProjects: best?.sampleProjects ?? [],
+    sources: checks,
+  };
 }
 
 async function waitForCloudflareClear(page, url, maxMs) {
@@ -303,7 +528,16 @@ async function runProbe() {
         report.errors.push({ stage: 'extractProjects', message: err instanceof Error ? err.message : String(err) });
         return [];
       });
+      report.searchPageProjectCount = report.sampleProjects.length;
       report.projectCount = report.sampleProjects.length;
+      if (report.sampleProjects.length > 0) report.projectSource = 'search_page_dom';
+    }
+
+    report.dataAccess = await probeDataAccess(page);
+    if (report.projectCount === 0 && report.dataAccess.ok) {
+      report.projectSource = report.dataAccess.bestSource;
+      report.projectCount = report.dataAccess.projectCount;
+      report.sampleProjects = report.dataAccess.sampleProjects;
     }
 
     report.networkEndpoints = endpoints.slice(0, ENDPOINT_LIMIT);
