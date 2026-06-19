@@ -570,13 +570,13 @@ function indiegogoNextStep(quality: PlatformQualityPayload, cn: boolean): {
   const retryable = webrobots.coverage.missing + webrobots.coverage.failed + webrobots.coverage.skipped + webrobots.coverage.stale;
   if (retryable > 0) {
     return {
-      label: cn ? '导入可下载的 Webrobots 快照' : 'Import downloadable Webrobots snapshots',
+      label: cn ? '导入下一个可下载快照' : 'Import next downloadable snapshot',
       description: cn
-        ? `发现 ${retryable} 个可重试日期；已确认 403 的源文件会跳过。`
-        : `${retryable} date(s) can be retried; known 403 source files will be skipped.`,
+        ? `发现 ${retryable} 个可重试日期；每次只导入 1 个，避免长任务卡死。`
+        : `${retryable} date(s) can be retried; one snapshot is imported per click to avoid stuck long jobs.`,
       action: 'import',
-      options: { mode: 'missing' },
-      confirm: cn ? '这会只导入仍可能下载的 Webrobots 快照，并跳过已知 403 源文件。确定开始吗？' : 'This imports only Webrobots snapshots that may still be downloadable and skips known 403 files. Continue?',
+      options: { mode: 'missing', wait: true, maxDatasets: 1 },
+      confirm: cn ? '这会导入下一个仍可能下载的 Webrobots 快照，并等待完成后返回。确定开始吗？' : 'This imports the next Webrobots snapshot that may still be downloadable and waits for completion. Continue?',
       primary: true,
     };
   }

@@ -543,7 +543,7 @@ export async function runPlatformAction(view: PlatformViewId, action: PlatformAc
     if (action === 'import') {
       const importOptions = {
         mode: options.mode ?? 'all_available',
-        maxDatasets: options.maxDatasets,
+        maxDatasets: options.maxDatasets ?? (options.mode === 'missing' ? 1 : undefined),
       };
       if (!options.wait) {
         igg.importIndiegogoWebrobots(importOptions).catch(err => console.error('[indiegogo] Webrobots import failed:', err));

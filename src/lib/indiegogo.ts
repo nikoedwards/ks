@@ -17,8 +17,8 @@ const DETAIL_DELAY_MS = Math.max(250, Number(process.env.INDIEGOGO_DETAIL_DELAY_
 const DETAIL_TIMEOUT_MS = Math.max(5000, Number(process.env.INDIEGOGO_DETAIL_TIMEOUT_MS ?? 20_000));
 const WEBROBOTS_TIMEOUT_MS = Math.max(15_000, Number(process.env.INDIEGOGO_WEBROBOTS_TIMEOUT_MS ?? 120_000));
 const WEBROBOTS_STALE_RUN_SECONDS = Math.max(
-  3600,
-  Number(process.env.INDIEGOGO_WEBROBOTS_STALE_RUN_SECONDS ?? 6 * 3600),
+  300,
+  Number(process.env.INDIEGOGO_WEBROBOTS_STALE_RUN_SECONDS ?? 10 * 60),
 );
 
 export interface IndiegogoWebrobotsDataset {
@@ -1393,7 +1393,7 @@ export async function importIndiegogoWebrobots(options: IndiegogoImportOptions =
       );
     }
     if (options.maxDatasets && options.maxDatasets > 0) {
-      datasets = datasets.slice(-options.maxDatasets);
+      datasets = datasets.slice(0, options.maxDatasets);
     }
 
     let datasetsImported = 0;
