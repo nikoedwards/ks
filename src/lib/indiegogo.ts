@@ -16,6 +16,10 @@ const DEFAULT_DETAIL_LIMIT = 25;
 const DETAIL_DELAY_MS = Math.max(250, Number(process.env.INDIEGOGO_DETAIL_DELAY_MS ?? 1000));
 const DETAIL_TIMEOUT_MS = Math.max(5000, Number(process.env.INDIEGOGO_DETAIL_TIMEOUT_MS ?? 20_000));
 const WEBROBOTS_TIMEOUT_MS = Math.max(15_000, Number(process.env.INDIEGOGO_WEBROBOTS_TIMEOUT_MS ?? 120_000));
+const WEBROBOTS_STALE_RUN_SECONDS = Math.max(
+  3600,
+  Number(process.env.INDIEGOGO_WEBROBOTS_STALE_RUN_SECONDS ?? 6 * 3600),
+);
 
 export interface IndiegogoWebrobotsDataset {
   date: string;
@@ -52,7 +56,7 @@ export interface IndiegogoImportResult {
   message?: string;
 }
 
-export type IndiegogoMonthImportStatus = 'completed' | 'missing' | 'running' | 'error' | 'skipped';
+export type IndiegogoMonthImportStatus = 'completed' | 'missing' | 'running' | 'stale' | 'source_unavailable' | 'error' | 'skipped';
 
 export interface IndiegogoWebrobotsMonthStatus {
   date: string;
@@ -85,6 +89,8 @@ export interface IndiegogoWebrobotsDiagnostics {
     missing: number;
     failed: number;
     running: number;
+    stale: number;
+    sourceUnavailable: number;
     skipped: number;
     percent: number | null;
   };
@@ -303,6 +309,14 @@ function webrobotsDateFromJobType(jobType: string | null | undefined): string | 
   return match?.[1] ?? null;
 }
 
+function isSourceUnavailableStatus(status: number | null | undefined) {
+  return status === 403 || status === 404 || status === 410;
+}
+
+function isSourceUnavailableMessage(message: string | null | undefined) {
+  return /Webrobots dataset HTTP (403|404|410)\b/i.test(String(message ?? ''));
+}
+
 function tableExists(db: Database, table: string) {
   const row = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table) as { name?: string } | undefined;
   return Boolean(row?.name);
@@ -351,10 +365,23 @@ function completedWebrobotsDates(db: Database) {
   );
 }
 
-function runningWebrobotsDates(db: Database) {
+function isStaleWebrobotsRun(row: WebrobotsRunRow, now = nowSec()) {
+  return row.status === 'running' && now - Number(row.started_at ?? 0) > WEBROBOTS_STALE_RUN_SECONDS;
+}
+
+function activeRunningWebrobotsDates(db: Database) {
   return new Set(
     readWebrobotsRuns(db)
-      .filter(row => row.status === 'running')
+      .filter(row => row.status === 'running' && !isStaleWebrobotsRun(row))
+      .map(row => webrobotsDateFromJobType(row.job_type))
+      .filter((date): date is string => Boolean(date)),
+  );
+}
+
+function sourceUnavailableWebrobotsDates(db: Database) {
+  return new Set(
+    readWebrobotsRuns(db)
+      .filter(row => (row.status === 'skipped' || row.status === 'error') && isSourceUnavailableMessage(row.message))
       .map(row => webrobotsDateFromJobType(row.job_type))
       .filter((date): date is string => Boolean(date)),
   );
@@ -956,22 +983,29 @@ function summarizeMonthStatus(
   dataset: IndiegogoWebrobotsDataset | null,
   date: string,
   runs: WebrobotsRunRow[],
+  now = nowSec(),
 ): IndiegogoWebrobotsMonthStatus {
   const sorted = [...runs].sort((a, b) => (b.started_at - a.started_at) || (b.id - a.id));
   const completed = sorted.find(row => row.status === 'completed');
-  const running = sorted.find(row => row.status === 'running');
+  const running = sorted.find(row => row.status === 'running' && !isStaleWebrobotsRun(row, now));
+  const stale = sorted.find(row => row.status === 'running' && isStaleWebrobotsRun(row, now));
+  const sourceUnavailable = sorted.find(row => (row.status === 'skipped' || row.status === 'error') && isSourceUnavailableMessage(row.message));
   const errored = sorted.find(row => row.status === 'error');
   const skipped = sorted.find(row => row.status === 'skipped');
-  const selected = completed ?? running ?? errored ?? skipped ?? sorted[0] ?? null;
+  const selected = completed ?? running ?? stale ?? sourceUnavailable ?? errored ?? skipped ?? sorted[0] ?? null;
   const status: IndiegogoMonthImportStatus = completed
     ? 'completed'
     : running
       ? 'running'
-      : errored
-        ? 'error'
-        : skipped
-          ? 'skipped'
-          : 'missing';
+      : stale
+        ? 'stale'
+        : sourceUnavailable
+          ? 'source_unavailable'
+          : errored
+            ? 'error'
+            : skipped
+              ? 'skipped'
+              : 'missing';
 
   return {
     date,
@@ -1096,6 +1130,8 @@ export async function getIndiegogoWebrobotsDiagnostics(): Promise<IndiegogoWebro
         missing: index.datasetCount,
         failed: 0,
         running: 0,
+        stale: 0,
+        sourceUnavailable: 0,
         skipped: 0,
         percent: index.datasetCount ? 0 : null,
       },
@@ -1125,6 +1161,8 @@ export async function getIndiegogoWebrobotsDiagnostics(): Promise<IndiegogoWebro
     const months = sourceDates.map(date => summarizeMonthStatus(datasetByDate.get(date) ?? null, date, runsByDate.get(date) ?? []));
     const completed = months.filter(month => month.status === 'completed').length;
     const running = months.filter(month => month.status === 'running').length;
+    const stale = months.filter(month => month.status === 'stale').length;
+    const sourceUnavailable = months.filter(month => month.status === 'source_unavailable').length;
     const failed = months.filter(month => month.status === 'error').length;
     const skipped = months.filter(month => month.status === 'skipped').length;
     const missing = months.filter(month => month.status === 'missing').length;
@@ -1147,6 +1185,8 @@ export async function getIndiegogoWebrobotsDiagnostics(): Promise<IndiegogoWebro
         missing,
         failed,
         running,
+        stale,
+        sourceUnavailable,
         skipped,
         percent: expected ? Math.round((completed / expected) * 1000) / 10 : null,
       },
@@ -1157,6 +1197,45 @@ export async function getIndiegogoWebrobotsDiagnostics(): Promise<IndiegogoWebro
     };
   } finally {
     db.close();
+  }
+}
+
+async function checkDatasetAvailability(dataset: IndiegogoWebrobotsDataset): Promise<{
+  ok: boolean;
+  status: number | null;
+  contentType: string | null;
+  bytes: number;
+  message?: string;
+}> {
+  try {
+    const res = await fetch(dataset.url, {
+      method: 'HEAD',
+      headers: {
+        'User-Agent': USER_AGENT,
+        Accept: 'application/x-gzip,application/json,*/*',
+      },
+      cache: 'no-store',
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!res.ok && res.status !== 405) {
+      const sourceUnavailable = isSourceUnavailableStatus(res.status);
+      return {
+        ok: false,
+        status: res.status,
+        contentType: res.headers.get('content-type'),
+        bytes: Number(res.headers.get('content-length') ?? 0) || 0,
+        message: sourceUnavailable ? `Webrobots dataset HTTP ${res.status}` : `Webrobots dataset preflight HTTP ${res.status}`,
+      };
+    }
+    return {
+      ok: true,
+      status: res.status,
+      contentType: res.headers.get('content-type'),
+      bytes: Number(res.headers.get('content-length') ?? 0) || 0,
+    };
+  } catch {
+    // Some hosts do not handle HEAD consistently; let the main GET path decide.
+    return { ok: true, status: null, contentType: null, bytes: 0 };
   }
 }
 
@@ -1177,6 +1256,22 @@ async function importDataset(db: Database, dataset: IndiegogoWebrobotsDataset): 
   const uniqueProjects = new Set<string>();
   const uniqueQueuedSlugs = new Set<string>();
   try {
+    const availability = await checkDatasetAvailability(dataset);
+    if (!availability.ok) {
+      storePayloadMeta(db, {
+        sourceKey: dataset.url,
+        kind: 'webrobots_dataset_head',
+        statusCode: availability.status,
+        contentType: availability.contentType,
+        bytes: availability.bytes,
+        preview: dataset.runId,
+      });
+      const message = availability.message ?? 'Webrobots dataset is not available.';
+      recordError(db, { jobType: 'webrobots_import', url: dataset.url, statusCode: availability.status, message });
+      completeRun(db, runId, { status: 'skipped', errors: 1, message });
+      return { ok: false, rowsRead, imported, snapshots, queued, status: availability.status ?? undefined, message };
+    }
+
     const res = await fetch(dataset.url, {
       headers: {
         'User-Agent': USER_AGENT,
@@ -1289,8 +1384,13 @@ export async function importIndiegogoWebrobots(options: IndiegogoImportOptions =
     let datasets = mode === 'latest' ? index.datasets.slice(-1) : index.datasets;
     if (mode === 'missing') {
       const completedDates = completedWebrobotsDates(db);
-      const runningDates = runningWebrobotsDates(db);
-      datasets = index.datasets.filter(dataset => !completedDates.has(dataset.date) && !runningDates.has(dataset.date));
+      const runningDates = activeRunningWebrobotsDates(db);
+      const unavailableDates = sourceUnavailableWebrobotsDates(db);
+      datasets = index.datasets.filter(dataset =>
+        !completedDates.has(dataset.date) &&
+        !runningDates.has(dataset.date) &&
+        !unavailableDates.has(dataset.date),
+      );
     }
     if (options.maxDatasets && options.maxDatasets > 0) {
       datasets = datasets.slice(-options.maxDatasets);

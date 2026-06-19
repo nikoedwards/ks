@@ -56,7 +56,7 @@ interface PlatformActionOptions {
   maxDatasets?: number;
 }
 
-type WebrobotsMonthStatus = 'completed' | 'missing' | 'running' | 'error' | 'skipped';
+type WebrobotsMonthStatus = 'completed' | 'missing' | 'running' | 'stale' | 'source_unavailable' | 'error' | 'skipped';
 
 interface WebrobotsMonth {
   date: string;
@@ -89,6 +89,8 @@ interface WebrobotsDiagnostics {
     missing: number;
     failed: number;
     running: number;
+    stale: number;
+    sourceUnavailable: number;
     skipped: number;
     percent: number | null;
   };
@@ -457,6 +459,8 @@ function webrobotsStatusMeta(status: WebrobotsMonthStatus) {
   const map: Record<WebrobotsMonthStatus, { label: string; className: string }> = {
     completed: { label: 'Completed', className: 'border-green-200 bg-green-50 text-green-700' },
     running: { label: 'Running', className: 'border-blue-200 bg-blue-50 text-blue-700' },
+    stale: { label: 'Stale', className: 'border-orange-200 bg-orange-50 text-orange-700' },
+    source_unavailable: { label: 'Source 403', className: 'border-red-200 bg-red-50 text-red-700' },
     missing: { label: 'Missing', className: 'border-amber-200 bg-amber-50 text-amber-700' },
     error: { label: 'Error', className: 'border-red-200 bg-red-50 text-red-700' },
     skipped: { label: 'Skipped', className: 'border-gray-200 bg-gray-50 text-gray-600' },
@@ -487,11 +491,25 @@ function indiegogoHealth(quality: PlatformQualityPayload) {
       summary: 'Local data is visible, but the current Webrobots index could not be read.',
     };
   }
+  if (webrobots.coverage.stale > 0) {
+    return {
+      title: 'Import needs attention',
+      tone: 'border-orange-200 bg-orange-50 text-orange-900',
+      summary: `${webrobots.coverage.stale} Webrobots import run(s) look stale and can be retried.`,
+    };
+  }
   if (webrobots.coverage.running > 0) {
     return {
       title: 'Import running',
       tone: 'border-blue-200 bg-blue-50 text-blue-900',
       summary: `${webrobots.coverage.running} Webrobots snapshot import(s) are still running.`,
+    };
+  }
+  if (webrobots.coverage.sourceUnavailable > 0) {
+    return {
+      title: 'Some source files are unavailable',
+      tone: 'border-red-200 bg-red-50 text-red-900',
+      summary: `${webrobots.coverage.sourceUnavailable} Webrobots snapshot source file(s) currently return HTTP 403/404/410.`,
     };
   }
   if (webrobots.coverage.missing + webrobots.coverage.failed + webrobots.coverage.skipped > 0) {
@@ -541,25 +559,35 @@ function indiegogoNextStep(quality: PlatformQualityPayload, cn: boolean): {
       primary: true,
     };
   }
-  if (webrobots.coverage.completed === 0 && webrobots.source.ok) {
+  if (webrobots.coverage.running > 0) {
     return {
-      label: cn ? '导入全部 Webrobots 历史快照' : 'Import all Webrobots snapshots',
-      description: cn ? `将启动 ${webrobots.coverage.expected} 个历史快照包的后台导入。` : `Start a background import for ${webrobots.coverage.expected} historical snapshots.`,
+      label: cn ? '等待当前导入完成' : 'Wait for current import',
+      description: cn ? `还有 ${webrobots.coverage.running} 个 Webrobots 导入任务正在正常运行。` : `${webrobots.coverage.running} Webrobots import task(s) are still running.`,
+      action: null,
+      primary: false,
+    };
+  }
+  const retryable = webrobots.coverage.missing + webrobots.coverage.failed + webrobots.coverage.skipped + webrobots.coverage.stale;
+  if (retryable > 0) {
+    return {
+      label: cn ? '导入可下载的 Webrobots 快照' : 'Import downloadable Webrobots snapshots',
+      description: cn
+        ? `发现 ${retryable} 个可重试日期；已确认 403 的源文件会跳过。`
+        : `${retryable} date(s) can be retried; known 403 source files will be skipped.`,
       action: 'import',
-      options: { mode: 'all_available' },
-      confirm: cn ? '这会启动完整历史导入，可能运行较久。确定开始吗？' : 'This starts a full historical import and may take a while. Continue?',
+      options: { mode: 'missing' },
+      confirm: cn ? '这会只导入仍可能下载的 Webrobots 快照，并跳过已知 403 源文件。确定开始吗？' : 'This imports only Webrobots snapshots that may still be downloadable and skips known 403 files. Continue?',
       primary: true,
     };
   }
-  if (webrobots.coverage.missing + webrobots.coverage.failed + webrobots.coverage.skipped > 0) {
-    const count = webrobots.coverage.missing + webrobots.coverage.failed + webrobots.coverage.skipped;
+  if (webrobots.coverage.sourceUnavailable > 0) {
     return {
-      label: cn ? '补导缺失 Webrobots 快照' : 'Import missing Webrobots snapshots',
-      description: cn ? `发现 ${count} 个尚未成功完成的快照日期。` : `${count} snapshot date(s) have not completed successfully.`,
-      action: 'import',
-      options: { mode: 'missing' },
-      confirm: cn ? '这会只补导未成功完成的 Webrobots 快照。确定开始吗？' : 'This imports only Webrobots snapshots that have not completed successfully. Continue?',
-      primary: true,
+      label: cn ? '等待 Webrobots 源文件恢复' : 'Wait for Webrobots source files',
+      description: cn
+        ? `还有 ${webrobots.coverage.sourceUnavailable} 个快照源文件当前返回 403/404/410，无法由我们补导。`
+        : `${webrobots.coverage.sourceUnavailable} source file(s) currently return 403/404/410 and cannot be imported from here.`,
+      action: null,
+      primary: false,
     };
   }
   const queueOpen = (webrobots.detailQueue.byStatus.queued ?? 0) + (webrobots.detailQueue.byStatus.error ?? 0);
@@ -704,6 +732,16 @@ function IndiegogoWebrobotsPanel({
                   {cn ? `运行中 ${webrobots.coverage.running}` : `Running ${webrobots.coverage.running}`}
                 </span>
               ) : null}
+              {webrobots?.coverage.stale ? (
+                <span className="rounded-full border border-current/20 bg-white/60 px-2.5 py-1">
+                  {cn ? `卡住 ${webrobots.coverage.stale}` : `Stale ${webrobots.coverage.stale}`}
+                </span>
+              ) : null}
+              {webrobots?.coverage.sourceUnavailable ? (
+                <span className="rounded-full border border-current/20 bg-white/60 px-2.5 py-1">
+                  Source 403 {webrobots.coverage.sourceUnavailable}
+                </span>
+              ) : null}
             </div>
           </div>
 
@@ -764,6 +802,8 @@ function IndiegogoWebrobotsPanel({
             <div className="flex flex-wrap gap-2 text-xs font-semibold">
               <span className="rounded-full bg-green-50 px-2.5 py-1 text-green-700">Completed {webrobots.coverage.completed}</span>
               <span className="rounded-full bg-amber-50 px-2.5 py-1 text-amber-700">Missing {webrobots.coverage.missing}</span>
+              <span className="rounded-full bg-red-50 px-2.5 py-1 text-red-700">Source 403 {webrobots.coverage.sourceUnavailable}</span>
+              <span className="rounded-full bg-orange-50 px-2.5 py-1 text-orange-700">Stale {webrobots.coverage.stale}</span>
               <span className="rounded-full bg-red-50 px-2.5 py-1 text-red-700">Failed {webrobots.coverage.failed}</span>
               <span className="rounded-full bg-blue-50 px-2.5 py-1 text-blue-700">Running {webrobots.coverage.running}</span>
             </div>
@@ -786,7 +826,16 @@ function IndiegogoWebrobotsPanel({
                   {months.map(month => {
                     const meta = webrobotsStatusMeta(month.status);
                     return (
-                      <tr key={month.date} className={month.status === 'missing' || month.status === 'error' ? 'bg-amber-50/30' : ''}>
+                      <tr
+                        key={month.date}
+                        className={
+                          month.status === 'source_unavailable' || month.status === 'error'
+                            ? 'bg-red-50/30'
+                            : month.status === 'missing' || month.status === 'stale'
+                              ? 'bg-amber-50/30'
+                              : ''
+                        }
+                      >
                         <td className="px-4 py-3 font-mono text-xs text-gray-700">
                           <div className="flex items-center gap-2">
                             <span>{month.date}</span>
