@@ -9,6 +9,7 @@ import {
   type PlatformId,
   type PlatformViewId,
 } from './platforms';
+import type { IndiegogoImportMode, IndiegogoWebrobotsDiagnostics } from './indiegogo';
 
 const DATA_DIR = process.env.DATA_DIR ?? path.join(process.cwd(), 'data');
 const PLATFORM_DIR = path.join(DATA_DIR, 'platforms');
@@ -18,7 +19,7 @@ const LEGACY_KICKSTARTER_DB_PATH = path.join(DATA_DIR, 'kickstarter.db');
 export type PlatformAction = 'init_db' | 'validate_config' | 'dry_run_capabilities' | 'crawl' | 'import' | 'export';
 
 export interface PlatformActionOptions {
-  mode?: 'latest' | 'all_available';
+  mode?: IndiegogoImportMode;
   maxDatasets?: number;
   wait?: boolean;
   detailLimit?: number;
@@ -57,6 +58,7 @@ export interface PlatformQuality {
   };
   recentRuns: unknown[];
   recentErrors: unknown[];
+  webrobots?: IndiegogoWebrobotsDiagnostics;
 }
 
 function safeStatBytes(filePath: string): number | null {
@@ -508,6 +510,16 @@ export function getPlatformQuality(view: PlatformViewId): PlatformQuality {
   };
 }
 
+export async function getPlatformQualityForResponse(view: PlatformViewId): Promise<PlatformQuality> {
+  const quality = getPlatformQuality(view);
+  if (view !== 'indiegogo') return quality;
+  const igg = await import('./indiegogo');
+  return {
+    ...quality,
+    webrobots: await igg.getIndiegogoWebrobotsDiagnostics(),
+  };
+}
+
 export async function runPlatformAction(view: PlatformViewId, action: PlatformAction, options: PlatformActionOptions = {}) {
   if (!isPlatformViewId(view)) {
     return { status: 404, payload: { ok: false, error: `Unknown platform: ${view}` } };
@@ -522,7 +534,7 @@ export async function runPlatformAction(view: PlatformViewId, action: PlatformAc
         payload: {
           ok: true,
           action,
-          quality: getPlatformQuality(view),
+          quality: await getPlatformQualityForResponse(view),
           validation,
           message: 'Indiegogo configuration is readable. No crawler/import/export side effect was performed.',
         },
@@ -592,7 +604,7 @@ export async function runPlatformAction(view: PlatformViewId, action: PlatformAc
       payload: {
         ok: true,
         action,
-        quality: getPlatformQuality(view),
+        quality: await getPlatformQualityForResponse(view),
         message: 'Configuration is readable. No crawler, import, or export side effect was performed.',
       },
     };
@@ -606,7 +618,7 @@ export async function runPlatformAction(view: PlatformViewId, action: PlatformAc
         payload: {
           ok: true,
           action,
-          quality: getPlatformQuality(view),
+          quality: await getPlatformQualityForResponse(view),
           message: 'Initialized Global aggregation database.',
         },
       };
@@ -629,7 +641,7 @@ export async function runPlatformAction(view: PlatformViewId, action: PlatformAc
       payload: {
         ok: true,
         action,
-        quality: getPlatformQuality(view),
+        quality: await getPlatformQualityForResponse(view),
         message: `Initialized isolated database for ${getPlatformDefinition(view).label}.`,
       },
     };

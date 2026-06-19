@@ -17,7 +17,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ pla
     }
     const body = await req.json().catch(() => ({})) as {
       action?: string;
-      mode?: 'latest' | 'all_available';
+      mode?: 'latest' | 'all_available' | 'missing';
       maxDatasets?: number;
       wait?: boolean;
       detailLimit?: number;

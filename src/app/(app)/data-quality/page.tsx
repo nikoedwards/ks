@@ -47,6 +47,95 @@ interface CrawlerError {
   occurrence_count?: number;
 }
 
+type PlatformActionName = 'init_db' | 'validate_config' | 'dry_run_capabilities' | 'crawl' | 'import' | 'export';
+
+interface PlatformActionOptions {
+  mode?: 'latest' | 'all_available' | 'missing';
+  wait?: boolean;
+  detailLimit?: number;
+  maxDatasets?: number;
+}
+
+type WebrobotsMonthStatus = 'completed' | 'missing' | 'running' | 'error' | 'skipped';
+
+interface WebrobotsMonth {
+  date: string;
+  runId: string | null;
+  url: string | null;
+  status: WebrobotsMonthStatus;
+  runCount: number;
+  importedCount: number;
+  snapshotCount: number;
+  errorCount: number;
+  startedAt: number | null;
+  completedAt: number | null;
+  message: string | null;
+}
+
+interface WebrobotsDiagnostics {
+  checkedAt: number;
+  databaseExists: boolean;
+  source: {
+    ok: boolean;
+    datasetCount: number;
+    firstDate: string | null;
+    latestDate: string | null;
+    latestUrl: string | null;
+    error?: string;
+  };
+  coverage: {
+    expected: number;
+    completed: number;
+    missing: number;
+    failed: number;
+    running: number;
+    skipped: number;
+    percent: number | null;
+  };
+  range: {
+    firstSnapshotAt: number | null;
+    latestSnapshotAt: number | null;
+    webrobotsProjects: number;
+    webrobotsSnapshots: number;
+    webrobotsDetails: number;
+  };
+  detailQueue: {
+    total: number;
+    byStatus: Record<string, number>;
+  };
+  errorSummary: Array<{
+    jobType: string | null;
+    statusCode: number | null;
+    message: string;
+    count: number;
+    lastOccurredAt: number | null;
+  }>;
+  months: WebrobotsMonth[];
+}
+
+interface PlatformRunRow {
+  id: number;
+  job_type: string;
+  status: string;
+  started_at: number;
+  completed_at: number | null;
+  discovered_count: number;
+  imported_count: number;
+  snapshot_count: number;
+  error_count: number;
+  message: string | null;
+}
+
+interface PlatformErrorRow {
+  id: number;
+  job_type: string | null;
+  source_project_id?: string | null;
+  url: string | null;
+  status_code: number | null;
+  message: string;
+  occurred_at: number;
+}
+
 interface DiagnosticsReport {
   generatedAt: number;
   database: {
@@ -260,6 +349,7 @@ interface PlatformQualityPayload {
   };
   recentRuns: unknown[];
   recentErrors: unknown[];
+  webrobots?: WebrobotsDiagnostics;
 }
 
 function fmtNum(value: number | null | undefined) {
@@ -349,6 +439,147 @@ function platformStatusLabel(status: string, cn: boolean) {
   return map[status] ?? { cn: status, en: status, tone: 'bg-gray-50 text-gray-600 border-gray-100' };
 }
 
+function platformTableCount(quality: PlatformQualityPayload, table: string) {
+  return quality.database.tableCounts.find(item => item.table === table)?.rows ?? 0;
+}
+
+function fmtPercent(value: number | null | undefined) {
+  if (value === null || value === undefined) return 'unknown';
+  return `${value.toFixed(value % 1 === 0 ? 0 : 1)}%`;
+}
+
+function fmtDateOnly(ts: number | null | undefined) {
+  if (!ts) return 'None';
+  return new Date(ts * 1000).toISOString().slice(0, 10);
+}
+
+function webrobotsStatusMeta(status: WebrobotsMonthStatus) {
+  const map: Record<WebrobotsMonthStatus, { label: string; className: string }> = {
+    completed: { label: 'Completed', className: 'border-green-200 bg-green-50 text-green-700' },
+    running: { label: 'Running', className: 'border-blue-200 bg-blue-50 text-blue-700' },
+    missing: { label: 'Missing', className: 'border-amber-200 bg-amber-50 text-amber-700' },
+    error: { label: 'Error', className: 'border-red-200 bg-red-50 text-red-700' },
+    skipped: { label: 'Skipped', className: 'border-gray-200 bg-gray-50 text-gray-600' },
+  };
+  return map[status];
+}
+
+function indiegogoHealth(quality: PlatformQualityPayload) {
+  const webrobots = quality.webrobots;
+  if (!quality.database.exists) {
+    return {
+      title: 'Database not initialized',
+      tone: 'border-amber-200 bg-amber-50 text-amber-900',
+      summary: 'Create the isolated Indiegogo database before importing Webrobots history.',
+    };
+  }
+  if (!webrobots) {
+    return {
+      title: 'Diagnostics unavailable',
+      tone: 'border-gray-200 bg-gray-50 text-gray-700',
+      summary: 'Refresh this page to read Webrobots import diagnostics.',
+    };
+  }
+  if (!webrobots.source.ok) {
+    return {
+      title: 'Source cannot be confirmed',
+      tone: 'border-amber-200 bg-amber-50 text-amber-900',
+      summary: 'Local data is visible, but the current Webrobots index could not be read.',
+    };
+  }
+  if (webrobots.coverage.running > 0) {
+    return {
+      title: 'Import running',
+      tone: 'border-blue-200 bg-blue-50 text-blue-900',
+      summary: `${webrobots.coverage.running} Webrobots snapshot import(s) are still running.`,
+    };
+  }
+  if (webrobots.coverage.missing + webrobots.coverage.failed + webrobots.coverage.skipped > 0) {
+    return {
+      title: 'Partial Webrobots import',
+      tone: 'border-amber-200 bg-amber-50 text-amber-900',
+      summary: `${webrobots.coverage.completed}/${webrobots.coverage.expected} snapshots completed.`,
+    };
+  }
+  const queueOpen = (webrobots.detailQueue.byStatus.queued ?? 0) + (webrobots.detailQueue.byStatus.error ?? 0);
+  if (queueOpen > 0) {
+    return {
+      title: 'History complete, details pending',
+      tone: 'border-blue-200 bg-blue-50 text-blue-900',
+      summary: `${queueOpen.toLocaleString()} project detail task(s) still need refresh.`,
+    };
+  }
+  return {
+    title: 'Webrobots history complete',
+    tone: 'border-green-200 bg-green-50 text-green-900',
+    summary: 'All current Webrobots snapshots have a successful import run.',
+  };
+}
+
+function indiegogoNextStep(quality: PlatformQualityPayload, cn: boolean): {
+  label: string;
+  description: string;
+  action: PlatformActionName | null;
+  options?: PlatformActionOptions;
+  confirm?: string;
+  primary: boolean;
+} {
+  const webrobots = quality.webrobots;
+  if (!quality.database.exists) {
+    return {
+      label: cn ? '初始化 Indiegogo DB' : 'Initialize Indiegogo DB',
+      description: cn ? '先创建隔离数据库，之后才能导入 Webrobots 历史快照。' : 'Create the isolated database before importing Webrobots history.',
+      action: 'init_db',
+      primary: true,
+    };
+  }
+  if (!webrobots) {
+    return {
+      label: cn ? '刷新诊断' : 'Refresh diagnostics',
+      description: cn ? '重新读取 Webrobots 源头和本地导入状态。' : 'Reload Webrobots source and local import diagnostics.',
+      action: 'validate_config',
+      primary: true,
+    };
+  }
+  if (webrobots.coverage.completed === 0 && webrobots.source.ok) {
+    return {
+      label: cn ? '导入全部 Webrobots 历史快照' : 'Import all Webrobots snapshots',
+      description: cn ? `将启动 ${webrobots.coverage.expected} 个历史快照包的后台导入。` : `Start a background import for ${webrobots.coverage.expected} historical snapshots.`,
+      action: 'import',
+      options: { mode: 'all_available' },
+      confirm: cn ? '这会启动完整历史导入，可能运行较久。确定开始吗？' : 'This starts a full historical import and may take a while. Continue?',
+      primary: true,
+    };
+  }
+  if (webrobots.coverage.missing + webrobots.coverage.failed + webrobots.coverage.skipped > 0) {
+    const count = webrobots.coverage.missing + webrobots.coverage.failed + webrobots.coverage.skipped;
+    return {
+      label: cn ? '补导缺失 Webrobots 快照' : 'Import missing Webrobots snapshots',
+      description: cn ? `发现 ${count} 个尚未成功完成的快照日期。` : `${count} snapshot date(s) have not completed successfully.`,
+      action: 'import',
+      options: { mode: 'missing' },
+      confirm: cn ? '这会只补导未成功完成的 Webrobots 快照。确定开始吗？' : 'This imports only Webrobots snapshots that have not completed successfully. Continue?',
+      primary: true,
+    };
+  }
+  const queueOpen = (webrobots.detailQueue.byStatus.queued ?? 0) + (webrobots.detailQueue.byStatus.error ?? 0);
+  if (queueOpen > 0) {
+    return {
+      label: cn ? '刷新项目详情队列' : 'Refresh project detail queue',
+      description: cn ? `还有 ${queueOpen.toLocaleString()} 个详情任务待处理或重试。` : `${queueOpen.toLocaleString()} detail task(s) remain queued or failed.`,
+      action: 'crawl',
+      confirm: cn ? '这会同步活跃项目并刷新一批 Indiegogo 详情。确定开始吗？' : 'This syncs active projects and refreshes a detail batch. Continue?',
+      primary: true,
+    };
+  }
+  return {
+    label: cn ? 'Webrobots 历史导入完成' : 'Webrobots history complete',
+    description: cn ? '当前 Webrobots 索引里的快照都已经成功导入。' : 'Every snapshot in the current Webrobots index has a successful import run.',
+    action: null,
+    primary: false,
+  };
+}
+
 function PlatformSwitcher({
   value,
   onChange,
@@ -399,6 +630,319 @@ function PlatformSwitcher({
   );
 }
 
+function IndiegogoWebrobotsPanel({
+  cn,
+  quality,
+  loading,
+  actionBusy,
+  actionMessage,
+  onAction,
+}: {
+  cn: boolean;
+  quality: PlatformQualityPayload;
+  loading: boolean;
+  actionBusy: string | null;
+  actionMessage: { kind: 'success' | 'error'; text: string } | null;
+  onAction: (action: PlatformActionName, options?: PlatformActionOptions) => void;
+}) {
+  const webrobots = quality.webrobots;
+  const health = indiegogoHealth(quality);
+  const nextStep = indiegogoNextStep(quality, cn);
+  const actionDisabled = Boolean(actionBusy);
+  const months = [...(webrobots?.months ?? [])].sort((a, b) => b.date.localeCompare(a.date));
+  const recentRuns = (quality.recentRuns as PlatformRunRow[]).slice(0, 8);
+  const recentErrors = (quality.recentErrors as PlatformErrorRow[]).slice(0, 8);
+  const projectRows = platformTableCount(quality, 'platform_projects');
+  const snapshotRows = platformTableCount(quality, 'platform_snapshots');
+  const detailRows = platformTableCount(quality, 'indiegogo_project_details');
+  const queueRows = platformTableCount(quality, 'platform_detail_queue');
+  const errorRows = platformTableCount(quality, 'platform_crawler_errors');
+
+  const runRecommendedAction = () => {
+    if (!nextStep.action || actionDisabled) return;
+    if (nextStep.confirm && !window.confirm(nextStep.confirm)) return;
+    onAction(nextStep.action, nextStep.options);
+  };
+
+  const runConfirmed = (action: PlatformActionName, options: PlatformActionOptions | undefined, message: string) => {
+    if (actionDisabled) return;
+    if (!window.confirm(message)) return;
+    onAction(action, options);
+  };
+
+  return (
+    <div className="space-y-5">
+      {actionMessage && (
+        <div className={`flex items-center gap-2 rounded-lg px-3 py-2 text-sm ${actionMessage.kind === 'success' ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
+          {actionMessage.kind === 'success' ? <CheckCircle2 className="h-4 w-4" /> : <AlertTriangle className="h-4 w-4" />}
+          {actionMessage.text}
+        </div>
+      )}
+
+      <section className={`rounded-xl border p-5 shadow-sm ${health.tone}`}>
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Server className="h-5 w-5" />
+              <h2 className="text-xl font-black">{cn ? 'Indiegogo Webrobots 导入状态' : 'Indiegogo Webrobots import status'}</h2>
+              {loading && <RefreshCw className="h-4 w-4 animate-spin opacity-70" />}
+            </div>
+            <p className="mt-2 text-sm opacity-90">{health.summary}</p>
+            <div className="mt-3 flex flex-wrap gap-2 text-xs font-semibold">
+              <span className="rounded-full border border-current/20 bg-white/60 px-2.5 py-1">
+                {webrobots
+                  ? `${webrobots.coverage.completed}/${webrobots.coverage.expected} snapshots · ${fmtPercent(webrobots.coverage.percent)} complete`
+                  : 'Diagnostics not loaded'}
+              </span>
+              <span className="rounded-full border border-current/20 bg-white/60 px-2.5 py-1">
+                {webrobots?.source.ok
+                  ? `Source ${webrobots.source.firstDate ?? '?'} → ${webrobots.source.latestDate ?? '?'}`
+                  : (cn ? '源头暂不可确认' : 'Source not confirmed')}
+              </span>
+              {webrobots?.coverage.running ? (
+                <span className="rounded-full border border-current/20 bg-white/60 px-2.5 py-1">
+                  {cn ? `运行中 ${webrobots.coverage.running}` : `Running ${webrobots.coverage.running}`}
+                </span>
+              ) : null}
+            </div>
+          </div>
+
+          <div className="min-w-[260px] rounded-lg border border-white/70 bg-white/80 p-4 text-gray-900 shadow-sm">
+            <p className="text-xs font-bold uppercase tracking-wide text-gray-400">{cn ? '下一步' : 'Next step'}</p>
+            <h3 className="mt-1 text-base font-black">{nextStep.label}</h3>
+            <p className="mt-1 text-sm text-gray-500">{nextStep.description}</p>
+            {nextStep.action && (
+              <button
+                type="button"
+                onClick={runRecommendedAction}
+                disabled={actionDisabled}
+                className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-lg bg-gray-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {actionBusy === nextStep.action ? <RefreshCw className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+                {nextStep.label}
+              </button>
+            )}
+          </div>
+        </div>
+      </section>
+
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+        <StatTile
+          icon={Database}
+          label={cn ? 'Webrobots 项目' : 'Webrobots projects'}
+          value={fmtNum(webrobots?.range.webrobotsProjects ?? projectRows)}
+          hint={cn ? `总项目表 ${fmtNum(projectRows)}` : `Project table ${fmtNum(projectRows)}`}
+          tone="green"
+        />
+        <StatTile
+          icon={Activity}
+          label={cn ? 'Webrobots 快照' : 'Webrobots snapshots'}
+          value={fmtNum(webrobots?.range.webrobotsSnapshots ?? snapshotRows)}
+          hint={cn ? `${fmtDateOnly(webrobots?.range.firstSnapshotAt)} → ${fmtDateOnly(webrobots?.range.latestSnapshotAt)}` : `${fmtDateOnly(webrobots?.range.firstSnapshotAt)} → ${fmtDateOnly(webrobots?.range.latestSnapshotAt)}`}
+          tone="blue"
+        />
+        <StatTile
+          icon={HardDrive}
+          label={cn ? '详情与队列' : 'Details and queue'}
+          value={`${fmtNum(detailRows)} / ${fmtNum(queueRows)}`}
+          hint={cn ? `错误 ${fmtNum(errorRows)} · DB ${fmtBytes(quality.database.fileBytes)}` : `Errors ${fmtNum(errorRows)} · DB ${fmtBytes(quality.database.fileBytes)}`}
+          tone={errorRows ? 'amber' : 'green'}
+        />
+      </div>
+
+      {webrobots && (
+        <section className="rounded-xl border border-gray-100 bg-white p-5 shadow-sm">
+          <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div>
+              <h3 className="font-bold text-gray-900">{cn ? '导入覆盖' : 'Import coverage'}</h3>
+              <p className="text-sm text-gray-500">
+                {cn
+                  ? '完整度按当前 Webrobots 索引计算；每个日期至少有一次 completed run 才算完成。'
+                  : 'Completeness is relative to the current Webrobots index; each date needs one completed run.'}
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2 text-xs font-semibold">
+              <span className="rounded-full bg-green-50 px-2.5 py-1 text-green-700">Completed {webrobots.coverage.completed}</span>
+              <span className="rounded-full bg-amber-50 px-2.5 py-1 text-amber-700">Missing {webrobots.coverage.missing}</span>
+              <span className="rounded-full bg-red-50 px-2.5 py-1 text-red-700">Failed {webrobots.coverage.failed}</span>
+              <span className="rounded-full bg-blue-50 px-2.5 py-1 text-blue-700">Running {webrobots.coverage.running}</span>
+            </div>
+          </div>
+
+          <div className="overflow-hidden rounded-lg border border-gray-100">
+            <div className="max-h-[440px] overflow-auto">
+              <table className="min-w-full divide-y divide-gray-100 text-sm">
+                <thead className="sticky top-0 bg-gray-50 text-xs font-semibold uppercase text-gray-500">
+                  <tr>
+                    <th className="px-4 py-3 text-left">{cn ? '日期' : 'Date'}</th>
+                    <th className="px-4 py-3 text-left">{cn ? '状态' : 'Status'}</th>
+                    <th className="px-4 py-3 text-right">{cn ? '项目' : 'Projects'}</th>
+                    <th className="px-4 py-3 text-right">{cn ? '快照' : 'Snapshots'}</th>
+                    <th className="px-4 py-3 text-right">{cn ? '错误' : 'Errors'}</th>
+                    <th className="px-4 py-3 text-left">{cn ? '完成时间' : 'Completed'}</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100 bg-white">
+                  {months.map(month => {
+                    const meta = webrobotsStatusMeta(month.status);
+                    return (
+                      <tr key={month.date} className={month.status === 'missing' || month.status === 'error' ? 'bg-amber-50/30' : ''}>
+                        <td className="px-4 py-3 font-mono text-xs text-gray-700">
+                          <div className="flex items-center gap-2">
+                            <span>{month.date}</span>
+                            {month.url && (
+                              <a href={month.url} target="_blank" rel="noreferrer" className="text-gray-300 hover:text-gray-600" title="Open source gz">
+                                <ExternalLink className="h-3.5 w-3.5" />
+                              </a>
+                            )}
+                          </div>
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className={`rounded-full border px-2 py-0.5 text-xs font-semibold ${meta.className}`}>{meta.label}</span>
+                        </td>
+                        <td className="px-4 py-3 text-right font-semibold text-gray-900">{fmtNum(month.importedCount)}</td>
+                        <td className="px-4 py-3 text-right font-semibold text-gray-900">{fmtNum(month.snapshotCount)}</td>
+                        <td className="px-4 py-3 text-right font-semibold text-gray-900">{fmtNum(month.errorCount)}</td>
+                        <td className="px-4 py-3 text-xs text-gray-500" title={month.message ?? ''}>{fmtTime(month.completedAt ?? month.startedAt, cn ? 'cn' : 'en')}</td>
+                      </tr>
+                    );
+                  })}
+                  {!months.length && (
+                    <tr>
+                      <td colSpan={6} className="px-4 py-8 text-center text-sm text-gray-400">
+                        {cn ? '暂无 Webrobots 月份状态。' : 'No Webrobots month status yet.'}
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+      )}
+
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
+        <section className="rounded-xl border border-gray-100 bg-white p-5 shadow-sm">
+          <div className="mb-4 flex items-center gap-2">
+            <Info className="h-4 w-4 text-gray-500" />
+            <h3 className="font-bold text-gray-900">{cn ? '详情队列' : 'Detail queue'}</h3>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            {Object.entries(webrobots?.detailQueue.byStatus ?? { queued: 0, ok: 0, error: 0, invalid_slug: 0 }).map(([status, count]) => (
+              <div key={status} className="rounded-lg border border-gray-100 bg-gray-50 p-3">
+                <p className="font-mono text-xs text-gray-500">{status}</p>
+                <p className="mt-1 text-xl font-black text-gray-900">{fmtNum(count)}</p>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <section className="rounded-xl border border-gray-100 bg-white p-5 shadow-sm">
+          <div className="mb-4 flex items-center gap-2">
+            <AlertTriangle className="h-4 w-4 text-gray-500" />
+            <h3 className="font-bold text-gray-900">{cn ? '错误摘要' : 'Error summary'}</h3>
+          </div>
+          <div className="space-y-2">
+            {(webrobots?.errorSummary ?? []).slice(0, 6).map((error, idx) => (
+              <div key={`${error.jobType}:${error.statusCode}:${idx}`} className="rounded-lg border border-red-50 bg-red-50/40 p-3">
+                <div className="flex flex-wrap items-center gap-2 text-xs">
+                  <span className="font-semibold text-gray-800">{error.jobType ?? 'unknown'}</span>
+                  {error.statusCode && <span className="text-red-600">HTTP {error.statusCode}</span>}
+                  <span className="rounded bg-white px-1.5 py-0.5 font-semibold text-red-700">x{error.count}</span>
+                  <span className="text-gray-400">{fmtTime(error.lastOccurredAt, cn ? 'cn' : 'en')}</span>
+                </div>
+                <p className="mt-1 line-clamp-2 text-sm text-red-700">{error.message}</p>
+              </div>
+            ))}
+            {!(webrobots?.errorSummary ?? []).length && (
+              <div className="rounded-lg border border-dashed border-gray-200 bg-gray-50 px-4 py-6 text-center text-sm text-gray-400">
+                {cn ? '暂无 Indiegogo 导入错误。' : 'No Indiegogo import errors.'}
+              </div>
+            )}
+          </div>
+        </section>
+      </div>
+
+      <details className="rounded-xl border border-gray-100 bg-white p-5 shadow-sm">
+        <summary className="cursor-pointer text-sm font-bold text-gray-900">{cn ? '高级诊断与手动操作' : 'Advanced diagnostics and manual actions'}</summary>
+        <div className="mt-4 space-y-5">
+          <div className="flex flex-wrap gap-2">
+            <button type="button" onClick={() => onAction('validate_config')} disabled={actionDisabled} className="rounded-lg border border-gray-200 px-3 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-50">
+              Validate config
+            </button>
+            <button type="button" onClick={() => onAction('dry_run_capabilities')} disabled={actionDisabled} className="rounded-lg border border-gray-200 px-3 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-50">
+              Dry-run capabilities
+            </button>
+            <button
+              type="button"
+              onClick={() => runConfirmed('import', { mode: 'all_available' }, cn ? '这会重新遍历全部 Webrobots 快照，可能运行较久。确定开始吗？' : 'This scans all Webrobots snapshots and may take a while. Continue?')}
+              disabled={actionDisabled}
+              className="rounded-lg border border-ks-green/30 bg-ks-green-light px-3 py-2 text-sm font-semibold text-ks-green-dark hover:bg-green-100 disabled:opacity-50"
+            >
+              Import all
+            </button>
+            <button
+              type="button"
+              onClick={() => runConfirmed('crawl', undefined, cn ? '这会同步活跃项目并刷新一批详情。确定开始吗？' : 'This syncs active projects and refreshes a detail batch. Continue?')}
+              disabled={actionDisabled}
+              className="rounded-lg border border-ks-green/30 bg-ks-green-light px-3 py-2 text-sm font-semibold text-ks-green-dark hover:bg-green-100 disabled:opacity-50"
+            >
+              Active crawl / detail refresh
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
+            {quality.database.tableCounts.map(item => (
+              <div key={item.table} className="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2">
+                <p className="font-mono text-xs text-gray-500">{item.table}</p>
+                <p className="mt-1 text-lg font-black text-gray-900">{fmtNum(item.rows)}</p>
+              </div>
+            ))}
+          </div>
+
+          <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
+            <div>
+              <h4 className="mb-2 text-sm font-bold text-gray-900">{cn ? '最近运行记录' : 'Recent runs'}</h4>
+              <div className="space-y-2">
+                {recentRuns.map(run => (
+                  <div key={run.id} className="rounded-lg border border-gray-100 bg-gray-50 p-3 text-sm">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-mono text-xs text-gray-500">{run.job_type}</span>
+                      <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${statusClass(run.status)}`}>{run.status}</span>
+                      <span className="text-xs text-gray-400">{fmtTime(run.started_at, cn ? 'cn' : 'en')}</span>
+                    </div>
+                    <p className="mt-1 text-xs text-gray-500">
+                      {cn ? '导入' : 'Imported'} {fmtNum(run.imported_count)} · {cn ? '快照' : 'Snapshots'} {fmtNum(run.snapshot_count)} · {cn ? '错误' : 'Errors'} {fmtNum(run.error_count)}
+                    </p>
+                    {run.message && <p className="mt-1 line-clamp-2 text-xs text-gray-400">{run.message}</p>}
+                  </div>
+                ))}
+                {!recentRuns.length && <p className="rounded-lg border border-dashed border-gray-200 bg-gray-50 px-4 py-6 text-center text-sm text-gray-400">{cn ? '暂无运行记录。' : 'No runs yet.'}</p>}
+              </div>
+            </div>
+            <div>
+              <h4 className="mb-2 text-sm font-bold text-gray-900">{cn ? '最近错误' : 'Recent errors'}</h4>
+              <div className="space-y-2">
+                {recentErrors.map(error => (
+                  <div key={error.id} className="rounded-lg border border-red-50 bg-red-50/40 p-3 text-sm">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-mono text-xs text-gray-500">{error.job_type ?? 'unknown'}</span>
+                      {error.status_code && <span className="text-xs font-semibold text-red-600">HTTP {error.status_code}</span>}
+                      <span className="text-xs text-gray-400">{fmtTime(error.occurred_at, cn ? 'cn' : 'en')}</span>
+                    </div>
+                    <p className="mt-1 line-clamp-2 text-xs text-red-700">{error.message}</p>
+                  </div>
+                ))}
+                {!recentErrors.length && <p className="rounded-lg border border-dashed border-gray-200 bg-gray-50 px-4 py-6 text-center text-sm text-gray-400">{cn ? '暂无最近错误。' : 'No recent errors.'}</p>}
+              </div>
+            </div>
+          </div>
+        </div>
+      </details>
+    </div>
+  );
+}
+
 function PlatformIsolationPanel({
   cn,
   quality,
@@ -412,7 +956,7 @@ function PlatformIsolationPanel({
   loading: boolean;
   actionBusy: string | null;
   actionMessage: { kind: 'success' | 'error'; text: string } | null;
-  onAction: (action: 'init_db' | 'validate_config' | 'dry_run_capabilities' | 'crawl' | 'import' | 'export') => void;
+  onAction: (action: PlatformActionName, options?: PlatformActionOptions) => void;
 }) {
   if (loading && !quality) {
     return (
@@ -430,6 +974,19 @@ function PlatformIsolationPanel({
       <section className="rounded-xl border border-red-100 bg-red-50 p-5 text-sm text-red-700">
         {cn ? '平台状态暂不可用。' : 'Platform status is unavailable.'}
       </section>
+    );
+  }
+
+  if (quality.view === 'indiegogo') {
+    return (
+      <IndiegogoWebrobotsPanel
+        cn={cn}
+        quality={quality}
+        loading={loading}
+        actionBusy={actionBusy}
+        actionMessage={actionMessage}
+        onAction={onAction}
+      />
     );
   }
 
@@ -1370,13 +1927,21 @@ export default function DataQualityPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedPlatform]);
 
+  useEffect(() => {
+    if (selectedPlatform === 'kickstarter') return;
+    if (!platformQuality?.webrobots?.coverage.running) return;
+    const id = setInterval(() => loadPlatformQuality(selectedPlatform), 15_000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedPlatform, platformQuality?.webrobots?.coverage.running]);
+
   const changePlatform = (platform: PlatformViewId) => {
     setSelectedPlatform(platform);
     setPlatformActionMessage(null);
     if (platform !== 'kickstarter') setPlatformQuality(null);
   };
 
-  const runPlatformAction = async (action: 'init_db' | 'validate_config' | 'dry_run_capabilities' | 'crawl' | 'import' | 'export') => {
+  const runPlatformAction = async (action: PlatformActionName, options: PlatformActionOptions = {}) => {
     if (selectedPlatform === 'kickstarter') return;
     setPlatformActionBusy(action);
     setPlatformActionMessage(null);
@@ -1384,7 +1949,7 @@ export default function DataQualityPage() {
       const res = await fetch(`/api/platforms/${selectedPlatform}/actions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action }),
+        body: JSON.stringify({ action, ...options }),
       });
       const data = await res.json().catch(() => ({})) as {
         ok?: boolean;

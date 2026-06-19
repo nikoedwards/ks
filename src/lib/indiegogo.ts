@@ -1,8 +1,9 @@
 import { createGunzip } from 'zlib';
 import { createInterface } from 'readline';
 import { Readable } from 'stream';
-import type { Database } from 'better-sqlite3';
-import { openPlatformSourceDb } from './platformDb';
+import fs from 'fs';
+import BetterSqlite3, { type Database } from 'better-sqlite3';
+import { getPlatformDbPath, openPlatformSourceDb } from './platformDb';
 import { resolveUsdAmounts } from './money';
 
 const PLATFORM_ID = 'indiegogo';
@@ -30,14 +31,16 @@ export interface IndiegogoWebrobotsIndex {
   datasets: IndiegogoWebrobotsDataset[];
 }
 
+export type IndiegogoImportMode = 'latest' | 'all_available' | 'missing';
+
 export interface IndiegogoImportOptions {
-  mode?: 'latest' | 'all_available';
+  mode?: IndiegogoImportMode;
   maxDatasets?: number;
 }
 
 export interface IndiegogoImportResult {
   ok: boolean;
-  mode: 'latest' | 'all_available';
+  mode: IndiegogoImportMode;
   datasetCount: number;
   datasetsImported: number;
   datasetsSkipped: number;
@@ -47,6 +50,63 @@ export interface IndiegogoImportResult {
   queuedDetails: number;
   skipped: Array<{ url: string; status?: number; message: string }>;
   message?: string;
+}
+
+export type IndiegogoMonthImportStatus = 'completed' | 'missing' | 'running' | 'error' | 'skipped';
+
+export interface IndiegogoWebrobotsMonthStatus {
+  date: string;
+  runId: string | null;
+  url: string | null;
+  status: IndiegogoMonthImportStatus;
+  runCount: number;
+  importedCount: number;
+  snapshotCount: number;
+  errorCount: number;
+  startedAt: number | null;
+  completedAt: number | null;
+  message: string | null;
+}
+
+export interface IndiegogoWebrobotsDiagnostics {
+  checkedAt: number;
+  databaseExists: boolean;
+  source: {
+    ok: boolean;
+    datasetCount: number;
+    firstDate: string | null;
+    latestDate: string | null;
+    latestUrl: string | null;
+    error?: string;
+  };
+  coverage: {
+    expected: number;
+    completed: number;
+    missing: number;
+    failed: number;
+    running: number;
+    skipped: number;
+    percent: number | null;
+  };
+  range: {
+    firstSnapshotAt: number | null;
+    latestSnapshotAt: number | null;
+    webrobotsProjects: number;
+    webrobotsSnapshots: number;
+    webrobotsDetails: number;
+  };
+  detailQueue: {
+    total: number;
+    byStatus: Record<string, number>;
+  };
+  errorSummary: Array<{
+    jobType: string | null;
+    statusCode: number | null;
+    message: string;
+    count: number;
+    lastOccurredAt: number | null;
+  }>;
+  months: IndiegogoWebrobotsMonthStatus[];
 }
 
 export interface IndiegogoActiveResult {
@@ -236,6 +296,68 @@ function runIdToSeconds(runId: string | null | undefined): number {
 function runIdToDate(runId: string) {
   const ts = runIdToSeconds(runId);
   return new Date(ts * 1000).toISOString().slice(0, 10);
+}
+
+function webrobotsDateFromJobType(jobType: string | null | undefined): string | null {
+  const match = String(jobType ?? '').match(/^webrobots:(\d{4}-\d{2}-\d{2})$/);
+  return match?.[1] ?? null;
+}
+
+function tableExists(db: Database, table: string) {
+  const row = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table) as { name?: string } | undefined;
+  return Boolean(row?.name);
+}
+
+function scalarNumber(db: Database, sql: string, params: Record<string, unknown> = {}) {
+  const row = db.prepare(sql).get(params) as { value?: number | null } | undefined;
+  return Number(row?.value ?? 0);
+}
+
+function scalarNullableNumber(db: Database, sql: string, params: Record<string, unknown> = {}) {
+  const row = db.prepare(sql).get(params) as { value?: number | null } | undefined;
+  const value = row?.value;
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+interface WebrobotsRunRow {
+  id: number;
+  job_type: string;
+  status: string;
+  started_at: number;
+  completed_at: number | null;
+  imported_count: number;
+  snapshot_count: number;
+  error_count: number;
+  message: string | null;
+}
+
+function readWebrobotsRuns(db: Database): WebrobotsRunRow[] {
+  if (!tableExists(db, 'platform_crawl_runs')) return [];
+  return db.prepare(`
+    SELECT id, job_type, status, started_at, completed_at,
+           imported_count, snapshot_count, error_count, message
+    FROM platform_crawl_runs
+    WHERE platform_id = ? AND job_type LIKE 'webrobots:%'
+    ORDER BY started_at DESC, id DESC
+  `).all(PLATFORM_ID) as WebrobotsRunRow[];
+}
+
+function completedWebrobotsDates(db: Database) {
+  return new Set(
+    readWebrobotsRuns(db)
+      .filter(row => row.status === 'completed')
+      .map(row => webrobotsDateFromJobType(row.job_type))
+      .filter((date): date is string => Boolean(date)),
+  );
+}
+
+function runningWebrobotsDates(db: Database) {
+  return new Set(
+    readWebrobotsRuns(db)
+      .filter(row => row.status === 'running')
+      .map(row => webrobotsDateFromJobType(row.job_type))
+      .filter((date): date is string => Boolean(date)),
+  );
 }
 
 function sourceUrlFromClickthrough(clickthrough: string | null): string | null {
@@ -830,6 +952,214 @@ export async function fetchWebrobotsIndex(): Promise<IndiegogoWebrobotsIndex> {
   };
 }
 
+function summarizeMonthStatus(
+  dataset: IndiegogoWebrobotsDataset | null,
+  date: string,
+  runs: WebrobotsRunRow[],
+): IndiegogoWebrobotsMonthStatus {
+  const sorted = [...runs].sort((a, b) => (b.started_at - a.started_at) || (b.id - a.id));
+  const completed = sorted.find(row => row.status === 'completed');
+  const running = sorted.find(row => row.status === 'running');
+  const errored = sorted.find(row => row.status === 'error');
+  const skipped = sorted.find(row => row.status === 'skipped');
+  const selected = completed ?? running ?? errored ?? skipped ?? sorted[0] ?? null;
+  const status: IndiegogoMonthImportStatus = completed
+    ? 'completed'
+    : running
+      ? 'running'
+      : errored
+        ? 'error'
+        : skipped
+          ? 'skipped'
+          : 'missing';
+
+  return {
+    date,
+    runId: dataset?.runId ?? null,
+    url: dataset?.url ?? null,
+    status,
+    runCount: sorted.length,
+    importedCount: Number(selected?.imported_count ?? 0),
+    snapshotCount: Number(selected?.snapshot_count ?? 0),
+    errorCount: sorted.reduce((sum, row) => sum + Number(row.error_count ?? 0), 0),
+    startedAt: selected?.started_at ?? null,
+    completedAt: selected?.completed_at ?? null,
+    message: selected?.message ?? null,
+  };
+}
+
+function readDetailQueueSummary(db: Database): IndiegogoWebrobotsDiagnostics['detailQueue'] {
+  if (!tableExists(db, 'platform_detail_queue')) return { total: 0, byStatus: {} };
+  const rows = db.prepare(`
+    SELECT status, COUNT(*) AS count
+    FROM platform_detail_queue
+    WHERE platform_id = ?
+    GROUP BY status
+    ORDER BY count DESC
+  `).all(PLATFORM_ID) as Array<{ status: string | null; count: number }>;
+  const byStatus: Record<string, number> = {};
+  let total = 0;
+  for (const row of rows) {
+    const key = row.status || 'unknown';
+    const count = Number(row.count ?? 0);
+    byStatus[key] = count;
+    total += count;
+  }
+  for (const status of ['queued', 'ok', 'error', 'invalid_slug']) {
+    if (byStatus[status] === undefined) byStatus[status] = 0;
+  }
+  return { total, byStatus };
+}
+
+function readErrorSummary(db: Database): IndiegogoWebrobotsDiagnostics['errorSummary'] {
+  if (!tableExists(db, 'platform_crawler_errors')) return [];
+  return db.prepare(`
+    SELECT job_type AS jobType,
+           status_code AS statusCode,
+           message,
+           COUNT(*) AS count,
+           MAX(occurred_at) AS lastOccurredAt
+    FROM platform_crawler_errors
+    WHERE platform_id = ?
+    GROUP BY job_type, status_code, message
+    ORDER BY lastOccurredAt DESC
+    LIMIT 12
+  `).all(PLATFORM_ID) as IndiegogoWebrobotsDiagnostics['errorSummary'];
+}
+
+function readWebrobotsRange(db: Database): IndiegogoWebrobotsDiagnostics['range'] {
+  if (!tableExists(db, 'platform_snapshots')) {
+    return { firstSnapshotAt: null, latestSnapshotAt: null, webrobotsProjects: 0, webrobotsSnapshots: 0, webrobotsDetails: 0 };
+  }
+  const firstSnapshotAt = scalarNullableNumber(db, `
+    SELECT MIN(captured_at) AS value
+    FROM platform_snapshots
+    WHERE platform_id = @platform_id AND source = 'webrobots'
+  `, { platform_id: PLATFORM_ID });
+  const latestSnapshotAt = scalarNullableNumber(db, `
+    SELECT MAX(captured_at) AS value
+    FROM platform_snapshots
+    WHERE platform_id = @platform_id AND source = 'webrobots'
+  `, { platform_id: PLATFORM_ID });
+  const webrobotsSnapshots = scalarNumber(db, `
+    SELECT COUNT(*) AS value
+    FROM platform_snapshots
+    WHERE platform_id = @platform_id AND source = 'webrobots'
+  `, { platform_id: PLATFORM_ID });
+  const webrobotsProjects = tableExists(db, 'platform_projects')
+    ? scalarNumber(db, `
+        SELECT COUNT(*) AS value
+        FROM platform_projects
+        WHERE platform_id = @platform_id AND webrobots_run_id IS NOT NULL
+      `, { platform_id: PLATFORM_ID })
+    : 0;
+  const webrobotsDetails = tableExists(db, 'indiegogo_project_details')
+    ? scalarNumber(db, `
+        SELECT COUNT(*) AS value
+        FROM indiegogo_project_details
+        WHERE platform_id = @platform_id AND source = 'webrobots'
+      `, { platform_id: PLATFORM_ID })
+    : 0;
+  return { firstSnapshotAt, latestSnapshotAt, webrobotsProjects, webrobotsSnapshots, webrobotsDetails };
+}
+
+export async function getIndiegogoWebrobotsDiagnostics(): Promise<IndiegogoWebrobotsDiagnostics> {
+  const checkedAt = nowSec();
+  const dbPath = getPlatformDbPath(PLATFORM_ID);
+  const databaseExists = fs.existsSync(dbPath);
+  let index: IndiegogoWebrobotsIndex = { ok: false, datasetCount: 0, latestDate: null, latestUrl: null, datasets: [] };
+  let sourceError: string | undefined;
+  try {
+    index = await fetchWebrobotsIndex();
+    if (!index.ok) sourceError = 'Webrobots index returned a non-success response.';
+  } catch (err) {
+    sourceError = err instanceof Error ? err.message : String(err);
+  }
+
+  const emptyRange = { firstSnapshotAt: null, latestSnapshotAt: null, webrobotsProjects: 0, webrobotsSnapshots: 0, webrobotsDetails: 0 };
+  if (!databaseExists) {
+    const months = index.datasets.map(dataset => summarizeMonthStatus(dataset, dataset.date, []));
+    return {
+      checkedAt,
+      databaseExists,
+      source: {
+        ok: index.ok,
+        datasetCount: index.datasetCount,
+        firstDate: index.datasets[0]?.date ?? null,
+        latestDate: index.latestDate,
+        latestUrl: index.latestUrl,
+        error: sourceError,
+      },
+      coverage: {
+        expected: index.datasetCount,
+        completed: 0,
+        missing: index.datasetCount,
+        failed: 0,
+        running: 0,
+        skipped: 0,
+        percent: index.datasetCount ? 0 : null,
+      },
+      range: emptyRange,
+      detailQueue: { total: 0, byStatus: { queued: 0, ok: 0, error: 0, invalid_slug: 0 } },
+      errorSummary: [],
+      months,
+    };
+  }
+
+  const db = new BetterSqlite3(dbPath, { readonly: true, fileMustExist: true });
+  try {
+    const runs = readWebrobotsRuns(db);
+    const runsByDate = new Map<string, WebrobotsRunRow[]>();
+    for (const run of runs) {
+      const date = webrobotsDateFromJobType(run.job_type);
+      if (!date) continue;
+      const list = runsByDate.get(date) ?? [];
+      list.push(run);
+      runsByDate.set(date, list);
+    }
+
+    const sourceDates = index.ok
+      ? index.datasets.map(dataset => dataset.date)
+      : [...runsByDate.keys()].sort();
+    const datasetByDate = new Map(index.datasets.map(dataset => [dataset.date, dataset]));
+    const months = sourceDates.map(date => summarizeMonthStatus(datasetByDate.get(date) ?? null, date, runsByDate.get(date) ?? []));
+    const completed = months.filter(month => month.status === 'completed').length;
+    const running = months.filter(month => month.status === 'running').length;
+    const failed = months.filter(month => month.status === 'error').length;
+    const skipped = months.filter(month => month.status === 'skipped').length;
+    const missing = months.filter(month => month.status === 'missing').length;
+    const expected = sourceDates.length;
+
+    return {
+      checkedAt,
+      databaseExists,
+      source: {
+        ok: index.ok,
+        datasetCount: index.datasetCount,
+        firstDate: index.datasets[0]?.date ?? null,
+        latestDate: index.latestDate,
+        latestUrl: index.latestUrl,
+        error: sourceError,
+      },
+      coverage: {
+        expected,
+        completed,
+        missing,
+        failed,
+        running,
+        skipped,
+        percent: expected ? Math.round((completed / expected) * 1000) / 10 : null,
+      },
+      range: readWebrobotsRange(db),
+      detailQueue: readDetailQueueSummary(db),
+      errorSummary: readErrorSummary(db),
+      months,
+    };
+  } finally {
+    db.close();
+  }
+}
+
 async function importDataset(db: Database, dataset: IndiegogoWebrobotsDataset): Promise<{
   ok: boolean;
   rowsRead: number;
@@ -957,6 +1287,11 @@ export async function importIndiegogoWebrobots(options: IndiegogoImportOptions =
     }
 
     let datasets = mode === 'latest' ? index.datasets.slice(-1) : index.datasets;
+    if (mode === 'missing') {
+      const completedDates = completedWebrobotsDates(db);
+      const runningDates = runningWebrobotsDates(db);
+      datasets = index.datasets.filter(dataset => !completedDates.has(dataset.date) && !runningDates.has(dataset.date));
+    }
     if (options.maxDatasets && options.maxDatasets > 0) {
       datasets = datasets.slice(-options.maxDatasets);
     }

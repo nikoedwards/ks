@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAdmin } from '@/lib/apiAuth';
 import { isPlatformViewId } from '@/lib/platforms';
-import { getPlatformQuality } from '@/lib/platformDb';
+import { getPlatformQualityForResponse } from '@/lib/platformDb';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -13,7 +13,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ plat
     if (!isPlatformViewId(platform)) {
       return NextResponse.json({ error: `Unknown platform: ${platform}` }, { status: 404 });
     }
-    return NextResponse.json(getPlatformQuality(platform));
+    return NextResponse.json(await getPlatformQualityForResponse(platform));
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
