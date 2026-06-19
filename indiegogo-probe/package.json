@@ -1,0 +1,16 @@
+{
+  "name": "indiegogo-search-probe",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Isolated Railway probe for testing whether Indiegogo search can be crawled from a server browser.",
+  "scripts": {
+    "start": "xvfb-run -a --server-args=\"-screen 0 1920x1080x24 -ac\" node probe.mjs",
+    "check": "node --check probe.mjs"
+  },
+  "dependencies": {
+    "playwright": "1.60.0",
+    "playwright-extra": "^4.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2"
+  }
+}
