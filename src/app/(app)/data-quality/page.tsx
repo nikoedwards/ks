@@ -493,19 +493,6 @@ function fmtDateOnly(ts: number | null | undefined) {
   return new Date(ts * 1000).toISOString().slice(0, 10);
 }
 
-function webrobotsStatusMeta(status: WebrobotsMonthStatus) {
-  const map: Record<WebrobotsMonthStatus, { label: string; className: string }> = {
-    completed: { label: 'Completed', className: 'border-green-200 bg-green-50 text-green-700' },
-    running: { label: 'Running', className: 'border-blue-200 bg-blue-50 text-blue-700' },
-    stale: { label: 'Stale', className: 'border-orange-200 bg-orange-50 text-orange-700' },
-    source_unavailable: { label: 'Source 403', className: 'border-red-200 bg-red-50 text-red-700' },
-    missing: { label: 'Missing', className: 'border-amber-200 bg-amber-50 text-amber-700' },
-    error: { label: 'Error', className: 'border-red-200 bg-red-50 text-red-700' },
-    skipped: { label: 'Skipped', className: 'border-gray-200 bg-gray-50 text-gray-600' },
-  };
-  return map[status];
-}
-
 function PlatformSwitcher({
   value,
   onChange,
@@ -619,7 +606,6 @@ function IndiegogoControlPanel({
   const backlog = quality.backlog;
   const actionDisabled = Boolean(actionBusy);
   const dbReady = quality.database.exists;
-  const months = [...(webrobots?.months ?? [])].sort((a, b) => b.date.localeCompare(a.date));
   const recentRuns = (quality.recentRuns as PlatformRunRow[]).slice(0, 8);
   const recentErrors = (quality.recentErrors as PlatformErrorRow[]).slice(0, 8);
   const projectRows = platformTableCount(quality, 'platform_projects');
@@ -632,6 +618,62 @@ function IndiegogoControlPanel({
   const backlogDone = backlog?.byStatus.done ?? 0;
   const backlogRemaining = (backlog?.byStatus.pending ?? 0) + (backlog?.byStatus.in_progress ?? 0);
   const backlogPaused = backlog?.byStatus.paused ?? 0;
+
+  // ---- Admin-facing derived signals (incremental vs backlog) ----------------
+  const nowS = Math.floor(Date.now() / 1000);
+
+  const detailOk = detailQueue.ok ?? 0;
+  const detailQueued = detailQueue.queued ?? 0;
+  const detailErr = (detailQueue.error ?? 0) + (detailQueue.invalid_slug ?? 0);
+  const detailTotal = detailOk + detailQueued + detailErr;
+  const detailPct = detailTotal > 0 ? Math.round((detailOk / detailTotal) * 1000) / 10 : 0;
+
+  const lastDiscover = recentRuns.find(r => r.job_type === 'discover') ?? null;
+  const lastTrack = recentRuns.find(r => r.job_type === 'detail_api') ?? null;
+  const lastSweep = recentRuns.find(r => r.job_type === 'backlog_sweep') ?? null;
+
+  const backlogInProgress = backlog?.byStatus.in_progress ?? 0;
+  const backlogPending = backlog?.byStatus.pending ?? 0;
+  const backlogSplit = backlog?.byStatus.split ?? 0;
+  const backlogError = backlog?.byStatus.error ?? 0;
+  const backlogTotalSlices = backlog?.totalSlices ?? 0;
+  const backlogSettled = backlogDone + backlogSplit;
+  const backlogPct = backlogTotalSlices > 0 ? Math.round((backlogSettled / backlogTotalSlices) * 1000) / 10 : 0;
+  const backlogDiscovered = backlog?.discovered ?? 0;
+  const backlogCapped = backlog?.capped ?? 0;
+
+  // Is the incremental pipeline behaving as expected?
+  const liveVerdict = (() => {
+    if (!dbReady) return { tone: 'gray', label: cn ? '未初始化' : 'Not initialized', detail: cn ? '先初始化 Indiegogo 数据库。' : 'Initialize the DB first.' };
+    if (!lastDiscover) return { tone: 'amber', label: cn ? '尚未运行' : 'Not run yet', detail: cn ? '点「立即发现一轮」开始。' : 'Run discovery once to begin.' };
+    if (lastDiscover.status === 'error') return { tone: 'red', label: cn ? '发现报错' : 'Discovery error', detail: lastDiscover.message ?? (cn ? '最近一轮发现失败。' : 'Latest discovery failed.') };
+    if (nowS - lastDiscover.started_at > 90 * 60) return { tone: 'amber', label: cn ? '发现停滞' : 'Discovery stalled', detail: cn ? '超过 90 分钟没有发现运行,检查定时任务 / live worker。' : 'No discovery run in 90+ minutes.' };
+    if (recentErrors.length > 0) return { tone: 'amber', label: cn ? '有近期错误' : 'Recent errors', detail: recentErrors[0]?.message ?? '' };
+    return { tone: 'green', label: cn ? '符合预期' : 'Healthy', detail: cn ? '发现按时运行,无近期错误。' : 'Running on schedule, no recent errors.' };
+  })();
+
+  // Does the backlog sweep need a human?
+  const backlogVerdict = (() => {
+    if (!dbReady) return { tone: 'gray', label: cn ? '未初始化' : 'Not initialized', detail: '' };
+    if (backlogTotalSlices === 0) return { tone: 'gray', label: cn ? '尚未启动' : 'Not started', detail: cn ? '点「运行存量一轮」开始穷举目录。' : 'Run the sweep to start enumerating.' };
+    if (backlogError > 0) return { tone: 'red', label: cn ? `${backlogError} 个切片失败` : `${backlogError} slices failed`, detail: cn ? '需人工检查后续跑。' : 'Needs a manual check, then resume.' };
+    if (backlogPaused > 0 && backlogInProgress === 0 && backlogPending === 0) return { tone: 'amber', label: cn ? '已暂停' : 'Paused', detail: cn ? `点「续跑」继续(暂停 ${fmtNum(backlogPaused)} 个切片)。` : 'Click Resume to continue.' };
+    if (backlogSettled >= backlogTotalSlices) return { tone: 'green', label: cn ? '已完成' : 'Complete', detail: cn ? '本轮目录已穷举完毕。' : 'Catalog fully enumerated.' };
+    return { tone: 'green', label: cn ? '正在推进' : 'In progress', detail: cn ? '无需人工介入。' : 'No intervention needed.' };
+  })();
+
+  const verdictPill = (t: string) =>
+    t === 'green' ? 'bg-green-100 text-green-700'
+      : t === 'amber' ? 'bg-amber-100 text-amber-700'
+        : t === 'red' ? 'bg-red-100 text-red-700'
+          : 'bg-gray-100 text-gray-600';
+
+  const MiniStat = ({ label, value }: { label: string; value: string }) => (
+    <div className="rounded-lg border border-gray-100 bg-gray-50 p-3">
+      <p className="text-xs text-gray-500">{label}</p>
+      <p className="mt-1 text-lg font-black text-gray-900">{value}</p>
+    </div>
+  );
 
   const runConfirmed = (action: PlatformActionName, options: PlatformActionOptions | undefined, message: string) => {
     if (actionDisabled) return;
@@ -740,155 +782,107 @@ function IndiegogoControlPanel({
         </PipelineCard>
       </div>
 
-      <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
-        <section className="rounded-xl border border-gray-100 bg-white p-5 shadow-sm">
-          <div className="mb-4 flex items-center gap-2">
-            <Info className="h-4 w-4 text-gray-500" />
-            <h3 className="font-bold text-gray-900">{cn ? '详情/跟踪队列' : 'Detail / tracking queue'}</h3>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            {Object.entries(detailQueue).map(([status, count]) => (
-              <div key={status} className="rounded-lg border border-gray-100 bg-gray-50 p-3">
-                <p className="font-mono text-xs text-gray-500">{status}</p>
-                <p className="mt-1 text-xl font-black text-gray-900">{fmtNum(count)}</p>
-              </div>
-            ))}
-          </div>
-        </section>
+      <section className="rounded-xl border border-blue-100 bg-white p-5 shadow-sm">
+        <div className="mb-2 flex flex-wrap items-center gap-2">
+          <RefreshCw className="h-4 w-4 text-blue-500" />
+          <h3 className="font-bold text-gray-900">{cn ? '增量数据 · 实时发现 + 在筹跟踪' : 'Incremental · live discovery + tracker'}</h3>
+          <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${verdictPill(liveVerdict.tone)}`}>{liveVerdict.label}</span>
+        </div>
+        <p className="mb-4 text-xs text-gray-500">
+          {cn
+            ? '目标:不漏抓新上线 / 在筹项目,并把每个项目的资金、支持者等富数据(detail)补全。'
+            : 'Goal: never miss new/ongoing projects, and fill in each project\'s funding & backer detail.'}
+        </p>
 
-        <section className="rounded-xl border border-gray-100 bg-white p-5 shadow-sm">
-          <div className="mb-4 flex items-center gap-2">
-            <Activity className="h-4 w-4 text-gray-500" />
-            <h3 className="font-bold text-gray-900">{cn ? '最近运行记录' : 'Recent runs'}</h3>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <div className="rounded-lg border border-gray-100 bg-gray-50 p-3">
+            <p className="text-xs text-gray-500">{cn ? '最近发现' : 'Last discovery'}</p>
+            <p className="mt-1 text-sm font-bold text-gray-900">{lastDiscover ? fmtTime(lastDiscover.started_at, cn ? 'cn' : 'en') : (cn ? '从未' : 'never')}</p>
+            <p className="text-xs text-gray-400">{cn ? `本轮入库 ${lastDiscover ? fmtNum(lastDiscover.imported_count) : 0}` : `imported ${lastDiscover ? fmtNum(lastDiscover.imported_count) : 0}`}</p>
           </div>
-          <div className="space-y-2">
-            {recentRuns.map(run => (
-              <div key={run.id} className="rounded-lg border border-gray-100 bg-gray-50 p-3 text-sm">
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="font-mono text-xs text-gray-500">{run.job_type}</span>
-                  <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${statusClass(run.status)}`}>{run.status}</span>
-                  <span className="text-xs text-gray-400">{fmtTime(run.started_at, cn ? 'cn' : 'en')}</span>
-                </div>
-                <p className="mt-1 text-xs text-gray-500">
-                  {cn ? '导入' : 'Imported'} {fmtNum(run.imported_count)} · {cn ? '快照' : 'Snapshots'} {fmtNum(run.snapshot_count)} · {cn ? '错误' : 'Errors'} {fmtNum(run.error_count)}
-                </p>
-                {run.message && <p className="mt-1 line-clamp-2 text-xs text-gray-400">{run.message}</p>}
-              </div>
-            ))}
-            {!recentRuns.length && <p className="rounded-lg border border-dashed border-gray-200 bg-gray-50 px-4 py-6 text-center text-sm text-gray-400">{cn ? '暂无运行记录。' : 'No runs yet.'}</p>}
+          <div className="rounded-lg border border-gray-100 bg-gray-50 p-3">
+            <p className="text-xs text-gray-500">{cn ? '最近跟踪' : 'Last tracker'}</p>
+            <p className="mt-1 text-sm font-bold text-gray-900">{lastTrack ? fmtTime(lastTrack.started_at, cn ? 'cn' : 'en') : (cn ? '从未' : 'never')}</p>
+            <p className="text-xs text-gray-400">{cn ? `本轮补全 ${lastTrack ? fmtNum(lastTrack.imported_count) : 0}` : `refreshed ${lastTrack ? fmtNum(lastTrack.imported_count) : 0}`}</p>
           </div>
-        </section>
-      </div>
+          <div className="rounded-lg border border-gray-100 bg-gray-50 p-3">
+            <p className="text-xs text-gray-500">{cn ? '失败 / 无效' : 'Failed / invalid'}</p>
+            <p className="mt-1 text-sm font-bold text-gray-900">{fmtNum(detailErr)}</p>
+            <p className="text-xs text-gray-400">{cn ? `近期错误 ${fmtNum(recentErrors.length)}` : `recent errors ${fmtNum(recentErrors.length)}`}</p>
+          </div>
+        </div>
+
+        <div className="mt-4">
+          <div className="mb-1 flex items-center justify-between text-xs">
+            <span className="font-semibold text-gray-700">{cn ? 'detail 补全进度' : 'Detail completeness'}</span>
+            <span className="text-gray-500">{detailPct}% · {cn ? `已补 ${fmtNum(detailOk)} / 待补 ${fmtNum(detailQueued)}` : `done ${fmtNum(detailOk)} / queued ${fmtNum(detailQueued)}`}</span>
+          </div>
+          <div className="h-2.5 w-full overflow-hidden rounded-full bg-gray-100">
+            <div className="h-full rounded-full bg-blue-500 transition-all" style={{ width: `${Math.min(100, detailPct)}%` }} />
+          </div>
+        </div>
+
+        {liveVerdict.detail && <p className="mt-3 text-xs text-gray-500">{liveVerdict.detail}</p>}
+      </section>
+
+      <section className="rounded-xl border border-purple-100 bg-white p-5 shadow-sm">
+        <div className="mb-2 flex flex-wrap items-center gap-2">
+          <HardDrive className="h-4 w-4 text-purple-500" />
+          <h3 className="font-bold text-gray-900">{cn ? '存量数据 · 全量目录扫描' : 'Backlog · full-catalog sweep'}</h3>
+          <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${verdictPill(backlogVerdict.tone)}`}>{backlogVerdict.label}</span>
+        </div>
+        <p className="mb-4 text-xs text-gray-500">
+          {cn
+            ? '目标:按 phase × 33 个分类递归切片,穷举全量目录(绕过单查询 1 万条上限)。'
+            : 'Goal: enumerate the whole catalog via phase × category recursive slicing (bypassing the 10k per-query cap).'}
+        </p>
+
+        <div className="mb-4">
+          <div className="mb-1 flex items-center justify-between text-xs">
+            <span className="font-semibold text-gray-700">{cn ? '切片完成进度' : 'Slice progress'}</span>
+            <span className="text-gray-500">{backlogPct}% · {cn ? `完成 ${fmtNum(backlogSettled)} / 共 ${fmtNum(backlogTotalSlices)}` : `done ${fmtNum(backlogSettled)} / ${fmtNum(backlogTotalSlices)}`}</span>
+          </div>
+          <div className="h-2.5 w-full overflow-hidden rounded-full bg-gray-100">
+            <div className="h-full rounded-full bg-purple-500 transition-all" style={{ width: `${Math.min(100, backlogPct)}%` }} />
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <MiniStat label={cn ? '已发现项目' : 'Discovered'} value={fmtNum(backlogDiscovered)} />
+          <MiniStat label={cn ? '进行中 / 待跑' : 'In progress'} value={fmtNum(backlogInProgress + backlogPending)} />
+          <MiniStat label={cn ? '已拆分' : 'Split'} value={fmtNum(backlogSplit)} />
+          <MiniStat label={cn ? '封顶切片' : 'Capped'} value={fmtNum(backlogCapped)} />
+        </div>
+
+        <p className="mt-3 text-xs text-gray-500">
+          {cn ? '最近扫描:' : 'Last sweep: '}
+          {lastSweep ? fmtTime(lastSweep.started_at, cn ? 'cn' : 'en') : (cn ? '从未' : 'never')}
+          {backlogVerdict.detail ? ` · ${backlogVerdict.detail}` : ''}
+        </p>
+      </section>
 
       <section className="rounded-xl border border-gray-100 bg-white p-5 shadow-sm">
         <div className="mb-4 flex items-center gap-2">
-          <AlertTriangle className="h-4 w-4 text-gray-500" />
-          <h3 className="font-bold text-gray-900">{cn ? '最近错误' : 'Recent errors'}</h3>
+          <Activity className="h-4 w-4 text-gray-500" />
+          <h3 className="font-bold text-gray-900">{cn ? '最近运行记录' : 'Recent runs'}</h3>
         </div>
         <div className="space-y-2">
-          {recentErrors.map(error => (
-            <div key={error.id} className="rounded-lg border border-red-50 bg-red-50/40 p-3 text-sm">
+          {recentRuns.map(run => (
+            <div key={run.id} className="rounded-lg border border-gray-100 bg-gray-50 p-3 text-sm">
               <div className="flex flex-wrap items-center gap-2">
-                <span className="font-mono text-xs text-gray-500">{error.job_type ?? 'unknown'}</span>
-                {error.status_code && <span className="text-xs font-semibold text-red-600">HTTP {error.status_code}</span>}
-                <span className="text-xs text-gray-400">{fmtTime(error.occurred_at, cn ? 'cn' : 'en')}</span>
+                <span className="font-mono text-xs text-gray-500">{run.job_type}</span>
+                <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${statusClass(run.status)}`}>{run.status}</span>
+                <span className="text-xs text-gray-400">{fmtTime(run.started_at, cn ? 'cn' : 'en')}</span>
               </div>
-              <p className="mt-1 line-clamp-2 text-xs text-red-700">{error.message}</p>
+              <p className="mt-1 text-xs text-gray-500">
+                {cn ? '导入' : 'Imported'} {fmtNum(run.imported_count)} · {cn ? '快照' : 'Snapshots'} {fmtNum(run.snapshot_count)} · {cn ? '错误' : 'Errors'} {fmtNum(run.error_count)}
+              </p>
+              {run.message && <p className="mt-1 line-clamp-2 text-xs text-gray-400">{run.message}</p>}
             </div>
           ))}
-          {!recentErrors.length && <p className="rounded-lg border border-dashed border-gray-200 bg-gray-50 px-4 py-6 text-center text-sm text-gray-400">{cn ? '暂无最近错误。' : 'No recent errors.'}</p>}
+          {!recentRuns.length && <p className="rounded-lg border border-dashed border-gray-200 bg-gray-50 px-4 py-6 text-center text-sm text-gray-400">{cn ? '暂无运行记录。' : 'No runs yet.'}</p>}
         </div>
       </section>
-
-      <details className="rounded-xl border border-gray-100 bg-white p-5 shadow-sm">
-        <summary className="cursor-pointer text-sm font-bold text-gray-900">{cn ? '高级 / 遗留：Webrobots 历史回灌与诊断' : 'Advanced / legacy: Webrobots backfill & diagnostics'}</summary>
-        <div className="mt-4 space-y-5">
-          <p className="text-xs text-gray-500">
-            {cn
-              ? 'Webrobots 数据集已停更且不完整，仅作为可选的历史回灌保留。日常数据由上面的三条管线产生。'
-              : 'The Webrobots dataset is stale/incomplete and kept only as optional historical backfill. Day-to-day data comes from the pipelines above.'}
-          </p>
-          <div className="flex flex-wrap gap-2">
-            <button type="button" onClick={() => onAction('validate_config')} disabled={actionDisabled} className={btnGhost}>Validate config</button>
-            <button type="button" onClick={() => onAction('dry_run_capabilities')} disabled={actionDisabled} className={btnGhost}>Dry-run capabilities</button>
-            <button
-              type="button"
-              onClick={() => runConfirmed('import', { mode: 'missing', wait: true, maxDatasets: 1 }, cn ? '导入下一个仍可下载的 Webrobots 快照（1 个）。确定？' : 'Import the next downloadable Webrobots snapshot (1). Continue?')}
-              disabled={actionDisabled}
-              className={btnGhost}
-            >
-              {cn ? '回灌下一个 Webrobots 快照' : 'Backfill next Webrobots snapshot'}
-            </button>
-            <button
-              type="button"
-              onClick={() => runConfirmed('crawl', undefined, cn ? '这会同步活跃 API 并刷新一批详情。确定？' : 'This syncs the active API and refreshes a detail batch. Continue?')}
-              disabled={actionDisabled}
-              className={btnGhost}
-            >
-              {cn ? 'Active API 同步 + 详情刷新' : 'Active API sync + detail refresh'}
-            </button>
-          </div>
-
-          {webrobots && (
-            <div className="flex flex-wrap gap-2 text-xs font-semibold">
-              <span className="rounded-full bg-green-50 px-2.5 py-1 text-green-700">Completed {webrobots.coverage.completed}/{webrobots.coverage.expected}</span>
-              <span className="rounded-full bg-amber-50 px-2.5 py-1 text-amber-700">Missing {webrobots.coverage.missing}</span>
-              <span className="rounded-full bg-blue-50 px-2.5 py-1 text-blue-700">Running {webrobots.coverage.running}</span>
-              <span className="rounded-full bg-gray-100 px-2.5 py-1 text-gray-600">{cn ? `源 ${webrobots.source.firstDate ?? '?'} → ${webrobots.source.latestDate ?? '?'}` : `Source ${webrobots.source.firstDate ?? '?'} → ${webrobots.source.latestDate ?? '?'}`}</span>
-            </div>
-          )}
-
-          {months.length > 0 && (
-            <div className="overflow-hidden rounded-lg border border-gray-100">
-              <div className="max-h-[320px] overflow-auto">
-                <table className="min-w-full divide-y divide-gray-100 text-sm">
-                  <thead className="sticky top-0 bg-gray-50 text-xs font-semibold uppercase text-gray-500">
-                    <tr>
-                      <th className="px-4 py-3 text-left">{cn ? '日期' : 'Date'}</th>
-                      <th className="px-4 py-3 text-left">{cn ? '状态' : 'Status'}</th>
-                      <th className="px-4 py-3 text-right">{cn ? '项目' : 'Projects'}</th>
-                      <th className="px-4 py-3 text-right">{cn ? '快照' : 'Snapshots'}</th>
-                      <th className="px-4 py-3 text-left">{cn ? '完成时间' : 'Completed'}</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-100 bg-white">
-                    {months.map(month => {
-                      const meta = webrobotsStatusMeta(month.status);
-                      return (
-                        <tr key={month.date}>
-                          <td className="px-4 py-3 font-mono text-xs text-gray-700">
-                            <div className="flex items-center gap-2">
-                              <span>{month.date}</span>
-                              {month.url && (
-                                <a href={month.url} target="_blank" rel="noreferrer" className="text-gray-300 hover:text-gray-600" title="Open source gz">
-                                  <ExternalLink className="h-3.5 w-3.5" />
-                                </a>
-                              )}
-                            </div>
-                          </td>
-                          <td className="px-4 py-3"><span className={`rounded-full border px-2 py-0.5 text-xs font-semibold ${meta.className}`}>{meta.label}</span></td>
-                          <td className="px-4 py-3 text-right font-semibold text-gray-900">{fmtNum(month.importedCount)}</td>
-                          <td className="px-4 py-3 text-right font-semibold text-gray-900">{fmtNum(month.snapshotCount)}</td>
-                          <td className="px-4 py-3 text-xs text-gray-500" title={month.message ?? ''}>{fmtTime(month.completedAt ?? month.startedAt, cn ? 'cn' : 'en')}</td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-
-          <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
-            {quality.database.tableCounts.map(item => (
-              <div key={item.table} className="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2">
-                <p className="font-mono text-xs text-gray-500">{item.table}</p>
-                <p className="mt-1 text-lg font-black text-gray-900">{fmtNum(item.rows)}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-      </details>
     </div>
   );
 }
