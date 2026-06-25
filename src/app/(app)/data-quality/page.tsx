@@ -647,6 +647,9 @@ function IndiegogoControlPanel({
   // Only real faults (5xx / config / repeated stalls) should colour the badge.
   const isTransientError = (e: PlatformErrorRow) => {
     const m = (e.message ?? '').toLowerCase();
+    // Retired Webrobots dataset (permanent 403/404) is a dead legacy source, not a
+    // live-pipeline fault — never let it colour the incremental health badge.
+    if (e.job_type === 'webrobots_import' || m.includes('webrobots')) return true;
     if (e.status_code === 400) return true;
     return (
       m.includes('invalid_worker_response') ||
