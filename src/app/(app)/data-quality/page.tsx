@@ -47,13 +47,49 @@ interface CrawlerError {
   occurrence_count?: number;
 }
 
-type PlatformActionName = 'init_db' | 'validate_config' | 'dry_run_capabilities' | 'crawl' | 'import' | 'export';
+type PlatformActionName =
+  | 'init_db'
+  | 'validate_config'
+  | 'dry_run_capabilities'
+  | 'crawl'
+  | 'import'
+  | 'export'
+  | 'discover'
+  | 'track'
+  | 'backlog_sweep';
 
 interface PlatformActionOptions {
   mode?: 'latest' | 'all_available' | 'missing';
   wait?: boolean;
   detailLimit?: number;
   maxDatasets?: number;
+  maxPages?: number;
+  trackLimit?: number;
+  pageBudget?: number;
+  sweepOp?: 'start' | 'pause' | 'resume';
+}
+
+interface IndiegogoWorkerHealthPayload {
+  role: 'live' | 'bulk';
+  configured: boolean;
+  bases: Array<{
+    base: string;
+    ok: boolean;
+    cleared?: boolean;
+    activeFetches?: number;
+    queuedFetches?: number;
+    breakerOpen: boolean;
+    error?: string;
+  }>;
+}
+
+interface IndiegogoBacklogStatusPayload {
+  sweepId: string;
+  totalSlices: number;
+  byStatus: Record<string, number>;
+  discovered: number;
+  capped: number;
+  updatedAt: number | null;
 }
 
 type WebrobotsMonthStatus = 'completed' | 'missing' | 'running' | 'stale' | 'source_unavailable' | 'error' | 'skipped';
@@ -352,6 +388,8 @@ interface PlatformQualityPayload {
   recentRuns: unknown[];
   recentErrors: unknown[];
   webrobots?: WebrobotsDiagnostics;
+  workers?: { live: IndiegogoWorkerHealthPayload; bulk: IndiegogoWorkerHealthPayload };
+  backlog?: IndiegogoBacklogStatusPayload;
 }
 
 function fmtNum(value: number | null | undefined) {
@@ -468,146 +506,6 @@ function webrobotsStatusMeta(status: WebrobotsMonthStatus) {
   return map[status];
 }
 
-function indiegogoHealth(quality: PlatformQualityPayload) {
-  const webrobots = quality.webrobots;
-  if (!quality.database.exists) {
-    return {
-      title: 'Database not initialized',
-      tone: 'border-amber-200 bg-amber-50 text-amber-900',
-      summary: 'Create the isolated Indiegogo database before importing Webrobots history.',
-    };
-  }
-  if (!webrobots) {
-    return {
-      title: 'Diagnostics unavailable',
-      tone: 'border-gray-200 bg-gray-50 text-gray-700',
-      summary: 'Refresh this page to read Webrobots import diagnostics.',
-    };
-  }
-  if (!webrobots.source.ok) {
-    return {
-      title: 'Source cannot be confirmed',
-      tone: 'border-amber-200 bg-amber-50 text-amber-900',
-      summary: 'Local data is visible, but the current Webrobots index could not be read.',
-    };
-  }
-  if (webrobots.coverage.stale > 0) {
-    return {
-      title: 'Import needs attention',
-      tone: 'border-orange-200 bg-orange-50 text-orange-900',
-      summary: `${webrobots.coverage.stale} Webrobots import run(s) look stale and can be retried.`,
-    };
-  }
-  if (webrobots.coverage.running > 0) {
-    return {
-      title: 'Import running',
-      tone: 'border-blue-200 bg-blue-50 text-blue-900',
-      summary: `${webrobots.coverage.running} Webrobots snapshot import(s) are still running.`,
-    };
-  }
-  if (webrobots.coverage.sourceUnavailable > 0) {
-    return {
-      title: 'Some source files are unavailable',
-      tone: 'border-red-200 bg-red-50 text-red-900',
-      summary: `${webrobots.coverage.sourceUnavailable} Webrobots snapshot source file(s) currently return HTTP 403/404/410.`,
-    };
-  }
-  if (webrobots.coverage.missing + webrobots.coverage.failed + webrobots.coverage.skipped > 0) {
-    return {
-      title: 'Partial Webrobots import',
-      tone: 'border-amber-200 bg-amber-50 text-amber-900',
-      summary: `${webrobots.coverage.completed}/${webrobots.coverage.expected} snapshots completed.`,
-    };
-  }
-  const queueOpen = (webrobots.detailQueue.byStatus.queued ?? 0) + (webrobots.detailQueue.byStatus.error ?? 0);
-  if (queueOpen > 0) {
-    return {
-      title: 'History complete, details pending',
-      tone: 'border-blue-200 bg-blue-50 text-blue-900',
-      summary: `${queueOpen.toLocaleString()} project detail task(s) still need refresh.`,
-    };
-  }
-  return {
-    title: 'Webrobots history complete',
-    tone: 'border-green-200 bg-green-50 text-green-900',
-    summary: 'All current Webrobots snapshots have a successful import run.',
-  };
-}
-
-function indiegogoNextStep(quality: PlatformQualityPayload, cn: boolean): {
-  label: string;
-  description: string;
-  action: PlatformActionName | null;
-  options?: PlatformActionOptions;
-  confirm?: string;
-  primary: boolean;
-} {
-  const webrobots = quality.webrobots;
-  if (!quality.database.exists) {
-    return {
-      label: cn ? '初始化 Indiegogo DB' : 'Initialize Indiegogo DB',
-      description: cn ? '先创建隔离数据库，之后才能导入 Webrobots 历史快照。' : 'Create the isolated database before importing Webrobots history.',
-      action: 'init_db',
-      primary: true,
-    };
-  }
-  if (!webrobots) {
-    return {
-      label: cn ? '刷新诊断' : 'Refresh diagnostics',
-      description: cn ? '重新读取 Webrobots 源头和本地导入状态。' : 'Reload Webrobots source and local import diagnostics.',
-      action: 'validate_config',
-      primary: true,
-    };
-  }
-  if (webrobots.coverage.running > 0) {
-    return {
-      label: cn ? '等待当前导入完成' : 'Wait for current import',
-      description: cn ? `还有 ${webrobots.coverage.running} 个 Webrobots 导入任务正在正常运行。` : `${webrobots.coverage.running} Webrobots import task(s) are still running.`,
-      action: null,
-      primary: false,
-    };
-  }
-  const retryable = webrobots.coverage.missing + webrobots.coverage.failed + webrobots.coverage.skipped + webrobots.coverage.stale;
-  if (retryable > 0) {
-    return {
-      label: cn ? '导入下一个可下载快照' : 'Import next downloadable snapshot',
-      description: cn
-        ? `发现 ${retryable} 个可重试日期；每次只导入 1 个，避免长任务卡死。`
-        : `${retryable} date(s) can be retried; one snapshot is imported per click to avoid stuck long jobs.`,
-      action: 'import',
-      options: { mode: 'missing', wait: true, maxDatasets: 1 },
-      confirm: cn ? '这会导入下一个仍可能下载的 Webrobots 快照，并等待完成后返回。确定开始吗？' : 'This imports the next Webrobots snapshot that may still be downloadable and waits for completion. Continue?',
-      primary: true,
-    };
-  }
-  if (webrobots.coverage.sourceUnavailable > 0) {
-    return {
-      label: cn ? '等待 Webrobots 源文件恢复' : 'Wait for Webrobots source files',
-      description: cn
-        ? `还有 ${webrobots.coverage.sourceUnavailable} 个快照源文件当前返回 403/404/410，无法由我们补导。`
-        : `${webrobots.coverage.sourceUnavailable} source file(s) currently return 403/404/410 and cannot be imported from here.`,
-      action: null,
-      primary: false,
-    };
-  }
-  const queueOpen = (webrobots.detailQueue.byStatus.queued ?? 0) + (webrobots.detailQueue.byStatus.error ?? 0);
-  if (queueOpen > 0) {
-    return {
-      label: cn ? '刷新项目详情队列' : 'Refresh project detail queue',
-      description: cn ? `还有 ${queueOpen.toLocaleString()} 个详情任务待处理或重试。` : `${queueOpen.toLocaleString()} detail task(s) remain queued or failed.`,
-      action: 'crawl',
-      confirm: cn ? '这会同步活跃项目并刷新一批 Indiegogo 详情。确定开始吗？' : 'This syncs active projects and refreshes a detail batch. Continue?',
-      primary: true,
-    };
-  }
-  return {
-    label: cn ? 'Webrobots 历史导入完成' : 'Webrobots history complete',
-    description: cn ? '当前 Webrobots 索引里的快照都已经成功导入。' : 'Every snapshot in the current Webrobots index has a successful import run.',
-    action: null,
-    primary: false,
-  };
-}
-
 function PlatformSwitcher({
   value,
   onChange,
@@ -658,7 +556,50 @@ function PlatformSwitcher({
   );
 }
 
-function IndiegogoWebrobotsPanel({
+function WorkerHealthLine({ cn, health }: { cn: boolean; health?: IndiegogoWorkerHealthPayload }) {
+  if (!health || !health.configured) {
+    return <span className="rounded-full bg-gray-100 px-2.5 py-1 text-xs font-semibold text-gray-500">{cn ? 'Worker 未配置' : 'Worker not set'}</span>;
+  }
+  const anyOk = health.bases.some(b => b.ok);
+  const anyCleared = health.bases.some(b => b.cleared);
+  return (
+    <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${anyOk ? (anyCleared ? 'bg-green-50 text-green-700' : 'bg-amber-50 text-amber-700') : 'bg-red-50 text-red-700'}`}>
+      {anyOk ? (anyCleared ? (cn ? 'Worker 已过盾' : 'Cleared') : (cn ? 'Worker 在线·未过盾' : 'Online·not cleared')) : (cn ? 'Worker 不可达' : 'Unreachable')}
+      {` · ${health.bases.length}`}
+    </span>
+  );
+}
+
+function PipelineCard({
+  cn,
+  title,
+  desc,
+  tone,
+  badges,
+  children,
+}: {
+  cn: boolean;
+  title: string;
+  desc: string;
+  tone: string;
+  badges?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className={`flex flex-col rounded-xl border p-5 shadow-sm ${tone}`}>
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <h3 className="text-base font-black">{title}</h3>
+          <p className="mt-1 text-sm opacity-80">{desc}</p>
+        </div>
+      </div>
+      {badges && <div className="mt-3 flex flex-wrap gap-2">{badges}</div>}
+      <div className="mt-4 flex flex-wrap gap-2">{children}</div>
+    </section>
+  );
+}
+
+function IndiegogoControlPanel({
   cn,
   quality,
   loading,
@@ -674,9 +615,10 @@ function IndiegogoWebrobotsPanel({
   onAction: (action: PlatformActionName, options?: PlatformActionOptions) => void;
 }) {
   const webrobots = quality.webrobots;
-  const health = indiegogoHealth(quality);
-  const nextStep = indiegogoNextStep(quality, cn);
+  const workers = quality.workers;
+  const backlog = quality.backlog;
   const actionDisabled = Boolean(actionBusy);
+  const dbReady = quality.database.exists;
   const months = [...(webrobots?.months ?? [])].sort((a, b) => b.date.localeCompare(a.date));
   const recentRuns = (quality.recentRuns as PlatformRunRow[]).slice(0, 8);
   const recentErrors = (quality.recentErrors as PlatformErrorRow[]).slice(0, 8);
@@ -685,18 +627,20 @@ function IndiegogoWebrobotsPanel({
   const detailRows = platformTableCount(quality, 'indiegogo_project_details');
   const queueRows = platformTableCount(quality, 'platform_detail_queue');
   const errorRows = platformTableCount(quality, 'platform_crawler_errors');
+  const detailQueue = webrobots?.detailQueue.byStatus ?? { queued: 0, ok: 0, error: 0, invalid_slug: 0 };
 
-  const runRecommendedAction = () => {
-    if (!nextStep.action || actionDisabled) return;
-    if (nextStep.confirm && !window.confirm(nextStep.confirm)) return;
-    onAction(nextStep.action, nextStep.options);
-  };
+  const backlogDone = backlog?.byStatus.done ?? 0;
+  const backlogRemaining = (backlog?.byStatus.pending ?? 0) + (backlog?.byStatus.in_progress ?? 0);
+  const backlogPaused = backlog?.byStatus.paused ?? 0;
 
   const runConfirmed = (action: PlatformActionName, options: PlatformActionOptions | undefined, message: string) => {
     if (actionDisabled) return;
     if (!window.confirm(message)) return;
     onAction(action, options);
   };
+
+  const btnPrimary = 'inline-flex items-center justify-center gap-2 rounded-lg bg-gray-900 px-3.5 py-2 text-sm font-semibold text-white hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-50';
+  const btnGhost = 'inline-flex items-center justify-center gap-2 rounded-lg border border-gray-200 bg-white px-3.5 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-50';
 
   return (
     <div className="space-y-5">
@@ -707,177 +651,103 @@ function IndiegogoWebrobotsPanel({
         </div>
       )}
 
-      <section className={`rounded-xl border p-5 shadow-sm ${health.tone}`}>
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-          <div>
-            <div className="flex flex-wrap items-center gap-2">
-              <Server className="h-5 w-5" />
-              <h2 className="text-xl font-black">{cn ? 'Indiegogo Webrobots 导入状态' : 'Indiegogo Webrobots import status'}</h2>
-              {loading && <RefreshCw className="h-4 w-4 animate-spin opacity-70" />}
-            </div>
-            <p className="mt-2 text-sm opacity-90">{health.summary}</p>
-            <div className="mt-3 flex flex-wrap gap-2 text-xs font-semibold">
-              <span className="rounded-full border border-current/20 bg-white/60 px-2.5 py-1">
-                {webrobots
-                  ? `${webrobots.coverage.completed}/${webrobots.coverage.expected} snapshots · ${fmtPercent(webrobots.coverage.percent)} complete`
-                  : 'Diagnostics not loaded'}
-              </span>
-              <span className="rounded-full border border-current/20 bg-white/60 px-2.5 py-1">
-                {webrobots?.source.ok
-                  ? `Source ${webrobots.source.firstDate ?? '?'} → ${webrobots.source.latestDate ?? '?'}`
-                  : (cn ? '源头暂不可确认' : 'Source not confirmed')}
-              </span>
-              {webrobots?.coverage.running ? (
-                <span className="rounded-full border border-current/20 bg-white/60 px-2.5 py-1">
-                  {cn ? `运行中 ${webrobots.coverage.running}` : `Running ${webrobots.coverage.running}`}
-                </span>
-              ) : null}
-              {webrobots?.coverage.stale ? (
-                <span className="rounded-full border border-current/20 bg-white/60 px-2.5 py-1">
-                  {cn ? `卡住 ${webrobots.coverage.stale}` : `Stale ${webrobots.coverage.stale}`}
-                </span>
-              ) : null}
-              {webrobots?.coverage.sourceUnavailable ? (
-                <span className="rounded-full border border-current/20 bg-white/60 px-2.5 py-1">
-                  Source 403 {webrobots.coverage.sourceUnavailable}
-                </span>
-              ) : null}
-            </div>
-          </div>
-
-          <div className="min-w-[260px] rounded-lg border border-white/70 bg-white/80 p-4 text-gray-900 shadow-sm">
-            <p className="text-xs font-bold uppercase tracking-wide text-gray-400">{cn ? '下一步' : 'Next step'}</p>
-            <h3 className="mt-1 text-base font-black">{nextStep.label}</h3>
-            <p className="mt-1 text-sm text-gray-500">{nextStep.description}</p>
-            {nextStep.action && (
-              <button
-                type="button"
-                onClick={runRecommendedAction}
-                disabled={actionDisabled}
-                className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-lg bg-gray-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {actionBusy === nextStep.action ? <RefreshCw className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
-                {nextStep.label}
-              </button>
-            )}
-          </div>
+      <section className="rounded-xl border border-emerald-100 bg-emerald-50 p-5 shadow-sm text-emerald-900">
+        <div className="flex flex-wrap items-center gap-2">
+          <Server className="h-5 w-5" />
+          <h2 className="text-xl font-black">{cn ? 'Indiegogo 抓取管线' : 'Indiegogo ingestion pipelines'}</h2>
+          {loading && <RefreshCw className="h-4 w-4 animate-spin opacity-70" />}
+          {!quality.isolation.automaticJobsEnabled && (
+            <span className="rounded-full bg-white/70 px-2.5 py-1 text-xs font-semibold text-emerald-800">
+              {cn ? '自动任务未开启 (INDIEGOGO_CRAWLER_ENABLED=1)' : 'Auto jobs off (INDIEGOGO_CRAWLER_ENABLED=1)'}
+            </span>
+          )}
         </div>
+        <p className="mt-2 text-sm opacity-90">
+          {cn
+            ? '实时发现走 live worker（不可错过）；在筹分级 tracker 走 detail API（不占浏览器车道）；存量扫描走 bulk worker（可暂停/续跑）。'
+            : 'Live discovery uses the live worker; the tiered tracker uses the detail API; the backlog sweep uses the bulk worker.'}
+        </p>
+        {!dbReady && (
+          <button type="button" onClick={() => onAction('init_db')} disabled={actionDisabled} className={`mt-4 ${btnPrimary}`}>
+            {actionBusy === 'init_db' ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Database className="h-4 w-4" />}
+            {cn ? '初始化 Indiegogo 数据库' : 'Initialize Indiegogo DB'}
+          </button>
+        )}
       </section>
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-        <StatTile
-          icon={Database}
-          label={cn ? 'Webrobots 项目' : 'Webrobots projects'}
-          value={fmtNum(webrobots?.range.webrobotsProjects ?? projectRows)}
-          hint={cn ? `总项目表 ${fmtNum(projectRows)}` : `Project table ${fmtNum(projectRows)}`}
-          tone="green"
-        />
-        <StatTile
-          icon={Activity}
-          label={cn ? 'Webrobots 快照' : 'Webrobots snapshots'}
-          value={fmtNum(webrobots?.range.webrobotsSnapshots ?? snapshotRows)}
-          hint={cn ? `${fmtDateOnly(webrobots?.range.firstSnapshotAt)} → ${fmtDateOnly(webrobots?.range.latestSnapshotAt)}` : `${fmtDateOnly(webrobots?.range.firstSnapshotAt)} → ${fmtDateOnly(webrobots?.range.latestSnapshotAt)}`}
-          tone="blue"
-        />
-        <StatTile
-          icon={HardDrive}
-          label={cn ? '详情与队列' : 'Details and queue'}
-          value={`${fmtNum(detailRows)} / ${fmtNum(queueRows)}`}
-          hint={cn ? `错误 ${fmtNum(errorRows)} · DB ${fmtBytes(quality.database.fileBytes)}` : `Errors ${fmtNum(errorRows)} · DB ${fmtBytes(quality.database.fileBytes)}`}
-          tone={errorRows ? 'amber' : 'green'}
-        />
+        <StatTile icon={Database} label={cn ? '项目总数' : 'Projects'} value={fmtNum(projectRows)} hint={cn ? `详情 ${fmtNum(detailRows)}` : `Details ${fmtNum(detailRows)}`} tone="green" />
+        <StatTile icon={Activity} label={cn ? '快照总数' : 'Snapshots'} value={fmtNum(snapshotRows)} hint={cn ? `队列 ${fmtNum(queueRows)}` : `Queue ${fmtNum(queueRows)}`} tone="blue" />
+        <StatTile icon={HardDrive} label={cn ? '存量切片进度' : 'Backlog slices'} value={`${fmtNum(backlogDone)} / ${fmtNum(backlogDone + backlogRemaining + backlogPaused)}`} hint={cn ? `已发现 ${fmtNum(backlog?.discovered)} · DB ${fmtBytes(quality.database.fileBytes)}` : `Discovered ${fmtNum(backlog?.discovered)} · DB ${fmtBytes(quality.database.fileBytes)}`} tone={errorRows ? 'amber' : 'green'} />
       </div>
 
-      {webrobots && (
-        <section className="rounded-xl border border-gray-100 bg-white p-5 shadow-sm">
-          <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-            <div>
-              <h3 className="font-bold text-gray-900">{cn ? '导入覆盖' : 'Import coverage'}</h3>
-              <p className="text-sm text-gray-500">
-                {cn
-                  ? '完整度按当前 Webrobots 索引计算；每个日期至少有一次 completed run 才算完成。'
-                  : 'Completeness is relative to the current Webrobots index; each date needs one completed run.'}
-              </p>
-            </div>
-            <div className="flex flex-wrap gap-2 text-xs font-semibold">
-              <span className="rounded-full bg-green-50 px-2.5 py-1 text-green-700">Completed {webrobots.coverage.completed}</span>
-              <span className="rounded-full bg-amber-50 px-2.5 py-1 text-amber-700">Missing {webrobots.coverage.missing}</span>
-              <span className="rounded-full bg-red-50 px-2.5 py-1 text-red-700">Source 403 {webrobots.coverage.sourceUnavailable}</span>
-              <span className="rounded-full bg-orange-50 px-2.5 py-1 text-orange-700">Stale {webrobots.coverage.stale}</span>
-              <span className="rounded-full bg-red-50 px-2.5 py-1 text-red-700">Failed {webrobots.coverage.failed}</span>
-              <span className="rounded-full bg-blue-50 px-2.5 py-1 text-blue-700">Running {webrobots.coverage.running}</span>
-            </div>
-          </div>
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+        <PipelineCard
+          cn={cn}
+          tone="border-blue-100 bg-blue-50 text-blue-900"
+          title={cn ? '实时发现' : 'Live discovery'}
+          desc={cn ? '枚举新上线 + 在筹项目，错过不可补。' : 'Enumerate new + ongoing projects; misses are unrecoverable.'}
+          badges={<WorkerHealthLine cn={cn} health={workers?.live} />}
+        >
+          <button type="button" onClick={() => onAction('discover')} disabled={actionDisabled || !dbReady} className={btnPrimary}>
+            {actionBusy === 'discover' ? <RefreshCw className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+            {cn ? '立即发现一轮' : 'Run discovery'}
+          </button>
+        </PipelineCard>
 
-          <div className="overflow-hidden rounded-lg border border-gray-100">
-            <div className="max-h-[440px] overflow-auto">
-              <table className="min-w-full divide-y divide-gray-100 text-sm">
-                <thead className="sticky top-0 bg-gray-50 text-xs font-semibold uppercase text-gray-500">
-                  <tr>
-                    <th className="px-4 py-3 text-left">{cn ? '日期' : 'Date'}</th>
-                    <th className="px-4 py-3 text-left">{cn ? '状态' : 'Status'}</th>
-                    <th className="px-4 py-3 text-right">{cn ? '项目' : 'Projects'}</th>
-                    <th className="px-4 py-3 text-right">{cn ? '快照' : 'Snapshots'}</th>
-                    <th className="px-4 py-3 text-right">{cn ? '错误' : 'Errors'}</th>
-                    <th className="px-4 py-3 text-left">{cn ? '完成时间' : 'Completed'}</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100 bg-white">
-                  {months.map(month => {
-                    const meta = webrobotsStatusMeta(month.status);
-                    return (
-                      <tr
-                        key={month.date}
-                        className={
-                          month.status === 'source_unavailable' || month.status === 'error'
-                            ? 'bg-red-50/30'
-                            : month.status === 'missing' || month.status === 'stale'
-                              ? 'bg-amber-50/30'
-                              : ''
-                        }
-                      >
-                        <td className="px-4 py-3 font-mono text-xs text-gray-700">
-                          <div className="flex items-center gap-2">
-                            <span>{month.date}</span>
-                            {month.url && (
-                              <a href={month.url} target="_blank" rel="noreferrer" className="text-gray-300 hover:text-gray-600" title="Open source gz">
-                                <ExternalLink className="h-3.5 w-3.5" />
-                              </a>
-                            )}
-                          </div>
-                        </td>
-                        <td className="px-4 py-3">
-                          <span className={`rounded-full border px-2 py-0.5 text-xs font-semibold ${meta.className}`}>{meta.label}</span>
-                        </td>
-                        <td className="px-4 py-3 text-right font-semibold text-gray-900">{fmtNum(month.importedCount)}</td>
-                        <td className="px-4 py-3 text-right font-semibold text-gray-900">{fmtNum(month.snapshotCount)}</td>
-                        <td className="px-4 py-3 text-right font-semibold text-gray-900">{fmtNum(month.errorCount)}</td>
-                        <td className="px-4 py-3 text-xs text-gray-500" title={month.message ?? ''}>{fmtTime(month.completedAt ?? month.startedAt, cn ? 'cn' : 'en')}</td>
-                      </tr>
-                    );
-                  })}
-                  {!months.length && (
-                    <tr>
-                      <td colSpan={6} className="px-4 py-8 text-center text-sm text-gray-400">
-                        {cn ? '暂无 Webrobots 月份状态。' : 'No Webrobots month status yet.'}
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </section>
-      )}
+        <PipelineCard
+          cn={cn}
+          tone="border-green-100 bg-green-50 text-green-900"
+          title={cn ? '在筹分级 tracker' : 'Tiered live tracker'}
+          desc={cn ? '按价值分档刷新资金/支持者快照（detail API）。' : 'Tiered funding/backer snapshots via the detail API.'}
+          badges={<span className="rounded-full bg-white/70 px-2.5 py-1 text-xs font-semibold">{cn ? `队列 queued ${fmtNum(detailQueue.queued)} · ok ${fmtNum(detailQueue.ok)}` : `queued ${fmtNum(detailQueue.queued)} · ok ${fmtNum(detailQueue.ok)}`}</span>}
+        >
+          <button type="button" onClick={() => onAction('track')} disabled={actionDisabled || !dbReady} className={btnPrimary}>
+            {actionBusy === 'track' ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Activity className="h-4 w-4" />}
+            {cn ? '立即跟踪一轮' : 'Run tracker'}
+          </button>
+        </PipelineCard>
+
+        <PipelineCard
+          cn={cn}
+          tone="border-purple-100 bg-purple-50 text-purple-900"
+          title={cn ? '存量扫描' : 'Backlog sweep'}
+          desc={cn ? '按分类递归切片全量目录，可暂停/续跑。' : 'Recursive category sweep of the full catalog; pausable/resumable.'}
+          badges={
+            <>
+              <WorkerHealthLine cn={cn} health={workers?.bulk} />
+              <span className="rounded-full bg-white/70 px-2.5 py-1 text-xs font-semibold">
+                {cn ? `完成 ${fmtNum(backlogDone)} · 待跑 ${fmtNum(backlogRemaining)}${backlogPaused ? ` · 暂停 ${fmtNum(backlogPaused)}` : ''}` : `done ${fmtNum(backlogDone)} · todo ${fmtNum(backlogRemaining)}${backlogPaused ? ` · paused ${fmtNum(backlogPaused)}` : ''}`}
+              </span>
+            </>
+          }
+        >
+          <button
+            type="button"
+            onClick={() => runConfirmed('backlog_sweep', { sweepOp: 'start' }, cn ? '这会启动一轮存量扫描（按当前页预算消耗），可随时暂停。确定开始吗？' : 'This runs one backlog sweep chunk (page-budget bounded). Continue?')}
+            disabled={actionDisabled || !dbReady}
+            className={btnPrimary}
+          >
+            {actionBusy === 'backlog_sweep' ? <RefreshCw className="h-4 w-4 animate-spin" /> : <HardDrive className="h-4 w-4" />}
+            {cn ? '运行存量一轮' : 'Run sweep'}
+          </button>
+          <button type="button" onClick={() => onAction('backlog_sweep', { sweepOp: 'pause' })} disabled={actionDisabled} className={btnGhost}>
+            {cn ? '暂停' : 'Pause'}
+          </button>
+          <button type="button" onClick={() => onAction('backlog_sweep', { sweepOp: 'resume' })} disabled={actionDisabled} className={btnGhost}>
+            {cn ? '续跑' : 'Resume'}
+          </button>
+        </PipelineCard>
+      </div>
 
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
         <section className="rounded-xl border border-gray-100 bg-white p-5 shadow-sm">
           <div className="mb-4 flex items-center gap-2">
             <Info className="h-4 w-4 text-gray-500" />
-            <h3 className="font-bold text-gray-900">{cn ? '详情队列' : 'Detail queue'}</h3>
+            <h3 className="font-bold text-gray-900">{cn ? '详情/跟踪队列' : 'Detail / tracking queue'}</h3>
           </div>
           <div className="grid grid-cols-2 gap-3">
-            {Object.entries(webrobots?.detailQueue.byStatus ?? { queued: 0, ok: 0, error: 0, invalid_slug: 0 }).map(([status, count]) => (
+            {Object.entries(detailQueue).map(([status, count]) => (
               <div key={status} className="rounded-lg border border-gray-100 bg-gray-50 p-3">
                 <p className="font-mono text-xs text-gray-500">{status}</p>
                 <p className="mt-1 text-xl font-black text-gray-900">{fmtNum(count)}</p>
@@ -888,57 +758,126 @@ function IndiegogoWebrobotsPanel({
 
         <section className="rounded-xl border border-gray-100 bg-white p-5 shadow-sm">
           <div className="mb-4 flex items-center gap-2">
-            <AlertTriangle className="h-4 w-4 text-gray-500" />
-            <h3 className="font-bold text-gray-900">{cn ? '错误摘要' : 'Error summary'}</h3>
+            <Activity className="h-4 w-4 text-gray-500" />
+            <h3 className="font-bold text-gray-900">{cn ? '最近运行记录' : 'Recent runs'}</h3>
           </div>
           <div className="space-y-2">
-            {(webrobots?.errorSummary ?? []).slice(0, 6).map((error, idx) => (
-              <div key={`${error.jobType}:${error.statusCode}:${idx}`} className="rounded-lg border border-red-50 bg-red-50/40 p-3">
-                <div className="flex flex-wrap items-center gap-2 text-xs">
-                  <span className="font-semibold text-gray-800">{error.jobType ?? 'unknown'}</span>
-                  {error.statusCode && <span className="text-red-600">HTTP {error.statusCode}</span>}
-                  <span className="rounded bg-white px-1.5 py-0.5 font-semibold text-red-700">x{error.count}</span>
-                  <span className="text-gray-400">{fmtTime(error.lastOccurredAt, cn ? 'cn' : 'en')}</span>
+            {recentRuns.map(run => (
+              <div key={run.id} className="rounded-lg border border-gray-100 bg-gray-50 p-3 text-sm">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-mono text-xs text-gray-500">{run.job_type}</span>
+                  <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${statusClass(run.status)}`}>{run.status}</span>
+                  <span className="text-xs text-gray-400">{fmtTime(run.started_at, cn ? 'cn' : 'en')}</span>
                 </div>
-                <p className="mt-1 line-clamp-2 text-sm text-red-700">{error.message}</p>
+                <p className="mt-1 text-xs text-gray-500">
+                  {cn ? '导入' : 'Imported'} {fmtNum(run.imported_count)} · {cn ? '快照' : 'Snapshots'} {fmtNum(run.snapshot_count)} · {cn ? '错误' : 'Errors'} {fmtNum(run.error_count)}
+                </p>
+                {run.message && <p className="mt-1 line-clamp-2 text-xs text-gray-400">{run.message}</p>}
               </div>
             ))}
-            {!(webrobots?.errorSummary ?? []).length && (
-              <div className="rounded-lg border border-dashed border-gray-200 bg-gray-50 px-4 py-6 text-center text-sm text-gray-400">
-                {cn ? '暂无 Indiegogo 导入错误。' : 'No Indiegogo import errors.'}
-              </div>
-            )}
+            {!recentRuns.length && <p className="rounded-lg border border-dashed border-gray-200 bg-gray-50 px-4 py-6 text-center text-sm text-gray-400">{cn ? '暂无运行记录。' : 'No runs yet.'}</p>}
           </div>
         </section>
       </div>
 
+      <section className="rounded-xl border border-gray-100 bg-white p-5 shadow-sm">
+        <div className="mb-4 flex items-center gap-2">
+          <AlertTriangle className="h-4 w-4 text-gray-500" />
+          <h3 className="font-bold text-gray-900">{cn ? '最近错误' : 'Recent errors'}</h3>
+        </div>
+        <div className="space-y-2">
+          {recentErrors.map(error => (
+            <div key={error.id} className="rounded-lg border border-red-50 bg-red-50/40 p-3 text-sm">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-mono text-xs text-gray-500">{error.job_type ?? 'unknown'}</span>
+                {error.status_code && <span className="text-xs font-semibold text-red-600">HTTP {error.status_code}</span>}
+                <span className="text-xs text-gray-400">{fmtTime(error.occurred_at, cn ? 'cn' : 'en')}</span>
+              </div>
+              <p className="mt-1 line-clamp-2 text-xs text-red-700">{error.message}</p>
+            </div>
+          ))}
+          {!recentErrors.length && <p className="rounded-lg border border-dashed border-gray-200 bg-gray-50 px-4 py-6 text-center text-sm text-gray-400">{cn ? '暂无最近错误。' : 'No recent errors.'}</p>}
+        </div>
+      </section>
+
       <details className="rounded-xl border border-gray-100 bg-white p-5 shadow-sm">
-        <summary className="cursor-pointer text-sm font-bold text-gray-900">{cn ? '高级诊断与手动操作' : 'Advanced diagnostics and manual actions'}</summary>
+        <summary className="cursor-pointer text-sm font-bold text-gray-900">{cn ? '高级 / 遗留：Webrobots 历史回灌与诊断' : 'Advanced / legacy: Webrobots backfill & diagnostics'}</summary>
         <div className="mt-4 space-y-5">
+          <p className="text-xs text-gray-500">
+            {cn
+              ? 'Webrobots 数据集已停更且不完整，仅作为可选的历史回灌保留。日常数据由上面的三条管线产生。'
+              : 'The Webrobots dataset is stale/incomplete and kept only as optional historical backfill. Day-to-day data comes from the pipelines above.'}
+          </p>
           <div className="flex flex-wrap gap-2">
-            <button type="button" onClick={() => onAction('validate_config')} disabled={actionDisabled} className="rounded-lg border border-gray-200 px-3 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-50">
-              Validate config
-            </button>
-            <button type="button" onClick={() => onAction('dry_run_capabilities')} disabled={actionDisabled} className="rounded-lg border border-gray-200 px-3 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-50">
-              Dry-run capabilities
+            <button type="button" onClick={() => onAction('validate_config')} disabled={actionDisabled} className={btnGhost}>Validate config</button>
+            <button type="button" onClick={() => onAction('dry_run_capabilities')} disabled={actionDisabled} className={btnGhost}>Dry-run capabilities</button>
+            <button
+              type="button"
+              onClick={() => runConfirmed('import', { mode: 'missing', wait: true, maxDatasets: 1 }, cn ? '导入下一个仍可下载的 Webrobots 快照（1 个）。确定？' : 'Import the next downloadable Webrobots snapshot (1). Continue?')}
+              disabled={actionDisabled}
+              className={btnGhost}
+            >
+              {cn ? '回灌下一个 Webrobots 快照' : 'Backfill next Webrobots snapshot'}
             </button>
             <button
               type="button"
-              onClick={() => runConfirmed('import', { mode: 'all_available' }, cn ? '这会重新遍历全部 Webrobots 快照，可能运行较久。确定开始吗？' : 'This scans all Webrobots snapshots and may take a while. Continue?')}
+              onClick={() => runConfirmed('crawl', undefined, cn ? '这会同步活跃 API 并刷新一批详情。确定？' : 'This syncs the active API and refreshes a detail batch. Continue?')}
               disabled={actionDisabled}
-              className="rounded-lg border border-ks-green/30 bg-ks-green-light px-3 py-2 text-sm font-semibold text-ks-green-dark hover:bg-green-100 disabled:opacity-50"
+              className={btnGhost}
             >
-              Import all
-            </button>
-            <button
-              type="button"
-              onClick={() => runConfirmed('crawl', undefined, cn ? '这会同步活跃项目并刷新一批详情。确定开始吗？' : 'This syncs active projects and refreshes a detail batch. Continue?')}
-              disabled={actionDisabled}
-              className="rounded-lg border border-ks-green/30 bg-ks-green-light px-3 py-2 text-sm font-semibold text-ks-green-dark hover:bg-green-100 disabled:opacity-50"
-            >
-              Active crawl / detail refresh
+              {cn ? 'Active API 同步 + 详情刷新' : 'Active API sync + detail refresh'}
             </button>
           </div>
+
+          {webrobots && (
+            <div className="flex flex-wrap gap-2 text-xs font-semibold">
+              <span className="rounded-full bg-green-50 px-2.5 py-1 text-green-700">Completed {webrobots.coverage.completed}/{webrobots.coverage.expected}</span>
+              <span className="rounded-full bg-amber-50 px-2.5 py-1 text-amber-700">Missing {webrobots.coverage.missing}</span>
+              <span className="rounded-full bg-blue-50 px-2.5 py-1 text-blue-700">Running {webrobots.coverage.running}</span>
+              <span className="rounded-full bg-gray-100 px-2.5 py-1 text-gray-600">{cn ? `源 ${webrobots.source.firstDate ?? '?'} → ${webrobots.source.latestDate ?? '?'}` : `Source ${webrobots.source.firstDate ?? '?'} → ${webrobots.source.latestDate ?? '?'}`}</span>
+            </div>
+          )}
+
+          {months.length > 0 && (
+            <div className="overflow-hidden rounded-lg border border-gray-100">
+              <div className="max-h-[320px] overflow-auto">
+                <table className="min-w-full divide-y divide-gray-100 text-sm">
+                  <thead className="sticky top-0 bg-gray-50 text-xs font-semibold uppercase text-gray-500">
+                    <tr>
+                      <th className="px-4 py-3 text-left">{cn ? '日期' : 'Date'}</th>
+                      <th className="px-4 py-3 text-left">{cn ? '状态' : 'Status'}</th>
+                      <th className="px-4 py-3 text-right">{cn ? '项目' : 'Projects'}</th>
+                      <th className="px-4 py-3 text-right">{cn ? '快照' : 'Snapshots'}</th>
+                      <th className="px-4 py-3 text-left">{cn ? '完成时间' : 'Completed'}</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100 bg-white">
+                    {months.map(month => {
+                      const meta = webrobotsStatusMeta(month.status);
+                      return (
+                        <tr key={month.date}>
+                          <td className="px-4 py-3 font-mono text-xs text-gray-700">
+                            <div className="flex items-center gap-2">
+                              <span>{month.date}</span>
+                              {month.url && (
+                                <a href={month.url} target="_blank" rel="noreferrer" className="text-gray-300 hover:text-gray-600" title="Open source gz">
+                                  <ExternalLink className="h-3.5 w-3.5" />
+                                </a>
+                              )}
+                            </div>
+                          </td>
+                          <td className="px-4 py-3"><span className={`rounded-full border px-2 py-0.5 text-xs font-semibold ${meta.className}`}>{meta.label}</span></td>
+                          <td className="px-4 py-3 text-right font-semibold text-gray-900">{fmtNum(month.importedCount)}</td>
+                          <td className="px-4 py-3 text-right font-semibold text-gray-900">{fmtNum(month.snapshotCount)}</td>
+                          <td className="px-4 py-3 text-xs text-gray-500" title={month.message ?? ''}>{fmtTime(month.completedAt ?? month.startedAt, cn ? 'cn' : 'en')}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
 
           <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
             {quality.database.tableCounts.map(item => (
@@ -947,44 +886,6 @@ function IndiegogoWebrobotsPanel({
                 <p className="mt-1 text-lg font-black text-gray-900">{fmtNum(item.rows)}</p>
               </div>
             ))}
-          </div>
-
-          <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
-            <div>
-              <h4 className="mb-2 text-sm font-bold text-gray-900">{cn ? '最近运行记录' : 'Recent runs'}</h4>
-              <div className="space-y-2">
-                {recentRuns.map(run => (
-                  <div key={run.id} className="rounded-lg border border-gray-100 bg-gray-50 p-3 text-sm">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-mono text-xs text-gray-500">{run.job_type}</span>
-                      <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${statusClass(run.status)}`}>{run.status}</span>
-                      <span className="text-xs text-gray-400">{fmtTime(run.started_at, cn ? 'cn' : 'en')}</span>
-                    </div>
-                    <p className="mt-1 text-xs text-gray-500">
-                      {cn ? '导入' : 'Imported'} {fmtNum(run.imported_count)} · {cn ? '快照' : 'Snapshots'} {fmtNum(run.snapshot_count)} · {cn ? '错误' : 'Errors'} {fmtNum(run.error_count)}
-                    </p>
-                    {run.message && <p className="mt-1 line-clamp-2 text-xs text-gray-400">{run.message}</p>}
-                  </div>
-                ))}
-                {!recentRuns.length && <p className="rounded-lg border border-dashed border-gray-200 bg-gray-50 px-4 py-6 text-center text-sm text-gray-400">{cn ? '暂无运行记录。' : 'No runs yet.'}</p>}
-              </div>
-            </div>
-            <div>
-              <h4 className="mb-2 text-sm font-bold text-gray-900">{cn ? '最近错误' : 'Recent errors'}</h4>
-              <div className="space-y-2">
-                {recentErrors.map(error => (
-                  <div key={error.id} className="rounded-lg border border-red-50 bg-red-50/40 p-3 text-sm">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-mono text-xs text-gray-500">{error.job_type ?? 'unknown'}</span>
-                      {error.status_code && <span className="text-xs font-semibold text-red-600">HTTP {error.status_code}</span>}
-                      <span className="text-xs text-gray-400">{fmtTime(error.occurred_at, cn ? 'cn' : 'en')}</span>
-                    </div>
-                    <p className="mt-1 line-clamp-2 text-xs text-red-700">{error.message}</p>
-                  </div>
-                ))}
-                {!recentErrors.length && <p className="rounded-lg border border-dashed border-gray-200 bg-gray-50 px-4 py-6 text-center text-sm text-gray-400">{cn ? '暂无最近错误。' : 'No recent errors.'}</p>}
-              </div>
-            </div>
           </div>
         </div>
       </details>
@@ -1028,7 +929,7 @@ function PlatformIsolationPanel({
 
   if (quality.view === 'indiegogo') {
     return (
-      <IndiegogoWebrobotsPanel
+      <IndiegogoControlPanel
         cn={cn}
         quality={quality}
         loading={loading}

@@ -1,8 +1,9 @@
-# Isolated Indiegogo search probe for Railway.
+# Isolated Indiegogo Cloudflare-bypass enumeration worker for Railway.
 #
-# This service intentionally does not share runtime code, database access, or
-# deployment config with the main Kicksonar app. It exists only to test whether
-# Railway can load Indiegogo search with a real browser.
+# Runs a headed Chrome (under Xvfb) via puppeteer-real-browser to clear
+# Cloudflare Turnstile, then serves the main Kicksonar app's enumeration calls
+# (POST /search). Deploy two instances with INDIEGOGO_WORKER_ROLE=live and
+# INDIEGOGO_WORKER_ROLE=bulk so discovery and backlog never share a browser lane.
 
 FROM mcr.microsoft.com/playwright:v1.60.0-jammy
 
@@ -21,9 +22,9 @@ RUN apt-get update \
 COPY package*.json ./
 RUN npm install --omit=dev
 
-COPY probe.mjs ./
+COPY worker.mjs ./
 
 ENV NODE_ENV=production
 EXPOSE 8080
 
-CMD ["xvfb-run", "-a", "--server-args=-screen 0 1920x1080x24 -ac", "node", "probe.mjs"]
+CMD ["xvfb-run", "-a", "--server-args=-screen 0 1920x1080x24 -ac", "node", "worker.mjs"]

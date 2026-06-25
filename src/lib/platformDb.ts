@@ -9,14 +9,24 @@ import {
   type PlatformId,
   type PlatformViewId,
 } from './platforms';
-import type { IndiegogoImportMode, IndiegogoWebrobotsDiagnostics } from './indiegogo';
+import type { IndiegogoImportMode, IndiegogoWebrobotsDiagnostics, IndiegogoBacklogStatus } from './indiegogo';
+import type { IndiegogoWorkerHealth } from './indiegogoWorker';
 
 const DATA_DIR = process.env.DATA_DIR ?? path.join(process.cwd(), 'data');
 const PLATFORM_DIR = path.join(DATA_DIR, 'platforms');
 const GLOBAL_DB_PATH = path.join(DATA_DIR, 'global_crowdfunding.db');
 const LEGACY_KICKSTARTER_DB_PATH = path.join(DATA_DIR, 'kickstarter.db');
 
-export type PlatformAction = 'init_db' | 'validate_config' | 'dry_run_capabilities' | 'crawl' | 'import' | 'export';
+export type PlatformAction =
+  | 'init_db'
+  | 'validate_config'
+  | 'dry_run_capabilities'
+  | 'crawl'
+  | 'import'
+  | 'export'
+  | 'discover'
+  | 'track'
+  | 'backlog_sweep';
 
 export interface PlatformActionOptions {
   mode?: IndiegogoImportMode;
@@ -24,6 +34,10 @@ export interface PlatformActionOptions {
   wait?: boolean;
   detailLimit?: number;
   staleBefore?: number;
+  maxPages?: number;
+  trackLimit?: number;
+  pageBudget?: number;
+  sweepOp?: 'start' | 'pause' | 'resume';
 }
 
 interface TableCount {
@@ -59,6 +73,8 @@ export interface PlatformQuality {
   recentRuns: unknown[];
   recentErrors: unknown[];
   webrobots?: IndiegogoWebrobotsDiagnostics;
+  workers?: { live: IndiegogoWorkerHealth; bulk: IndiegogoWorkerHealth };
+  backlog?: IndiegogoBacklogStatus;
 }
 
 function safeStatBytes(filePath: string): number | null {
@@ -285,6 +301,32 @@ function ensureSourceSchema(db: Database, platform: PlatformId) {
         ON indiegogo_project_details(platform_id, project_url_name, fetched_at);
       CREATE INDEX IF NOT EXISTS idx_igg_project_details_source
         ON indiegogo_project_details(platform_id, source, fetched_at);
+
+      CREATE TABLE IF NOT EXISTS indiegogo_search_slices (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        platform_id TEXT NOT NULL DEFAULT 'indiegogo',
+        sweep_id TEXT NOT NULL,
+        slice_key TEXT NOT NULL,
+        sort_type INTEGER DEFAULT 0,
+        phase INTEGER,
+        category TEXT,
+        tag INTEGER,
+        status TEXT NOT NULL DEFAULT 'pending',
+        total_items INTEGER,
+        total_pages INTEGER,
+        capped INTEGER DEFAULT 0,
+        next_page INTEGER DEFAULT 1,
+        discovered INTEGER DEFAULT 0,
+        priority INTEGER DEFAULT 0,
+        last_error TEXT,
+        created_at INTEGER DEFAULT (unixepoch()),
+        updated_at INTEGER DEFAULT (unixepoch()),
+        CHECK (platform_id = 'indiegogo'),
+        UNIQUE(platform_id, sweep_id, slice_key)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_igg_search_slices_due
+        ON indiegogo_search_slices(platform_id, sweep_id, status, priority);
     `);
   }
 
@@ -514,9 +556,17 @@ export async function getPlatformQualityForResponse(view: PlatformViewId): Promi
   const quality = getPlatformQuality(view);
   if (view !== 'indiegogo') return quality;
   const igg = await import('./indiegogo');
+  const worker = await import('./indiegogoWorker');
+  const [webrobots, liveHealth, bulkHealth] = await Promise.all([
+    igg.getIndiegogoWebrobotsDiagnostics(),
+    worker.getIndiegogoWorkerHealth('live'),
+    worker.getIndiegogoWorkerHealth('bulk'),
+  ]);
   return {
     ...quality,
-    webrobots: await igg.getIndiegogoWebrobotsDiagnostics(),
+    webrobots,
+    workers: { live: liveHealth, bulk: bulkHealth },
+    backlog: igg.getIndiegogoBacklogStatus(),
   };
 }
 
@@ -585,15 +635,51 @@ export async function runPlatformAction(view: PlatformViewId, action: PlatformAc
         payload: { ok: active.ok && details.ok, action, result: { active, details } },
       };
     }
+    if (action === 'discover') {
+      const discoverOptions = { maxPages: options.maxPages };
+      if (!options.wait) {
+        igg.discoverIndiegogoIncremental(discoverOptions).catch(err => console.error('[indiegogo] discover failed:', err));
+        return { status: 202, payload: { ok: true, action, message: 'Indiegogo live discovery started.' } };
+      }
+      const result = await igg.discoverIndiegogoIncremental(discoverOptions);
+      return { status: result.ok ? 200 : 500, payload: { ok: result.ok, action, result } };
+    }
+    if (action === 'track') {
+      const trackOptions = { limit: options.trackLimit ?? options.detailLimit };
+      if (!options.wait) {
+        igg.trackIndiegogoLive(trackOptions).catch(err => console.error('[indiegogo] track failed:', err));
+        return { status: 202, payload: { ok: true, action, message: 'Indiegogo tiered live tracking started.' } };
+      }
+      const result = await igg.trackIndiegogoLive(trackOptions);
+      return { status: result.ok ? 200 : 500, payload: { ok: result.ok, action, result } };
+    }
+    if (action === 'backlog_sweep') {
+      const op = options.sweepOp ?? 'start';
+      if (op === 'pause') {
+        const changed = igg.pauseIndiegogoBacklogSweep();
+        return { status: 200, payload: { ok: true, action, op, message: `Paused ${changed} backlog slice(s).`, status_detail: igg.getIndiegogoBacklogStatus() } };
+      }
+      if (op === 'resume') {
+        const changed = igg.resumeIndiegogoBacklogSweep();
+        return { status: 200, payload: { ok: true, action, op, message: `Resumed ${changed} backlog slice(s).`, status_detail: igg.getIndiegogoBacklogStatus() } };
+      }
+      const sweepOptions = { pageBudget: options.pageBudget };
+      if (!options.wait) {
+        igg.runIndiegogoBacklogSweep(sweepOptions).catch(err => console.error('[indiegogo] backlog sweep failed:', err));
+        return { status: 202, payload: { ok: true, action, op, message: 'Indiegogo backlog sweep started.', status_detail: igg.getIndiegogoBacklogStatus() } };
+      }
+      const result = await igg.runIndiegogoBacklogSweep(sweepOptions);
+      return { status: result.ok ? 200 : 500, payload: { ok: result.ok, action, op, result } };
+    }
   }
 
-  if (action === 'crawl' || action === 'import' || action === 'export') {
+  if (action === 'crawl' || action === 'import' || action === 'export' || action === 'discover' || action === 'track' || action === 'backlog_sweep') {
     return {
       status: 501,
       payload: {
         ok: false,
         action,
-        error: `${action} is not implemented in phase one. No crawler/import/export job was started.`,
+        error: `${action} is not implemented for this platform. No job was started.`,
       },
     };
   }

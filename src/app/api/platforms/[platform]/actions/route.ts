@@ -6,7 +6,7 @@ import { runPlatformAction, type PlatformAction } from '@/lib/platformDb';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-const ACTIONS = new Set<PlatformAction>(['init_db', 'validate_config', 'dry_run_capabilities', 'crawl', 'import', 'export']);
+const ACTIONS = new Set<PlatformAction>(['init_db', 'validate_config', 'dry_run_capabilities', 'crawl', 'import', 'export', 'discover', 'track', 'backlog_sweep']);
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ platform: string }> }) {
   try {
@@ -22,6 +22,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ pla
       wait?: boolean;
       detailLimit?: number;
       staleBefore?: number;
+      maxPages?: number;
+      trackLimit?: number;
+      pageBudget?: number;
+      sweepOp?: 'start' | 'pause' | 'resume';
     };
     const action = body.action;
     if (!action || !ACTIONS.has(action as PlatformAction)) {

@@ -1,16 +1,14 @@
 {
-  "name": "indiegogo-search-probe",
-  "version": "0.0.1",
+  "name": "indiegogo-worker",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Isolated Railway probe for testing whether Indiegogo search can be crawled from a server browser.",
+  "description": "Isolated Indiegogo Cloudflare-bypass enumeration worker (puppeteer-real-browser). Exposes POST /search and GET /health for the Kicksonar main app.",
   "scripts": {
-    "start": "xvfb-run -a --server-args=\"-screen 0 1920x1080x24 -ac\" node probe.mjs",
-    "check": "node --check probe.mjs"
+    "start": "xvfb-run -a --server-args=\"-screen 0 1920x1080x24 -ac\" node worker.mjs",
+    "check": "node --check worker.mjs"
   },
   "dependencies": {
-    "playwright": "1.60.0",
-    "playwright-extra": "^4.3.6",
-    "puppeteer-extra-plugin-stealth": "^2.11.2"
+    "puppeteer-real-browser": "^1.4.4"
   }
 }

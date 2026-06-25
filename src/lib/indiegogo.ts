@@ -5,6 +5,12 @@ import fs from 'fs';
 import BetterSqlite3, { type Database } from 'better-sqlite3';
 import { getPlatformDbPath, openPlatformSourceDb } from './platformDb';
 import { resolveUsdAmounts } from './money';
+import {
+  searchIndiegogoViaWorker,
+  indiegogoWorkerConfigured,
+  type IndiegogoSearchCard,
+  type IndiegogoSearchParams,
+} from './indiegogoWorker';
 
 const PLATFORM_ID = 'indiegogo';
 const WEBROBOTS_INDEX_URL = 'https://webrobots.io/indiegogo-dataset/';
@@ -20,6 +26,46 @@ const WEBROBOTS_STALE_RUN_SECONDS = Math.max(
   300,
   Number(process.env.INDIEGOGO_WEBROBOTS_STALE_RUN_SECONDS ?? 10 * 60),
 );
+
+const SEARCH_PAGE_SIZE = 24;
+const SEARCH_QUERY_CAP = 10_000; // Indiegogo caps any single query at ~10k items.
+const SEARCH_PAGE_DELAY_MS = Math.max(200, Number(process.env.INDIEGOGO_SEARCH_PAGE_DELAY_MS ?? 600));
+
+// Indiegogo project phases observed on searchProjectsForCards (projectPhaseSearchTypes).
+// 3 (ongoing) and 4 (ended) are the large buckets that exceed the 10k cap and must
+// be split by category; the rest are small.
+const INDIEGOGO_SEARCH_PHASES = [0, 1, 2, 3, 4, 5, 6] as const;
+
+// Full catalog category enum (projectCatalogCategories), harvested from live cards.
+// Used to partition the big phases below the 10k query cap during the backlog sweep.
+const INDIEGOGO_CATEGORIES: readonly string[] = [
+  'BoardAndCardGames', 'TTRPG', 'Others', 'Accessories', 'PhonesAndAccessories', 'Audio',
+  'CameraGear', 'Home', 'HealthAndFitness', 'Productivity', 'TravelAndOutdoors', 'Transportation',
+  'FashionAndWearables', 'General', 'Art', 'Film', 'Music', 'DanceAndTheater', 'Comics',
+  'WritingAndPublishing', 'Photography', 'VideoGames', 'LocalBusinesses', 'Education', 'HumanRights',
+  'Wellness', 'Environment', 'OtherCommunityProjects', 'EnergyAndGreenTech', 'FoodAndBeverages',
+  'WebSeriesAndTVShows', 'PodcastsBlogsAndVlogs', 'Culture',
+];
+
+// Sort by funds raised (descending) so the highest-value projects in each slice land
+// first; sortType 0 is Indiegogo's default "trending". Newest is used for discovery.
+const SORT_TRENDING = 0;
+const SORT_NEWEST = 1;
+
+// Best-effort currency-symbol -> ISO code. Search cards only expose a symbol; the
+// detail API later provides the authoritative currencyShortName and corrects this.
+// '$' defaults to USD (the overwhelming majority of Indiegogo campaigns).
+const CURRENCY_SYMBOL_MAP: Record<string, string> = {
+  $: 'USD', US$: 'USD', 'C$': 'CAD', CA$: 'CAD', 'A$': 'AUD', AU$: 'AUD', 'NZ$': 'NZD',
+  'HK$': 'HKD', 'S$': 'SGD', 'R$': 'BRL', 'MX$': 'MXN', '£': 'GBP', '€': 'EUR', '¥': 'JPY',
+  '₹': 'INR', '₩': 'KRW', '₽': 'RUB', '₪': 'ILS', '฿': 'THB', 'CHF': 'CHF', kr: 'SEK', zł: 'PLN',
+};
+
+function currencyFromSymbol(symbol: string | null | undefined): string | null {
+  if (!symbol) return null;
+  const raw = symbol.trim();
+  return CURRENCY_SYMBOL_MAP[raw] ?? null;
+}
 
 export interface IndiegogoWebrobotsDataset {
   date: string;
@@ -223,7 +269,7 @@ interface NormalizedProject {
 
 interface StoredProject extends NormalizedProject {
   captured_at: number;
-  snapshot_source: 'webrobots' | 'indiegogo_active' | 'indiegogo_detail';
+  snapshot_source: 'webrobots' | 'indiegogo_active' | 'indiegogo_detail' | 'indiegogo_search';
   queue_detail: boolean;
 }
 
@@ -588,6 +634,92 @@ export function normalizeIndiegogoApiProject(project: ApiProject, existingSource
     captured_at: now,
     snapshot_source: 'indiegogo_detail',
     queue_detail: false,
+  };
+}
+
+export function normalizeIndiegogoSearchCard(card: IndiegogoSearchCard): StoredProject | null {
+  const projectUrlName = text(card.projectUrlName, 300)
+    ?? projectUrlNameFromHomeUrl(card.url ?? null)
+    ?? null;
+  const projectId = card.projectID == null ? null : String(card.projectID);
+  if (!projectUrlName && !projectId) return null;
+
+  const now = nowSec();
+  const currency = currencyFromSymbol(card.currencySymbol);
+  const pledged = num(card.fundsGathered);
+  const goal = num(card.campaignGoal);
+  const backers = int(card.backersCount) ?? 0;
+  const amounts = usdAmounts(pledged, goal, currency, backers);
+  const launchedAt = toSeconds(card.campaignStart);
+  const deadline = toSeconds(card.campaignEnd);
+  // type/originalType: 2 denotes InDemand (post-campaign ongoing) on Indiegogo.
+  const projectType = card.type == null ? null : String(card.type);
+  const isIndemand = projectType === '2' || String(card.originalType ?? '') === '2';
+  // phase 0 with no launch date = prelaunch/coming soon.
+  const isPrelaunch = card.phase === 0 || !launchedAt;
+  const state = resolveIndiegogoState({
+    deadline,
+    goal,
+    pledged,
+    isIndemand,
+    isPrelaunch,
+    projectType,
+    now,
+  });
+  const sourceProjectId = projectId ?? `slug:${projectUrlName}`;
+
+  return {
+    source_project_id: sourceProjectId,
+    canonical_key: projectUrlName ? `${PLATFORM_ID}:${projectUrlName}` : `${PLATFORM_ID}:${sourceProjectId}`,
+    name: text(card.name, 500) ?? projectUrlName ?? sourceProjectId,
+    blurb: text(card.shortDescription, 1000),
+    state,
+    category: text(card.catalogCategory?.name, 200),
+    country: null,
+    currency,
+    goal_amount: amounts.goalUsd,
+    pledged_amount: pledged,
+    pledged_usd: amounts.pledgedUsd,
+    backers_count: backers,
+    launched_at: launchedAt,
+    deadline,
+    source_url: text(card.url, 1000) ?? (projectUrlName ? `https://www.indiegogo.com/projects/${projectUrlName}` : null),
+    image_url: text(card.imageUrl, 1000),
+    raw_status: rawStatus({ state, isIndemand, isPrelaunch, source: 'search' }),
+    project_url_name: projectUrlName,
+    creator_url_name: text(card.creator?.urlName, 300),
+    project_type: projectType,
+    is_indemand: isIndemand ? 1 : 0,
+    is_prelaunch: isPrelaunch ? 1 : 0,
+    percent_raised: goal > 0 ? (pledged / goal) * 100 : null,
+    comments_count: null,
+    updates_count: null,
+    rewards_count: null,
+    detail_status: null,
+    detail_fetched_at: null,
+    webrobots_run_id: null,
+    last_api_seen_at: now,
+    first_seen_at: launchedAt ?? now,
+    last_seen_at: now,
+    captured_at: now,
+    snapshot_source: 'indiegogo_search',
+    queue_detail: Boolean(projectUrlName && !isPrelaunch),
+  };
+}
+
+function nativeSearchCardDetail(card: IndiegogoSearchCard, row: StoredProject): NativeProjectDetail {
+  const payload = jsonPayload(card);
+  return {
+    source_project_id: row.source_project_id,
+    project_url_name: row.project_url_name,
+    source: 'detail_api',
+    fetched_at: row.captured_at,
+    status_code: 200,
+    raw_json: payload,
+    detail_json: null,
+    webrobots_json: null,
+    webrobots_run_id: null,
+    payload_bytes: Buffer.byteLength(payload),
   };
 }
 
@@ -1551,24 +1683,61 @@ function enqueueStaleDetails(db: Database, staleBefore?: number): number {
 
 function dueDetails(db: Database, limit: number): QueueRow[] {
   const now = nowSec();
+  // 'queued'/'error' rows are first-time/retry fetches; 'ok' rows with a scheduled
+  // next_fetch are the tiered live-tracking re-fetches (see indiegogoTrackInterval).
   return db.prepare(`
     SELECT project_url_name, source_project_id, COALESCE(attempts, 0) AS attempts
     FROM platform_detail_queue
     WHERE platform_id = @platform_id
-      AND status IN ('queued', 'error')
-      AND (next_fetch IS NULL OR next_fetch <= @now)
+      AND (
+        (status IN ('queued', 'error') AND (next_fetch IS NULL OR next_fetch <= @now))
+        OR (status = 'ok' AND next_fetch IS NOT NULL AND next_fetch <= @now)
+      )
     ORDER BY priority DESC, COALESCE(next_fetch, 0) ASC, updated_at ASC
     LIMIT @limit
   `).all({ platform_id: PLATFORM_ID, now, limit }) as QueueRow[];
 }
 
-function markDetailOk(db: Database, row: QueueRow, sourceProjectId: string) {
+interface TrackSchedule {
+  state: string;
+  pledged_usd: number | null;
+  backers: number | null;
+  launched_at: number | null;
+  deadline: number | null;
+}
+
+// Tiered live-tracking cadence, aligned with the Kickstarter tracker (db.ts
+// markFetched): hot / first-day / last-48h projects refresh fast; long-tail
+// projects far from their deadline refresh slowly; ended projects stop. This runs
+// over the cheap detail API (no browser worker), so frequent tiers are affordable.
+function indiegogoTrackInterval(p: TrackSchedule, now = nowSec()): number | null {
+  if (p.state === 'live') {
+    const launchedAt = Number(p.launched_at ?? 0);
+    const deadline = Number(p.deadline ?? 0);
+    const firstDay = launchedAt > 0 && now - launchedAt <= 24 * 3600;
+    const lastTwoDays = deadline > 0 && deadline - now <= 48 * 3600;
+    const hot = Number(p.pledged_usd ?? 0) >= 500_000 || Number(p.backers ?? 0) >= 5_000;
+    const lowValue = Number(p.pledged_usd ?? 0) < 5_000 && Number(p.backers ?? 0) < 50;
+    const farFromDeadline = deadline > 0 && deadline - now > 14 * 86400;
+    if (firstDay || lastTwoDays) return 3600;
+    if (hot) return 2 * 3600;
+    if (lowValue && farFromDeadline) return 72 * 3600;
+    return 24 * 3600;
+  }
+  if (p.state === 'indemand') return 24 * 3600; // ongoing post-campaign, slow cadence
+  return null; // successful/failed/prelaunch -> stop re-tracking via this queue
+}
+
+function markDetailOk(db: Database, row: QueueRow, sourceProjectId: string, schedule?: TrackSchedule) {
+  const now = nowSec();
+  const interval = schedule ? indiegogoTrackInterval(schedule, now) : null;
+  const nextFetch = interval == null ? null : now + interval;
   db.prepare(`
     UPDATE platform_detail_queue
     SET status = 'ok',
         source_project_id = @source_project_id,
         attempts = 0,
-        next_fetch = NULL,
+        next_fetch = @next_fetch,
         last_error = NULL,
         updated_at = @updated_at
     WHERE platform_id = @platform_id AND project_url_name = @project_url_name
@@ -1576,7 +1745,8 @@ function markDetailOk(db: Database, row: QueueRow, sourceProjectId: string) {
     platform_id: PLATFORM_ID,
     project_url_name: row.project_url_name,
     source_project_id: sourceProjectId,
-    updated_at: nowSec(),
+    next_fetch: nextFetch,
+    updated_at: now,
   });
 }
 
@@ -1674,7 +1844,13 @@ export async function refreshIndiegogoDetails(options: IndiegogoDetailOptions = 
         }
         const stored = upsertStoredProjects(db, [normalized]);
         upsertIndiegogoProjectDetails(db, [nativeApiProjectDetail(result.project, normalized, 'detail_api', result.status, result.text)]);
-        markDetailOk(db, row, normalized.source_project_id);
+        markDetailOk(db, row, normalized.source_project_id, {
+          state: normalized.state,
+          pledged_usd: normalized.pledged_usd,
+          backers: normalized.backers_count,
+          launched_at: normalized.launched_at,
+          deadline: normalized.deadline,
+        });
         refreshed += stored.imported > 0 ? 1 : 0;
       } catch (err) {
         failed++;
@@ -1697,10 +1873,415 @@ export async function refreshIndiegogoDetails(options: IndiegogoDetailOptions = 
   }
 }
 
-export async function runIndiegogoPipelineOnce() {
-  const active = await syncIndiegogoActive();
-  const details = await refreshIndiegogoDetails({ limit: Number(process.env.INDIEGOGO_DETAIL_BATCH_SIZE ?? DEFAULT_DETAIL_LIMIT) });
-  return { active, details };
+// ── Real-time discovery (live worker) ─────────────────────────────────────────
+
+export interface IndiegogoDiscoverOptions {
+  maxPages?: number;
+}
+
+export interface IndiegogoDiscoverResult {
+  ok: boolean;
+  discovered: number;
+  imported: number;
+  snapshots: number;
+  queued: number;
+  pages: number;
+  blocked: number;
+  message?: string;
+}
+
+function ingestSearchCards(db: Database, items: IndiegogoSearchCard[]): { imported: number; snapshots: number; queued: number } {
+  const batch: StoredProject[] = [];
+  const native: NativeProjectDetail[] = [];
+  for (const card of items) {
+    const row = normalizeIndiegogoSearchCard(card);
+    if (!row) continue;
+    batch.push(row);
+    native.push(nativeSearchCardDetail(card, row));
+  }
+  const stored = upsertStoredProjects(db, batch);
+  upsertIndiegogoProjectDetails(db, native);
+  return stored;
+}
+
+export async function discoverIndiegogoIncremental(options: IndiegogoDiscoverOptions = {}): Promise<IndiegogoDiscoverResult> {
+  if (!indiegogoWorkerConfigured('live')) {
+    return { ok: false, discovered: 0, imported: 0, snapshots: 0, queued: 0, pages: 0, blocked: 0, message: 'Indiegogo live worker is not configured (set INDIEGOGO_LIVE_WORKER_URL).' };
+  }
+  const maxPages = Math.max(1, options.maxPages ?? Number(process.env.INDIEGOGO_DISCOVER_MAX_PAGES ?? 5));
+  const db = openPlatformSourceDb(PLATFORM_ID);
+  const runId = startRun(db, 'discover');
+  let discovered = 0;
+  let imported = 0;
+  let snapshots = 0;
+  let queued = 0;
+  let pages = 0;
+  let blocked = 0;
+  let errors = 0;
+  try {
+    // Newest across everything (new launches) + newest within the ongoing phase.
+    const passes: IndiegogoSearchParams[] = [
+      { sortType: SORT_NEWEST },
+      { sortType: SORT_NEWEST, projectPhaseSearchTypes: [3] },
+    ];
+    for (const pass of passes) {
+      for (let pageIndex = 1; pageIndex <= maxPages; pageIndex++) {
+        const res = await searchIndiegogoViaWorker('live', { ...pass, pageIndex });
+        pages++;
+        if (!res.ok) {
+          if (!res.cleared) blocked++;
+          else errors++;
+          recordError(db, { jobType: 'discover', message: res.error ?? 'search failed', statusCode: res.status ?? null, context: { pass, pageIndex } });
+          break;
+        }
+        const items = res.items ?? [];
+        discovered += items.length;
+        const stored = ingestSearchCards(db, items);
+        imported += stored.imported;
+        snapshots += stored.snapshots;
+        queued += stored.queued;
+        if (items.length < SEARCH_PAGE_SIZE) break;
+        if (res.totalPages && pageIndex >= res.totalPages) break;
+        await sleep(SEARCH_PAGE_DELAY_MS);
+      }
+    }
+    const ok = !(blocked > 0 && imported === 0);
+    completeRun(db, runId, {
+      status: ok ? 'completed' : 'error',
+      discovered,
+      imported,
+      snapshots,
+      pages,
+      blocked,
+      errors,
+      message: `Discover: ${imported} projects, ${snapshots} snapshots, ${queued} queued for detail.`,
+    });
+    return { ok, discovered, imported, snapshots, queued, pages, blocked };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    recordError(db, { jobType: 'discover', message });
+    completeRun(db, runId, { status: 'error', discovered, imported, snapshots, pages, blocked, errors: errors + 1, message });
+    return { ok: false, discovered, imported, snapshots, queued, pages, blocked, message };
+  } finally {
+    db.close();
+  }
+}
+
+// ── Tiered live tracker (detail API, no browser worker) ───────────────────────
+
+function autoTrackIndiegogoLive(db: Database, limit: number): number {
+  const now = nowSec();
+  const jitter = 24 * 3600; // spread first re-fetch across a day to avoid a thundering herd
+  return db.prepare(`
+    INSERT INTO platform_detail_queue
+      (platform_id, project_url_name, source_project_id, status, priority, attempts, next_fetch, updated_at)
+    SELECT platform_id, project_url_name, source_project_id, 'queued',
+           CASE WHEN state = 'live' THEN 5 ELSE 1 END, 0,
+           @now + (ABS(RANDOM()) % @jitter), @now
+    FROM platform_projects
+    WHERE platform_id = @platform_id
+      AND state IN ('live', 'indemand')
+      AND project_url_name IS NOT NULL
+      AND COALESCE(is_prelaunch, 0) = 0
+    ORDER BY COALESCE(deadline, 0) ASC
+    LIMIT @limit
+    ON CONFLICT(platform_id, project_url_name) DO NOTHING
+  `).run({ platform_id: PLATFORM_ID, now, jitter, limit }).changes;
+}
+
+export interface IndiegogoTrackOptions {
+  limit?: number;
+  autoTrackLimit?: number;
+}
+
+export interface IndiegogoTrackResult {
+  ok: boolean;
+  enrolled: number;
+  details: IndiegogoDetailResult;
+}
+
+export async function trackIndiegogoLive(options: IndiegogoTrackOptions = {}): Promise<IndiegogoTrackResult> {
+  const db = openPlatformSourceDb(PLATFORM_ID);
+  let enrolled = 0;
+  try {
+    enrolled = autoTrackIndiegogoLive(db, Math.max(1, options.autoTrackLimit ?? 500));
+  } finally {
+    db.close();
+  }
+  const details = await refreshIndiegogoDetails({ limit: Math.max(1, options.limit ?? 50) });
+  return { ok: details.ok, enrolled, details };
+}
+
+// ── Backlog catalog sweep (bulk worker, recursive partition, resumable) ────────
+
+interface SliceRow {
+  id: number;
+  slice_key: string;
+  sort_type: number;
+  phase: number | null;
+  category: string | null;
+  tag: number | null;
+  status: string;
+  total_items: number | null;
+  total_pages: number | null;
+  capped: number;
+  next_page: number;
+  discovered: number;
+}
+
+export interface IndiegogoBacklogOptions {
+  sweepId?: string;
+  pageBudget?: number;
+  sortType?: number;
+}
+
+export interface IndiegogoBacklogResult {
+  ok: boolean;
+  sweepId: string;
+  pagesProcessed: number;
+  imported: number;
+  snapshots: number;
+  slicesDone: number;
+  slicesRemaining: number;
+  blocked: number;
+  message?: string;
+}
+
+function seedBacklogSlices(db: Database, sweepId: string, sortType: number) {
+  const existing = db.prepare(`SELECT COUNT(*) AS c FROM indiegogo_search_slices WHERE platform_id = ? AND sweep_id = ?`).get(PLATFORM_ID, sweepId) as { c: number };
+  if (existing.c > 0) return;
+  const insert = db.prepare(`
+    INSERT INTO indiegogo_search_slices (platform_id, sweep_id, slice_key, sort_type, phase, status, priority, updated_at)
+    VALUES (@platform_id, @sweep_id, @slice_key, @sort_type, @phase, 'pending', @priority, @now)
+    ON CONFLICT(platform_id, sweep_id, slice_key) DO NOTHING
+  `);
+  const now = nowSec();
+  for (const phase of INDIEGOGO_SEARCH_PHASES) {
+    insert.run({ platform_id: PLATFORM_ID, sweep_id: sweepId, slice_key: `p${phase}`, sort_type: sortType, phase, priority: 0, now });
+  }
+}
+
+function expandCategorySlices(db: Database, sweepId: string, parent: SliceRow) {
+  const insert = db.prepare(`
+    INSERT INTO indiegogo_search_slices (platform_id, sweep_id, slice_key, sort_type, phase, category, status, priority, updated_at)
+    VALUES (@platform_id, @sweep_id, @slice_key, @sort_type, @phase, @category, 'pending', @priority, @now)
+    ON CONFLICT(platform_id, sweep_id, slice_key) DO NOTHING
+  `);
+  const now = nowSec();
+  for (const category of INDIEGOGO_CATEGORIES) {
+    insert.run({
+      platform_id: PLATFORM_ID,
+      sweep_id: sweepId,
+      slice_key: `p${parent.phase}:${category}`,
+      sort_type: parent.sort_type,
+      phase: parent.phase,
+      category,
+      priority: 1,
+      now,
+    });
+  }
+}
+
+function addNewestSibling(db: Database, sweepId: string, slice: SliceRow) {
+  // A category that is still capped under one sort can surface different top-10k
+  // items under the newest sort; add that sibling once for extra coverage.
+  if (slice.sort_type !== SORT_TRENDING) return;
+  db.prepare(`
+    INSERT INTO indiegogo_search_slices (platform_id, sweep_id, slice_key, sort_type, phase, category, tag, status, priority, updated_at)
+    VALUES (@platform_id, @sweep_id, @slice_key, @sort_type, @phase, @category, @tag, 'pending', @priority, @now)
+    ON CONFLICT(platform_id, sweep_id, slice_key) DO NOTHING
+  `).run({
+    platform_id: PLATFORM_ID,
+    sweep_id: sweepId,
+    slice_key: `${slice.slice_key}:newest`,
+    sort_type: SORT_NEWEST,
+    phase: slice.phase,
+    category: slice.category,
+    tag: slice.tag,
+    priority: 1,
+    now: nowSec(),
+  });
+}
+
+function nextBacklogSlice(db: Database, sweepId: string): SliceRow | null {
+  return (db.prepare(`
+    SELECT id, slice_key, sort_type, phase, category, tag, status, total_items, total_pages, capped, next_page, discovered
+    FROM indiegogo_search_slices
+    WHERE platform_id = ? AND sweep_id = ? AND status IN ('pending', 'in_progress')
+    ORDER BY priority ASC, status DESC, id ASC
+    LIMIT 1
+  `).get(PLATFORM_ID, sweepId) as SliceRow | undefined) ?? null;
+}
+
+export async function runIndiegogoBacklogSweep(options: IndiegogoBacklogOptions = {}): Promise<IndiegogoBacklogResult> {
+  const sweepId = options.sweepId ?? 'catalog';
+  if (!indiegogoWorkerConfigured('bulk')) {
+    return { ok: false, sweepId, pagesProcessed: 0, imported: 0, snapshots: 0, slicesDone: 0, slicesRemaining: 0, blocked: 0, message: 'Indiegogo bulk worker is not configured (set INDIEGOGO_BULK_WORKER_URL).' };
+  }
+  const pageBudget = Math.max(1, options.pageBudget ?? Number(process.env.INDIEGOGO_BACKLOG_PAGE_BUDGET ?? 40));
+  const sortType = options.sortType ?? SORT_TRENDING;
+  const maxPagesPerSlice = Math.ceil(SEARCH_QUERY_CAP / SEARCH_PAGE_SIZE); // 417
+
+  const db = openPlatformSourceDb(PLATFORM_ID);
+  const runId = startRun(db, 'backlog_sweep');
+  let pagesProcessed = 0;
+  let imported = 0;
+  let snapshots = 0;
+  let blocked = 0;
+  let errors = 0;
+  try {
+    seedBacklogSlices(db, sweepId, sortType);
+
+    while (pagesProcessed < pageBudget) {
+      const slice = nextBacklogSlice(db, sweepId);
+      if (!slice) break;
+
+      const params: IndiegogoSearchParams = {
+        sortType: slice.sort_type,
+        pageIndex: slice.next_page,
+        projectPhaseSearchTypes: slice.phase == null ? [] : [slice.phase],
+        projectCatalogCategories: slice.category ? [slice.category] : [],
+        projectTags: slice.tag ? [slice.tag] : [],
+      };
+      const res = await searchIndiegogoViaWorker('bulk', params);
+      pagesProcessed++;
+
+      if (!res.ok) {
+        if (!res.cleared) blocked++;
+        else errors++;
+        db.prepare(`UPDATE indiegogo_search_slices SET last_error = ?, updated_at = ? WHERE id = ?`)
+          .run((res.error ?? 'search failed').slice(0, 500), nowSec(), slice.id);
+        recordError(db, { jobType: 'backlog_sweep', message: res.error ?? 'search failed', statusCode: res.status ?? null, context: { slice: slice.slice_key } });
+        if (!res.cleared) break; // worker can't clear Cloudflare; stop this run
+        continue;
+      }
+
+      // First page of a slice: learn its size and decide whether to split.
+      if (slice.next_page === 1) {
+        const capped = res.capped ? 1 : 0;
+        db.prepare(`UPDATE indiegogo_search_slices SET total_items = ?, total_pages = ?, capped = ?, updated_at = ? WHERE id = ?`)
+          .run(Number(res.total ?? 0), Number(res.totalPages ?? 0), capped, nowSec(), slice.id);
+
+        if (capped && slice.phase != null && !slice.category) {
+          expandCategorySlices(db, sweepId, slice);
+          db.prepare(`UPDATE indiegogo_search_slices SET status = 'split', updated_at = ? WHERE id = ?`).run(nowSec(), slice.id);
+          continue; // don't page the over-capped parent; its children cover it
+        }
+        if (capped && slice.category) {
+          addNewestSibling(db, sweepId, slice);
+        }
+      }
+
+      const items = res.items ?? [];
+      const stored = ingestSearchCards(db, items);
+      imported += stored.imported;
+      snapshots += stored.snapshots;
+
+      const totalPages = Math.min(Number(res.totalPages ?? slice.next_page), maxPagesPerSlice);
+      const nextPage = slice.next_page + 1;
+      const done = items.length < SEARCH_PAGE_SIZE || nextPage > totalPages;
+      db.prepare(`
+        UPDATE indiegogo_search_slices
+        SET status = ?, next_page = ?, discovered = discovered + ?, last_error = NULL, updated_at = ?
+        WHERE id = ?
+      `).run(done ? 'done' : 'in_progress', nextPage, items.length, nowSec(), slice.id);
+
+      await sleep(SEARCH_PAGE_DELAY_MS);
+    }
+
+    const counts = db.prepare(`
+      SELECT
+        SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) AS done,
+        SUM(CASE WHEN status IN ('pending', 'in_progress') THEN 1 ELSE 0 END) AS remaining
+      FROM indiegogo_search_slices WHERE platform_id = ? AND sweep_id = ?
+    `).get(PLATFORM_ID, sweepId) as { done: number | null; remaining: number | null };
+    const slicesDone = Number(counts.done ?? 0);
+    const slicesRemaining = Number(counts.remaining ?? 0);
+
+    completeRun(db, runId, {
+      status: blocked > 0 && imported === 0 ? 'error' : 'completed',
+      discovered: pagesProcessed,
+      imported,
+      snapshots,
+      pages: pagesProcessed,
+      blocked,
+      errors,
+      message: `Backlog sweep '${sweepId}': ${imported} projects this run; slices ${slicesDone} done / ${slicesRemaining} remaining.`,
+    });
+    return { ok: !(blocked > 0 && imported === 0), sweepId, pagesProcessed, imported, snapshots, slicesDone, slicesRemaining, blocked };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    recordError(db, { jobType: 'backlog_sweep', message });
+    completeRun(db, runId, { status: 'error', discovered: pagesProcessed, imported, snapshots, pages: pagesProcessed, blocked, errors: errors + 1, message });
+    return { ok: false, sweepId, pagesProcessed, imported, snapshots, slicesDone: 0, slicesRemaining: 0, blocked, message };
+  } finally {
+    db.close();
+  }
+}
+
+export interface IndiegogoBacklogStatus {
+  sweepId: string;
+  totalSlices: number;
+  byStatus: Record<string, number>;
+  discovered: number;
+  capped: number;
+  updatedAt: number | null;
+}
+
+export function getIndiegogoBacklogStatus(sweepId = 'catalog'): IndiegogoBacklogStatus {
+  const dbPath = getPlatformDbPath(PLATFORM_ID);
+  const empty: IndiegogoBacklogStatus = { sweepId, totalSlices: 0, byStatus: {}, discovered: 0, capped: 0, updatedAt: null };
+  if (!fs.existsSync(dbPath)) return empty;
+  const db = new BetterSqlite3(dbPath, { readonly: true, fileMustExist: true });
+  try {
+    if (!tableExists(db, 'indiegogo_search_slices')) return empty;
+    const rows = db.prepare(`
+      SELECT status, COUNT(*) AS count, COALESCE(SUM(discovered), 0) AS discovered,
+             COALESCE(SUM(capped), 0) AS capped, MAX(updated_at) AS updatedAt
+      FROM indiegogo_search_slices WHERE platform_id = ? AND sweep_id = ?
+      GROUP BY status
+    `).all(PLATFORM_ID, sweepId) as Array<{ status: string; count: number; discovered: number; capped: number; updatedAt: number }>;
+    const byStatus: Record<string, number> = {};
+    let total = 0;
+    let discovered = 0;
+    let capped = 0;
+    let updatedAt: number | null = null;
+    for (const row of rows) {
+      byStatus[row.status || 'unknown'] = Number(row.count ?? 0);
+      total += Number(row.count ?? 0);
+      discovered += Number(row.discovered ?? 0);
+      capped += Number(row.capped ?? 0);
+      updatedAt = Math.max(updatedAt ?? 0, Number(row.updatedAt ?? 0)) || updatedAt;
+    }
+    return { sweepId, totalSlices: total, byStatus, discovered, capped, updatedAt };
+  } finally {
+    db.close();
+  }
+}
+
+export function pauseIndiegogoBacklogSweep(sweepId = 'catalog'): number {
+  const db = openPlatformSourceDb(PLATFORM_ID);
+  try {
+    return db.prepare(`
+      UPDATE indiegogo_search_slices SET status = 'paused', updated_at = ?
+      WHERE platform_id = ? AND sweep_id = ? AND status IN ('pending', 'in_progress')
+    `).run(nowSec(), PLATFORM_ID, sweepId).changes;
+  } finally {
+    db.close();
+  }
+}
+
+export function resumeIndiegogoBacklogSweep(sweepId = 'catalog'): number {
+  const db = openPlatformSourceDb(PLATFORM_ID);
+  try {
+    return db.prepare(`
+      UPDATE indiegogo_search_slices
+      SET status = CASE WHEN next_page > 1 THEN 'in_progress' ELSE 'pending' END, updated_at = ?
+      WHERE platform_id = ? AND sweep_id = ? AND status = 'paused'
+    `).run(nowSec(), PLATFORM_ID, sweepId).changes;
+  } finally {
+    db.close();
+  }
 }
 
 export async function validateIndiegogoConfig() {

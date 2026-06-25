@@ -13,6 +13,30 @@ import { initTracker } from './lib/tracker';
 const SYNC_OWNER = `${process.pid}-${randomUUID().slice(0, 8)}`;
 const SYNC_LOCK_TTL_SEC = 45 * 60;
 
+// Per-process identity for the Indiegogo cross-replica locks (ids 3 discover, 4 track).
+const INDIEGOGO_OWNER = `${process.pid}-${randomUUID().slice(0, 8)}`;
+const INDIEGOGO_DISCOVER_LOCK_TTL_SEC = 10 * 60;
+const INDIEGOGO_TRACK_LOCK_TTL_SEC = 20 * 60;
+
+function indiegogoCrawlerEnabled() {
+  return process.env.INDIEGOGO_CRAWLER_ENABLED === '1';
+}
+
+async function runIndiegogoDiscover() {
+  if (!indiegogoCrawlerEnabled()) return;
+  if (!acquireProcessLock(3, INDIEGOGO_OWNER, INDIEGOGO_DISCOVER_LOCK_TTL_SEC)) return;
+  const igg = await import('./lib/indiegogo');
+  const res = await igg.discoverIndiegogoIncremental();
+  if (!res.ok) console.warn('[Kicksonar] Indiegogo discover pass:', res.message ?? 'failed');
+}
+
+async function runIndiegogoTrack() {
+  if (!indiegogoCrawlerEnabled()) return;
+  if (!acquireProcessLock(4, INDIEGOGO_OWNER, INDIEGOGO_TRACK_LOCK_TTL_SEC)) return;
+  const igg = await import('./lib/indiegogo');
+  await igg.trackIndiegogoLive();
+}
+
 async function checkWebrobotsDataset(reason: string) {
   const latestUrl = await getLatestDatasetUrl();
   const alreadySynced = await isDatasetImported(latestUrl);
@@ -68,6 +92,24 @@ export async function register() {
       }
     }, 30_000);
 
-    console.log('[Kicksonar] Cron jobs registered (daily webrobots check at 4:00 AM)');
+    // Indiegogo real-time discovery (live worker) + tiered live tracker (detail
+    // API, no worker). Both gated by INDIEGOGO_CRAWLER_ENABLED and cross-replica
+    // process locks. Discovery is the can't-miss path so it runs more often.
+    cron.schedule(process.env.INDIEGOGO_DISCOVER_CRON ?? '*/20 * * * *', async () => {
+      try {
+        await runIndiegogoDiscover();
+      } catch (e) {
+        console.error('[Kicksonar] Indiegogo discover cron failed:', e);
+      }
+    });
+    cron.schedule(process.env.INDIEGOGO_TRACK_CRON ?? '*/30 * * * *', async () => {
+      try {
+        await runIndiegogoTrack();
+      } catch (e) {
+        console.error('[Kicksonar] Indiegogo track cron failed:', e);
+      }
+    });
+
+    console.log('[Kicksonar] Cron jobs registered (daily webrobots check at 4:00 AM; Indiegogo discover/track when enabled)');
   }
 }
