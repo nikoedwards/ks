@@ -2008,7 +2008,11 @@ export async function trackIndiegogoLive(options: IndiegogoTrackOptions = {}): P
   } finally {
     db.close();
   }
-  const details = await refreshIndiegogoDetails({ limit: Math.max(1, options.limit ?? 50) });
+  // Per-round detail batch. Env-tunable (INDIEGOGO_TRACK_LIMIT) so the large
+  // legacy backlog can be drained from Railway without a code change; both the
+  // cron pass and the manual panel button honour it.
+  const defaultLimit = Math.max(1, Number(process.env.INDIEGOGO_TRACK_LIMIT ?? 50));
+  const details = await refreshIndiegogoDetails({ limit: Math.max(1, options.limit ?? defaultLimit) });
   return { ok: details.ok, enrolled, details };
 }
 
