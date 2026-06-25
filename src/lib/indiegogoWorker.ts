@@ -141,22 +141,32 @@ export async function searchIndiegogoViaWorker(
 ): Promise<IndiegogoSearchResult> {
   const base = pickBase(role);
   if (!base) return { ok: false, cleared: false, error: `no_indiegogo_${role}_worker_configured` };
-  try {
-    const res = await fetch(`${base}/search`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json', ...authHeader() },
-      body: JSON.stringify(params),
-      cache: 'no-store',
-      signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS),
-    });
-    reportOutcome(base, res.status < 500);
-    const json = (await res.json().catch(() => null)) as IndiegogoSearchResult | null;
-    if (!json) return { ok: false, cleared: false, status: res.status, error: 'invalid_worker_response' };
-    return json;
-  } catch (err) {
-    reportOutcome(base, false);
-    return { ok: false, cleared: false, error: err instanceof Error ? err.message : String(err) };
+
+  // The CF-bypass worker occasionally returns a non-JSON body (a challenge page /
+  // 503 text) while under load. That is transient — retry once after a short delay
+  // before surfacing `invalid_worker_response`, so a single hiccup doesn't fail the round.
+  let lastStatus: number | undefined;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (attempt > 0) await new Promise(resolve => setTimeout(resolve, 1000));
+    try {
+      const res = await fetch(`${base}/search`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json', ...authHeader() },
+        body: JSON.stringify(params),
+        cache: 'no-store',
+        signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS),
+      });
+      reportOutcome(base, res.status < 500);
+      lastStatus = res.status;
+      const json = (await res.json().catch(() => null)) as IndiegogoSearchResult | null;
+      if (json) return json;
+      // null JSON → transient; let the loop retry once before giving up.
+    } catch (err) {
+      reportOutcome(base, false);
+      if (attempt >= 1) return { ok: false, cleared: false, error: err instanceof Error ? err.message : String(err) };
+    }
   }
+  return { ok: false, cleared: false, status: lastStatus, error: 'invalid_worker_response' };
 }
 
 export interface IndiegogoWorkerHealth {

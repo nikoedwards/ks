@@ -642,14 +642,33 @@ function IndiegogoControlPanel({
   const backlogDiscovered = backlog?.discovered ?? 0;
   const backlogCapped = backlog?.capped ?? 0;
 
+  // Classify errors: transient worker hiccups (CF challenge page → non-JSON) and
+  // dead legacy slugs (detail API 400) are *expected attrition*, not failures.
+  // Only real faults (5xx / config / repeated stalls) should colour the badge.
+  const isTransientError = (e: PlatformErrorRow) => {
+    const m = (e.message ?? '').toLowerCase();
+    if (e.status_code === 400) return true;
+    return (
+      m.includes('invalid_worker_response') ||
+      m.includes('invalid_slug') ||
+      m.includes('without a usable project') ||
+      m.includes('projecturlname')
+    );
+  };
+  const realErrors = recentErrors.filter(e => !isTransientError(e));
+  const transientCount = recentErrors.length - realErrors.length;
+
   // Is the incremental pipeline behaving as expected?
   const liveVerdict = (() => {
     if (!dbReady) return { tone: 'gray', label: cn ? '未初始化' : 'Not initialized', detail: cn ? '先初始化 Indiegogo 数据库。' : 'Initialize the DB first.' };
     if (!lastDiscover) return { tone: 'amber', label: cn ? '尚未运行' : 'Not run yet', detail: cn ? '点「立即发现一轮」开始。' : 'Run discovery once to begin.' };
     if (lastDiscover.status === 'error') return { tone: 'red', label: cn ? '发现报错' : 'Discovery error', detail: lastDiscover.message ?? (cn ? '最近一轮发现失败。' : 'Latest discovery failed.') };
     if (nowS - lastDiscover.started_at > 90 * 60) return { tone: 'amber', label: cn ? '发现停滞' : 'Discovery stalled', detail: cn ? '超过 90 分钟没有发现运行,检查定时任务 / live worker。' : 'No discovery run in 90+ minutes.' };
-    if (recentErrors.length > 0) return { tone: 'amber', label: cn ? '有近期错误' : 'Recent errors', detail: recentErrors[0]?.message ?? '' };
-    return { tone: 'green', label: cn ? '符合预期' : 'Healthy', detail: cn ? '发现按时运行,无近期错误。' : 'Running on schedule, no recent errors.' };
+    if (realErrors.length > 0) return { tone: 'amber', label: cn ? '有错误' : 'Has errors', detail: realErrors[0]?.message ?? '' };
+    const note = transientCount > 0
+      ? (cn ? `正常推进;偶发损耗 ${fmtNum(transientCount)} 条(死链 slug / worker 抖动,已自动重试 / 退避)。` : `Healthy; ${fmtNum(transientCount)} transient (dead slugs / worker blips, auto-retried/backed off).`)
+      : (cn ? '发现按时运行,无错误。' : 'Running on schedule, no errors.');
+    return { tone: 'green', label: cn ? '符合预期' : 'Healthy', detail: note };
   })();
 
   // Does the backlog sweep need a human?
@@ -800,15 +819,15 @@ function IndiegogoControlPanel({
             <p className="mt-1 text-sm font-bold text-gray-900">{lastDiscover ? fmtTime(lastDiscover.started_at, cn ? 'cn' : 'en') : (cn ? '从未' : 'never')}</p>
             <p className="text-xs text-gray-400">{cn ? `本轮入库 ${lastDiscover ? fmtNum(lastDiscover.imported_count) : 0}` : `imported ${lastDiscover ? fmtNum(lastDiscover.imported_count) : 0}`}</p>
           </div>
-          <div className="rounded-lg border border-gray-100 bg-gray-50 p-3">
+          <div className="rounded-lg border border-gray-100 bg-gray-50 p-3" title={cn ? '“变更”只统计本轮数据发生变化的项目;已成功读取但数据未变的不计入。真实累计进度看下方进度条。' : 'Counts only projects whose data changed this round; unchanged reads still mark OK. See the bar below for cumulative progress.'}>
             <p className="text-xs text-gray-500">{cn ? '最近跟踪' : 'Last tracker'}</p>
             <p className="mt-1 text-sm font-bold text-gray-900">{lastTrack ? fmtTime(lastTrack.started_at, cn ? 'cn' : 'en') : (cn ? '从未' : 'never')}</p>
-            <p className="text-xs text-gray-400">{cn ? `本轮补全 ${lastTrack ? fmtNum(lastTrack.imported_count) : 0}` : `refreshed ${lastTrack ? fmtNum(lastTrack.imported_count) : 0}`}</p>
+            <p className="text-xs text-gray-400">{cn ? `本轮变更 ${lastTrack ? fmtNum(lastTrack.imported_count) : 0}` : `changed ${lastTrack ? fmtNum(lastTrack.imported_count) : 0}`}</p>
           </div>
-          <div className="rounded-lg border border-gray-100 bg-gray-50 p-3">
-            <p className="text-xs text-gray-500">{cn ? '失败 / 无效' : 'Failed / invalid'}</p>
+          <div className="rounded-lg border border-gray-100 bg-gray-50 p-3" title={cn ? '死链 slug / worker 抖动属正常损耗,系统已退避或自动重试。' : 'Dead slugs / worker blips are expected attrition (auto backed-off/retried).'}>
+            <p className="text-xs text-gray-500">{cn ? '损耗(失败/无效)' : 'Attrition (failed/invalid)'}</p>
             <p className="mt-1 text-sm font-bold text-gray-900">{fmtNum(detailErr)}</p>
-            <p className="text-xs text-gray-400">{cn ? `近期错误 ${fmtNum(recentErrors.length)}` : `recent errors ${fmtNum(recentErrors.length)}`}</p>
+            <p className="text-xs text-gray-400">{realErrors.length > 0 ? (cn ? `真实错误 ${fmtNum(realErrors.length)}` : `real errors ${fmtNum(realErrors.length)}`) : (cn ? '无真实错误' : 'no real errors')}</p>
           </div>
         </div>
 
