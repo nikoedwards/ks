@@ -1751,6 +1751,99 @@ function StatTile({
   );
 }
 
+interface CensusRow { category: string; count: number; live?: number }
+interface CategoryCensusPayload {
+  generatedAt: number;
+  kickstarter: CensusRow[];
+  indiegogo: CensusRow[];
+  totals: { ksDistinct: number; ksProjects: number; iggDistinct: number; iggProjects: number };
+}
+
+// Read-only census: distinct categories + counts for both platforms. Used to size
+// the KS↔Indiegogo taxonomy gap before building the unified-category mapping.
+function CategoryCensusPanel({ cn }: { cn: boolean }) {
+  const [data, setData] = useState<CategoryCensusPayload | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch('/api/platforms/category-census');
+      const json = await res.json();
+      if (!res.ok) throw new Error(json?.error ?? `HTTP ${res.status}`);
+      setData(json as CategoryCensusPayload);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const renderList = (title: string, subtitle: string, rows: CensusRow[]) => (
+    <div className="rounded-xl border border-gray-100 bg-white p-4 shadow-sm">
+      <div className="mb-2 flex items-baseline justify-between">
+        <h4 className="text-sm font-bold text-gray-900">{title}</h4>
+        <span className="text-xs text-gray-400">{subtitle}</span>
+      </div>
+      <div className="max-h-[360px] overflow-auto">
+        <table className="min-w-full text-sm">
+          <thead className="sticky top-0 bg-gray-50 text-xs font-semibold uppercase text-gray-500">
+            <tr>
+              <th className="px-3 py-2 text-left">{cn ? '类目' : 'Category'}</th>
+              <th className="px-3 py-2 text-right">{cn ? '数量' : 'Count'}</th>
+              {rows.some(r => r.live !== undefined) && <th className="px-3 py-2 text-right">{cn ? '在筹' : 'Live'}</th>}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100">
+            {rows.map(r => (
+              <tr key={r.category}>
+                <td className="px-3 py-1.5 text-gray-700">{r.category}</td>
+                <td className="px-3 py-1.5 text-right font-semibold text-gray-900">{fmtNum(r.count)}</td>
+                {rows.some(x => x.live !== undefined) && <td className="px-3 py-1.5 text-right text-gray-500">{fmtNum(r.live ?? 0)}</td>}
+              </tr>
+            ))}
+            {!rows.length && <tr><td colSpan={3} className="px-3 py-6 text-center text-sm text-gray-400">{cn ? '暂无数据' : 'No data'}</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+
+  return (
+    <section className="rounded-xl border border-gray-100 bg-gray-50/60 p-5 shadow-sm">
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <Layers className="h-4 w-4 text-gray-500" />
+        <h3 className="font-bold text-gray-900">{cn ? '类目普查(KS vs Indiegogo)' : 'Category census (KS vs Indiegogo)'}</h3>
+        {loading && <RefreshCw className="h-4 w-4 animate-spin text-gray-400" />}
+        <button type="button" onClick={load} disabled={loading} className="ml-auto inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-50">
+          <RefreshCw className="h-3.5 w-3.5" />{cn ? '刷新' : 'Refresh'}
+        </button>
+      </div>
+      <p className="mb-4 text-xs text-gray-500">
+        {cn
+          ? '只读:对比两个平台实际入库的类目分布,用于规划统一类目映射。Indiegogo 的类目混合了 webrobots 旧分类与搜索目录名。'
+          : 'Read-only: compares each platform\'s stored category distribution to plan a unified mapping. Indiegogo mixes webrobots strings with search catalog names.'}
+      </p>
+      {error && <p className="mb-3 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
+      {data && (
+        <p className="mb-3 text-xs text-gray-500">
+          KS: {fmtNum(data.totals.ksDistinct)} {cn ? '个父类' : 'parents'} · {fmtNum(data.totals.ksProjects)} {cn ? '项目' : 'projects'}
+          {'  ·  '}
+          IGG: {fmtNum(data.totals.iggDistinct)} {cn ? '个类目' : 'categories'} · {fmtNum(data.totals.iggProjects)} {cn ? '项目' : 'projects'}
+        </p>
+      )}
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        {renderList('Kickstarter', cn ? `${fmtNum(data?.totals.ksDistinct ?? 0)} 父类` : `${fmtNum(data?.totals.ksDistinct ?? 0)} parents`, data?.kickstarter ?? [])}
+        {renderList('Indiegogo', cn ? `${fmtNum(data?.totals.iggDistinct ?? 0)} 类目` : `${fmtNum(data?.totals.iggDistinct ?? 0)} categories`, data?.indiegogo ?? [])}
+      </div>
+    </section>
+  );
+}
+
 export default function DataQualityPage() {
   const [lang] = useLanguage();
   const [reportState, setReport] = useState<QualityReport | null>(null);
@@ -2323,6 +2416,7 @@ export default function DataQualityPage() {
           actionMessage={platformActionMessage}
           onAction={runPlatformAction}
         />
+        <CategoryCensusPanel cn={cn} />
       </div>
     );
   }

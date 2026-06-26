@@ -2117,6 +2117,23 @@ export async function getCategoryList(): Promise<string[]> {
   return rows.map(r => r.category_parent);
 }
 
+export interface KickstarterCategoryCensusRow {
+  category: string;
+  count: number;
+}
+
+// Distinct parent-category counts for the admin category-census tool (used to
+// size the KS↔Indiegogo taxonomy gap before building a unified mapping).
+export function getKickstarterCategoryCensus(): KickstarterCategoryCensusRow[] {
+  return getDB().prepare(`
+    SELECT COALESCE(NULLIF(TRIM(category_parent), ''), '(uncategorized)') AS category,
+           COUNT(*) AS count
+    FROM projects
+    GROUP BY COALESCE(NULLIF(TRIM(category_parent), ''), '(uncategorized)')
+    ORDER BY count DESC
+  `).all() as KickstarterCategoryCensusRow[];
+}
+
 export async function getCountryList(): Promise<{ country: string; country_name: string }[]> {
   return getDB().prepare(
     `SELECT DISTINCT country, country_name FROM projects WHERE country IS NOT NULL ORDER BY country`

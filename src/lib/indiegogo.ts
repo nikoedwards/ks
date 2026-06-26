@@ -2263,6 +2263,35 @@ export function getIndiegogoBacklogStatus(sweepId = 'catalog'): IndiegogoBacklog
   }
 }
 
+export interface IndiegogoCategoryCensusRow {
+  category: string;
+  count: number;
+  live: number;
+}
+
+// Read-only census of the distinct stored `category` values so we can size the
+// KS↔IGG taxonomy gap before writing a unified mapping. Values are a mix of
+// webrobots strings + search catalogCategory display names + nulls.
+export function getIndiegogoCategoryCensus(): IndiegogoCategoryCensusRow[] {
+  const dbPath = getPlatformDbPath(PLATFORM_ID);
+  if (!fs.existsSync(dbPath)) return [];
+  const db = new BetterSqlite3(dbPath, { readonly: true, fileMustExist: true });
+  try {
+    if (!tableExists(db, 'platform_projects')) return [];
+    return db.prepare(`
+      SELECT COALESCE(NULLIF(TRIM(category), ''), '(uncategorized)') AS category,
+             COUNT(*) AS count,
+             SUM(CASE WHEN state IN ('live', 'indemand') THEN 1 ELSE 0 END) AS live
+      FROM platform_projects
+      WHERE platform_id = ?
+      GROUP BY COALESCE(NULLIF(TRIM(category), ''), '(uncategorized)')
+      ORDER BY count DESC
+    `).all(PLATFORM_ID) as IndiegogoCategoryCensusRow[];
+  } finally {
+    db.close();
+  }
+}
+
 export function pauseIndiegogoBacklogSweep(sweepId = 'catalog'): number {
   const db = openPlatformSourceDb(PLATFORM_ID);
   try {
