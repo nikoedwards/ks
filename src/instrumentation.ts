@@ -17,6 +17,7 @@ const SYNC_LOCK_TTL_SEC = 45 * 60;
 const INDIEGOGO_OWNER = `${process.pid}-${randomUUID().slice(0, 8)}`;
 const INDIEGOGO_DISCOVER_LOCK_TTL_SEC = 10 * 60;
 const INDIEGOGO_TRACK_LOCK_TTL_SEC = 20 * 60;
+const INDIEGOGO_BACKLOG_LOCK_TTL_SEC = 20 * 60;
 
 function indiegogoCrawlerEnabled() {
   return process.env.INDIEGOGO_CRAWLER_ENABLED === '1';
@@ -35,6 +36,17 @@ async function runIndiegogoTrack() {
   if (!acquireProcessLock(4, INDIEGOGO_OWNER, INDIEGOGO_TRACK_LOCK_TTL_SEC)) return;
   const igg = await import('./lib/indiegogo');
   await igg.trackIndiegogoLive();
+}
+
+async function runIndiegogoBacklog() {
+  if (!indiegogoCrawlerEnabled()) return;
+  if (!acquireProcessLock(5, INDIEGOGO_OWNER, INDIEGOGO_BACKLOG_LOCK_TTL_SEC)) return;
+  const igg = await import('./lib/indiegogo');
+  // One budget-bounded chunk per tick; resumable. Manual pause is respected
+  // (paused slices are not picked up), and it no-ops cleanly when the catalog is
+  // fully swept or the bulk worker is unhealthy.
+  const res = await igg.runIndiegogoBacklogSweep();
+  if (!res.ok) console.warn('[Kicksonar] Indiegogo backlog sweep pass:', res.message ?? 'failed');
 }
 
 async function checkWebrobotsDataset(reason: string) {
@@ -109,7 +121,16 @@ export async function register() {
         console.error('[Kicksonar] Indiegogo track cron failed:', e);
       }
     });
+    // Backlog catalog sweep: drains the full-catalog enumeration automatically so
+    // it no longer needs manual "运行存量一轮" clicks. Budget-bounded + resumable.
+    cron.schedule(process.env.INDIEGOGO_BACKLOG_CRON ?? '*/15 * * * *', async () => {
+      try {
+        await runIndiegogoBacklog();
+      } catch (e) {
+        console.error('[Kicksonar] Indiegogo backlog cron failed:', e);
+      }
+    });
 
-    console.log('[Kicksonar] Cron jobs registered (daily webrobots check at 4:00 AM; Indiegogo discover/track when enabled)');
+    console.log('[Kicksonar] Cron jobs registered (daily webrobots check at 4:00 AM; Indiegogo discover/track/backlog when enabled)');
   }
 }

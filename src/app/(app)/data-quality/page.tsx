@@ -641,6 +641,8 @@ function IndiegogoControlPanel({
   const backlogPct = backlogTotalSlices > 0 ? Math.round((backlogSettled / backlogTotalSlices) * 1000) / 10 : 0;
   const backlogDiscovered = backlog?.discovered ?? 0;
   const backlogCapped = backlog?.capped ?? 0;
+  const backlogUpdatedAt = backlog?.updatedAt ?? 0;
+  const backlogRemainingSlices = backlogPending + backlogInProgress;
 
   // Classify errors: transient worker hiccups (CF challenge page → non-JSON) and
   // dead legacy slugs (detail API 400) are *expected attrition*, not failures.
@@ -679,9 +681,12 @@ function IndiegogoControlPanel({
     if (!dbReady) return { tone: 'gray', label: cn ? '未初始化' : 'Not initialized', detail: '' };
     if (backlogTotalSlices === 0) return { tone: 'gray', label: cn ? '尚未启动' : 'Not started', detail: cn ? '点「运行存量一轮」开始穷举目录。' : 'Run the sweep to start enumerating.' };
     if (backlogError > 0) return { tone: 'red', label: cn ? `${backlogError} 个切片失败` : `${backlogError} slices failed`, detail: cn ? '需人工检查后续跑。' : 'Needs a manual check, then resume.' };
-    if (backlogPaused > 0 && backlogInProgress === 0 && backlogPending === 0) return { tone: 'amber', label: cn ? '已暂停' : 'Paused', detail: cn ? `点「续跑」继续(暂停 ${fmtNum(backlogPaused)} 个切片)。` : 'Click Resume to continue.' };
+    if (backlogPaused > 0 && backlogRemainingSlices === 0) return { tone: 'amber', label: cn ? '已暂停' : 'Paused', detail: cn ? `点「续跑」继续(暂停 ${fmtNum(backlogPaused)} 个切片)。` : 'Click Resume to continue.' };
     if (backlogSettled >= backlogTotalSlices) return { tone: 'green', label: cn ? '已完成' : 'Complete', detail: cn ? '本轮目录已穷举完毕。' : 'Catalog fully enumerated.' };
-    return { tone: 'green', label: cn ? '正在推进' : 'In progress', detail: cn ? '无需人工介入。' : 'No intervention needed.' };
+    if (backlogRemainingSlices > 0 && backlogUpdatedAt > 0 && nowS - backlogUpdatedAt > 30 * 60) {
+      return { tone: 'amber', label: cn ? '停滞' : 'Stalled', detail: cn ? '超过 30 分钟没有推进——检查 bulk worker 是否过盾,或点「续跑」。' : 'No progress in 30+ minutes — check the bulk worker or click Resume.' };
+    }
+    return { tone: 'green', label: cn ? '正在推进' : 'In progress', detail: cn ? '无需人工介入(每 15 分钟自动跑一轮)。' : 'No intervention needed (auto every 15 min).' };
   })();
 
   const verdictPill = (t: string) =>
