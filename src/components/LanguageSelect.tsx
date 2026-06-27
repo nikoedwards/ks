@@ -35,7 +35,7 @@ export default function LanguageSelect({
           aria-label={copy.language}
         >
           {LANGS.map(code => (
-            <option key={code} value={code}>
+            <option key={code} value={code} className="bg-white text-gray-900">
               {LANGUAGE_META[code].label} · {LANGUAGE_META[code].shortLabel}
             </option>
           ))}
