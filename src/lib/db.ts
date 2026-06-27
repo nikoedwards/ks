@@ -1817,6 +1817,7 @@ export interface LeaderboardFilter {
   dateFrom?: number;
   dateTo?: number;
   categoryParent?: string;
+  categoryParents?: string[];
   categoryName?: string;
   limit?: number;
 }
@@ -1867,6 +1868,11 @@ function leaderboardWhere(filter: LeaderboardFilter) {
   const params: Record<string, unknown> = {};
   if (filter.dateFrom) { clauses.push('p.launched_at >= @dateFrom'); params.dateFrom = filter.dateFrom; }
   if (filter.dateTo) { clauses.push('p.launched_at <= @dateTo'); params.dateTo = filter.dateTo; }
+  if (filter.categoryParents && filter.categoryParents.length) {
+    const placeholders = filter.categoryParents.map((_, i) => `@lcp${i}`);
+    clauses.push(`LOWER(p.category_parent) IN (${placeholders.join(', ')})`);
+    filter.categoryParents.forEach((value, i) => { params[`lcp${i}`] = value.trim().toLowerCase(); });
+  }
   if (filter.categoryParent) { clauses.push('p.category_parent = @categoryParent'); params.categoryParent = filter.categoryParent; }
   if (filter.categoryName) { clauses.push('p.category_name = @categoryName'); params.categoryName = filter.categoryName; }
   return { where: `WHERE ${clauses.join(' AND ')}`, params };
@@ -1957,7 +1963,7 @@ function leaderboardBaseSql(where: string) {
 }
 
 export function getLeaderboard(filter: LeaderboardFilter = {}) {
-  const key = `leaderboard:${filter.dateFrom ?? ''}:${filter.dateTo ?? ''}:${filter.categoryParent ?? ''}:${filter.categoryName ?? ''}:${filter.limit ?? 25}`;
+  const key = `leaderboard:${filter.dateFrom ?? ''}:${filter.dateTo ?? ''}:${filter.categoryParent ?? ''}:${(filter.categoryParents ?? []).join('|')}:${filter.categoryName ?? ''}:${filter.limit ?? 25}`;
   return swrCached(key, 120_000, () => computeLeaderboard(filter));
 }
 

@@ -20,6 +20,9 @@ import {
 import { useLanguage } from '@/hooks/useLanguage';
 import { isZhLang } from '@/lib/i18n';
 import ImagePreview from '@/components/ImagePreview';
+import PlatformPicker, { type PlatformView } from '@/components/PlatformPicker';
+import CategoryMappingTooltip from '@/components/CategoryMappingTooltip';
+import { unifiedCategoryLabel, isUnifiedCategory } from '@/lib/categoryMap';
 import { useAuthGate } from '@/components/AuthGate';
 import { useAuth } from '@/contexts/AuthContext';
 
@@ -38,6 +41,7 @@ interface LeaderboardProject {
   backers_count: number;
   goal: number;
   funded_pct: number;
+  platform?: 'kickstarter' | 'indiegogo';
 }
 
 interface LeaderboardCreator {
@@ -205,6 +209,7 @@ export default function LeaderboardPage() {
   const [activeYear, setActiveYear] = useState<ActiveYear>(yearNow);
   const [categoryParent, setCategoryParent] = useState('');
   const [categoryName, setCategoryName] = useState('');
+  const [platform, setPlatform] = useState<PlatformView>('kickstarter');
   const [metric, setMetric] = useState<Metric>('pledged');
   const [creatorMetric, setCreatorMetric] = useState<CreatorMetric>('pledged');
   const [page, setPage] = useState(1);
@@ -264,6 +269,8 @@ export default function LeaderboardPage() {
         setDateTo(to);
       }
     }
+    const pf = params.get('platform');
+    if (pf === 'global' || pf === 'kickstarter' || pf === 'indiegogo') setPlatform(pf);
     setCategoryParent(params.get('categoryParent') ?? '');
     setCategoryName(params.get('categoryName') ?? '');
     setInitialized(true);
@@ -293,27 +300,29 @@ export default function LeaderboardPage() {
   const pageCreators = creators.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
   const categoryLabel = categoryNameForShare(categoryName || categoryParent, cn);
   const titleKind = agencyMetrics ? (cn ? '服务商榜单' : 'Agency Leaderboard') : creatorMetrics ? (cn ? 'Creator 榜单' : 'Creator Leaderboard') : (cn ? '项目榜单' : 'Projects');
+  const platformLabel = platform === 'global' ? (cn ? '全平台' : 'Global') : platform === 'indiegogo' ? 'Indiegogo' : 'Kickstarter';
   const title = cn
-    ? `${activeYear === 'custom' ? '自定义区间' : `${activeYear}年`} ${categoryLabel} Kickstarter TOP100 ${titleKind}`
-    : `${activeYear === 'custom' ? 'Custom Range' : activeYear} ${categoryLabel} Kickstarter Top 100 ${titleKind}`;
+    ? `${activeYear === 'custom' ? '自定义区间' : `${activeYear}年`} ${categoryLabel} ${platformLabel} TOP100 ${titleKind}`
+    : `${activeYear === 'custom' ? 'Custom Range' : activeYear} ${categoryLabel} ${platformLabel} Top 100 ${titleKind}`;
   const rangeLabel = activeYear === 'lifetime'
     ? (cn ? '历史至今' : 'Lifetime')
     : activeYear === 'custom'
       ? (cn ? '自定义区间' : 'Custom Range')
       : (cn ? `${activeYear}年` : String(activeYear));
   const displayTitle = cn
-    ? `${rangeLabel} ${categoryLabel} Kickstarter TOP100 ${titleKind}`
-    : `${rangeLabel} ${categoryLabel} Kickstarter Top 100 ${titleKind}`;
+    ? `${rangeLabel} ${categoryLabel} ${platformLabel} TOP100 ${titleKind}`
+    : `${rangeLabel} ${categoryLabel} ${platformLabel} Top 100 ${titleKind}`;
 
   const load = async () => {
     setLoading(true);
     setPage(1);
     const params = new URLSearchParams({
       limit: '100',
+      platform,
       ...(activeYear !== 'lifetime' && toTs(dateFrom) ? { dateFrom: String(toTs(dateFrom)) } : {}),
       ...(activeYear !== 'lifetime' && toTs(dateTo, true) ? { dateTo: String(toTs(dateTo, true)) } : {}),
       ...(categoryParent ? { categoryParent } : {}),
-      ...(categoryName ? { categoryName } : {}),
+      ...(platform === 'kickstarter' && categoryName ? { categoryName } : {}),
     });
     const res = await fetch(`/api/leaderboard?${params.toString()}`, { cache: 'no-store' });
     const json = await res.json();
@@ -331,9 +340,20 @@ export default function LeaderboardPage() {
 
   useEffect(() => {
     if (initialized) load();
-  }, [initialized, dateFrom, dateTo, categoryParent, categoryName]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [initialized, platform, dateFrom, dateTo, categoryParent, categoryName]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const gate = useAuthGate();
+
+  // Switching platform resets the category taxonomy and forces a project-level
+  // metric (creators/agencies are Kickstarter-only).
+  const changePlatform = (next: PlatformView) => gate(() => {
+    if (next === platform) return;
+    setPlatform(next);
+    setCategoryParent('');
+    setCategoryName('');
+    if (next !== 'kickstarter' && (metric === 'creator' || metric === 'agency')) setMetric('pledged');
+    setPage(1);
+  });
 
   // Internal (ungated) primitives so gated handlers can compose them.
   const applyYearRaw = (year: number) => {
@@ -778,6 +798,11 @@ export default function LeaderboardPage() {
         </div>
       </div>
 
+      <div className="flex items-center gap-2">
+        <span className="text-xs font-semibold uppercase tracking-wide text-gray-400">{cn ? '平台' : 'Platform'}</span>
+        <PlatformPicker value={platform} onChange={changePlatform} cn={cn} />
+      </div>
+
       <div className="rounded-lg border border-gray-100/80 bg-white/60 p-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex flex-wrap gap-2">
@@ -824,19 +849,28 @@ export default function LeaderboardPage() {
             <input type="date" value={dateTo} onChange={e => { const v = e.target.value; gate(() => { setActiveYear('custom'); setDateTo(v); }); }} className="w-full rounded-md border border-gray-200 bg-white px-3 py-2" />
           </label>
           <label className="space-y-1">
-            <span className="flex items-center gap-1 text-xs font-semibold text-gray-400"><Filter className="h-3.5 w-3.5" />{cn ? '大类' : 'Parent Category'}</span>
+            <span className="flex items-center gap-1 text-xs font-semibold text-gray-400">
+              <Filter className="h-3.5 w-3.5" />{cn ? '大类' : 'Parent Category'}
+              {platform === 'global' && <CategoryMappingTooltip cn={cn} />}
+            </span>
             <select value={categoryParent} onChange={e => { const v = e.target.value; gate(() => { setCategoryParent(v); setCategoryName(''); }); }} className="w-full rounded-md border border-gray-200 bg-white px-3 py-2">
               <option value="">{cn ? '全部大类' : 'All parent categories'}</option>
-              {parentOptions.map(([parent, total]) => <option key={parent} value={parent}>{parent} ({total})</option>)}
+              {parentOptions.map(([parent, total]) => (
+                <option key={parent} value={parent}>
+                  {platform === 'global' && isUnifiedCategory(parent) ? unifiedCategoryLabel(parent, cn) : parent}{total ? ` (${total})` : ''}
+                </option>
+              ))}
             </select>
           </label>
-          <label className="space-y-1">
-            <span className="flex items-center gap-1 text-xs font-semibold text-gray-400"><Filter className="h-3.5 w-3.5" />{cn ? '二级类目' : 'Subcategory'}</span>
-            <select value={categoryName} onChange={e => { const v = e.target.value; gate(() => setCategoryName(v)); }} className="w-full rounded-md border border-gray-200 bg-white px-3 py-2">
-              <option value="">{cn ? '全部二级类目' : 'All subcategories'}</option>
-              {childOptions.map(c => <option key={`${c.category_parent}-${c.category_name}`} value={c.category_name ?? ''}>{c.category_name ?? '-'} ({c.total})</option>)}
-            </select>
-          </label>
+          {platform === 'kickstarter' && (
+            <label className="space-y-1">
+              <span className="flex items-center gap-1 text-xs font-semibold text-gray-400"><Filter className="h-3.5 w-3.5" />{cn ? '二级类目' : 'Subcategory'}</span>
+              <select value={categoryName} onChange={e => { const v = e.target.value; gate(() => setCategoryName(v)); }} className="w-full rounded-md border border-gray-200 bg-white px-3 py-2">
+                <option value="">{cn ? '全部二级类目' : 'All subcategories'}</option>
+                {childOptions.map(c => <option key={`${c.category_parent}-${c.category_name}`} value={c.category_name ?? ''}>{c.category_name ?? '-'} ({c.total})</option>)}
+              </select>
+            </label>
+          )}
         </div>
       </div>
 
@@ -868,12 +902,16 @@ export default function LeaderboardPage() {
             <button onClick={() => switchMetric('backers')} className={`inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-sm font-bold ${metric === 'backers' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500'}`}>
               <Users className="h-4 w-4" />{cn ? '支持者' : 'Backers'}
             </button>
-            <button onClick={() => switchMetric('creator')} className={`inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-sm font-bold ${metric === 'creator' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500'}`}>
-              <Users className="h-4 w-4" />{cn ? '发起者' : 'Creators'}
-            </button>
-            <button onClick={() => switchMetric('agency')} className={`inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-sm font-bold ${metric === 'agency' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500'}`}>
-              <Users className="h-4 w-4" />{cn ? '服务商' : 'Agencies'}
-            </button>
+            {platform === 'kickstarter' && (
+              <button onClick={() => switchMetric('creator')} className={`inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-sm font-bold ${metric === 'creator' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500'}`}>
+                <Users className="h-4 w-4" />{cn ? '发起者' : 'Creators'}
+              </button>
+            )}
+            {platform === 'kickstarter' && (
+              <button onClick={() => switchMetric('agency')} className={`inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-sm font-bold ${metric === 'agency' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500'}`}>
+                <Users className="h-4 w-4" />{cn ? '服务商' : 'Agencies'}
+              </button>
+            )}
           </div>
         </div>
 
@@ -950,6 +988,12 @@ export default function LeaderboardPage() {
                   </span>
                   <span className="min-w-0">
                     <span className="flex items-start gap-2">
+                      {platform === 'global' && project.platform === 'indiegogo' && (
+                        <span className="mt-0.5 inline-block shrink-0 rounded bg-pink-50 px-1.5 py-0.5 text-[10px] font-bold text-pink-600">IGG</span>
+                      )}
+                      {platform === 'global' && project.platform === 'kickstarter' && (
+                        <span className="mt-0.5 inline-block shrink-0 rounded bg-ks-green-light px-1.5 py-0.5 text-[10px] font-bold text-ks-green-dark">KS</span>
+                      )}
                       <span className="line-clamp-2 text-sm font-bold text-gray-900 group-hover:text-ks-green">{project.name}</span>
                       <ArrowUpRight className="mt-0.5 h-4 w-4 shrink-0 text-gray-300 group-hover:text-ks-green" />
                     </span>

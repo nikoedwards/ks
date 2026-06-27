@@ -270,6 +270,90 @@ export function getIndiegogoTrending(limit = 5): UnifiedProjectRow[] {
   return listIndiegogoProjects({ state: 'live', sort: 'usd_pledged', sortDir: 'desc', limit, page: 1 }).rows;
 }
 
+export interface IndiegogoLeaderboardRow {
+  id: string;
+  name: string;
+  blurb: string | null;
+  state: string | null;
+  category_parent: string | null;
+  category_name: string | null;
+  country: string | null;
+  launched_at: number | null;
+  image_url: string | null;
+  image_thumb_url: string | null;
+  pledged_usd: number;
+  backers_count: number;
+  goal: number;
+  funded_pct: number;
+  platform: 'indiegogo';
+}
+
+export interface IndiegogoLeaderboardResult {
+  byPledged: IndiegogoLeaderboardRow[];
+  byBackers: IndiegogoLeaderboardRow[];
+  summary: { total_projects: number; total_pledged_usd: number; total_backers: number; avg_funded_pct: number };
+}
+
+function toLeaderboardRow(r: UnifiedProjectRow): IndiegogoLeaderboardRow {
+  const goal = Number(r.goal ?? 0);
+  const pledged = Number(r.usd_pledged ?? 0);
+  return {
+    id: r.id,
+    name: r.name,
+    blurb: r.blurb,
+    state: r.state,
+    category_parent: r.category_parent,
+    category_name: r.category_name,
+    country: r.country,
+    launched_at: r.launched_at,
+    image_url: r.image_url,
+    image_thumb_url: r.image_thumb_url,
+    pledged_usd: pledged,
+    backers_count: Number(r.backers_count ?? 0),
+    goal,
+    funded_pct: goal > 0 ? Math.round((pledged / goal) * 1000) / 10 : 0,
+    platform: 'indiegogo',
+  };
+}
+
+// Leaderboard-shaped Indiegogo ranking (by pledged + by backers) over an
+// optional date window / unified or raw category. Only projects with a launch
+// date are ranked, mirroring the Kickstarter leaderboard.
+export function getIndiegogoLeaderboard(filter: PlatformProjectFilter & { limit?: number } = {}): IndiegogoLeaderboardResult {
+  const db = openIndiegogoReadonly();
+  const empty: IndiegogoLeaderboardResult = { byPledged: [], byBackers: [], summary: { total_projects: 0, total_pledged_usd: 0, total_backers: 0, avg_funded_pct: 0 } };
+  if (!db) return empty;
+  try {
+    const { where, params } = buildWhere({ ...filter, state: undefined });
+    const limit = Math.max(1, Math.min(filter.limit ?? 25, 100));
+    const guarded = `${where} AND launched_at IS NOT NULL`;
+    const byPledged = (db.prepare(
+      `SELECT ${SELECT_COLUMNS} FROM platform_projects ${guarded} ORDER BY COALESCE(pledged_usd,0) DESC, COALESCE(backers_count,0) DESC LIMIT @limit`
+    ).all({ ...params, limit }) as RawIggRow[]).map(mapRow).map(toLeaderboardRow);
+    const byBackers = (db.prepare(
+      `SELECT ${SELECT_COLUMNS} FROM platform_projects ${guarded} ORDER BY COALESCE(backers_count,0) DESC, COALESCE(pledged_usd,0) DESC LIMIT @limit`
+    ).all({ ...params, limit }) as RawIggRow[]).map(mapRow).map(toLeaderboardRow);
+    const agg = db.prepare(
+      `SELECT COUNT(*) AS total_projects, COALESCE(SUM(pledged_usd),0) AS total_pledged_usd,
+              COALESCE(SUM(backers_count),0) AS total_backers,
+              COALESCE(AVG(CASE WHEN COALESCE(goal_amount,0) > 0 THEN pledged_usd/goal_amount*100 ELSE NULL END),0) AS avg_funded_pct
+       FROM platform_projects ${guarded}`
+    ).get(params) as { total_projects: number; total_pledged_usd: number; total_backers: number; avg_funded_pct: number };
+    return {
+      byPledged,
+      byBackers,
+      summary: {
+        total_projects: Number(agg.total_projects ?? 0),
+        total_pledged_usd: Number(agg.total_pledged_usd ?? 0),
+        total_backers: Number(agg.total_backers ?? 0),
+        avg_funded_pct: Math.round(Number(agg.avg_funded_pct ?? 0) * 10) / 10,
+      },
+    };
+  } finally {
+    db.close();
+  }
+}
+
 // Distinct raw IGG categories with counts (for the single-platform IGG filter).
 export function getIndiegogoRawCategories(): Array<{ category: string; count: number }> {
   const db = openIndiegogoReadonly();
