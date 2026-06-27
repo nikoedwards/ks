@@ -15,6 +15,7 @@ interface Hit {
   backers_count?: number;
   image_url?: string | null;
   image_thumb_url?: string | null;
+  platform?: 'kickstarter' | 'indiegogo';
 }
 
 function fmtMoneyCompact(value: number) {
@@ -62,7 +63,7 @@ export default function GlobalSearch() {
   const loadTrending = useCallback(() => {
     if (trendingLoaded) return;
     setTrendingLoaded(true);
-    fetch('/api/projects/trending')
+    fetch('/api/projects/trending?platform=global')
       .then(r => r.json())
       .then(d => setTrending((d.rows ?? []) as Hit[]))
       .catch(() => {});
@@ -70,7 +71,7 @@ export default function GlobalSearch() {
 
   const fetchSuggestions = useCallback((q: string) => {
     if (q.trim().length < 2) { setSuggestions([]); return; }
-    fetch(`/api/projects?search=${encodeURIComponent(q.trim())}&limit=6&page=1`)
+    fetch(`/api/projects?platform=global&search=${encodeURIComponent(q.trim())}&limit=6&page=1`)
       .then(r => r.json())
       .then(d => setSuggestions((d.rows?.slice(0, 6) ?? []) as Hit[]))
       .catch(() => {});
@@ -92,7 +93,7 @@ export default function GlobalSearch() {
   const submit = (e?: React.FormEvent) => {
     e?.preventDefault();
     if (query.trim()) {
-      router.push(`/projects?search=${encodeURIComponent(query.trim())}`);
+      router.push(`/projects?platform=global&search=${encodeURIComponent(query.trim())}`);
       setOpen(false);
     }
   };
@@ -132,7 +133,15 @@ export default function GlobalSearch() {
           )}
         </span>
         <span className="min-w-0 flex-1">
-          <span className="block truncate text-sm font-medium text-gray-800">{s.name}</span>
+          <span className="block truncate text-sm font-medium text-gray-800">
+            {s.platform === 'indiegogo' && (
+              <span className="mr-1.5 inline-block rounded bg-pink-50 px-1.5 py-0.5 align-middle text-[10px] font-bold text-pink-600">IGG</span>
+            )}
+            {s.platform === 'kickstarter' && (
+              <span className="mr-1.5 inline-block rounded bg-ks-green-light px-1.5 py-0.5 align-middle text-[10px] font-bold text-ks-green-dark">KS</span>
+            )}
+            {s.name}
+          </span>
           <span className="mt-1 flex items-center gap-2 text-xs text-gray-400">
             {s.category_parent && <span>{s.category_parent}</span>}
             <StatePill state={s.state} lang={lang} />
