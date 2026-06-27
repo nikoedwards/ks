@@ -118,7 +118,9 @@ const IGG_TO_UNIFIED: Record<string, UnifiedCategory> = {
   'local businesses': 'Community & Causes',
   education: 'Community & Causes',
   'other community projects': 'Community & Causes',
-  general: 'Other',
+  // IGG's "General" bucket is dominated by hardware/product campaigns, so route
+  // it to Technology rather than the generic Other catch-all.
+  general: 'Technology',
   others: 'Other',
 };
 
