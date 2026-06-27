@@ -6,6 +6,9 @@ import { Activity, ArrowUpRight, Clock3, Filter, Flame, Gauge, RefreshCw, Rocket
 import { useLanguage } from '@/hooks/useLanguage';
 import { isZhLang } from '@/lib/i18n';
 import ImagePreview from '@/components/ImagePreview';
+import PlatformPicker, { type PlatformView } from '@/components/PlatformPicker';
+import CategoryMappingTooltip from '@/components/CategoryMappingTooltip';
+import { unifiedCategoryLabel, isUnifiedCategory } from '@/lib/categoryMap';
 import { LockedSection, useAuthGate } from '@/components/AuthGate';
 
 interface LiveProject {
@@ -31,6 +34,7 @@ interface LiveProject {
   backers_delta_6h: number;
   funded_pct: number;
   projected_usd: number;
+  platform?: 'kickstarter' | 'indiegogo';
 }
 
 interface CategoryIntel {
@@ -157,6 +161,9 @@ function ProjectCard({ project, rank, metric, subMetric, accent = 'green' }: {
         <div className="min-w-0 flex-1">
           <div className="flex items-start justify-between gap-2">
             <h3 className="font-semibold text-sm text-gray-900 leading-snug line-clamp-2 group-hover:text-ks-green transition-colors">
+              {project.platform === 'indiegogo' && (
+                <span className="mr-1.5 inline-block rounded bg-pink-50 px-1.5 py-0.5 align-middle text-[10px] font-bold text-pink-600">IGG</span>
+              )}
               {project.name}
             </h3>
             <ArrowUpRight className="w-4 h-4 text-gray-300 group-hover:text-ks-green shrink-0" />
@@ -189,15 +196,24 @@ export default function LiveIntelPage() {
   const cn = isZhLang(lang);
   const [data, setData] = useState<LiveIntel | null>(null);
   const [loading, setLoading] = useState(true);
+  const [platform, setPlatform] = useState<PlatformView>('kickstarter');
   const [categoryParent, setCategoryParent] = useState('');
   const [categoryOptions, setCategoryOptions] = useState<string[]>([]);
   const gate = useAuthGate();
+
+  const changePlatform = (next: PlatformView) => gate(() => {
+    if (next === platform) return;
+    setPlatform(next);
+    setCategoryParent('');
+    setCategoryOptions([]);
+  });
 
   const load = async () => {
     setLoading(true);
     try {
       const params = new URLSearchParams({
         limit: '12',
+        platform,
         ...(categoryParent ? { categoryParent } : {}),
       });
       const res = await fetch(`/api/live-intel?${params.toString()}`, { cache: 'no-store' });
@@ -219,7 +235,7 @@ export default function LiveIntelPage() {
     load();
     const id = setInterval(load, 60_000);
     return () => clearInterval(id);
-  }, [categoryParent]);
+  }, [platform, categoryParent]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const featured = useMemo(() => {
     const seen = new Set<string>();
@@ -244,8 +260,10 @@ export default function LiveIntelPage() {
 
   return (
     <div className="max-w-7xl mx-auto space-y-6">
-      <div className="flex items-start justify-end gap-4">
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <PlatformPicker value={platform} onChange={changePlatform} cn={cn} />
         <div className="flex flex-wrap items-center justify-end gap-2">
+          {platform === 'global' && <CategoryMappingTooltip cn={cn} />}
           <label className="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-600">
             <Filter className="h-4 w-4 text-gray-400" />
             <select
@@ -255,7 +273,9 @@ export default function LiveIntelPage() {
             >
               <option value="">{cn ? '全部类目' : 'All categories'}</option>
               {categoryOptions.map(category => (
-                <option key={category} value={category}>{category}</option>
+                <option key={category} value={category}>
+                  {platform === 'global' && isUnifiedCategory(category) ? unifiedCategoryLabel(category, cn) : category}
+                </option>
               ))}
             </select>
           </label>

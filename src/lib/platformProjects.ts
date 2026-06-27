@@ -354,6 +354,123 @@ export function getIndiegogoLeaderboard(filter: PlatformProjectFilter & { limit?
   }
 }
 
+export interface LiveIntelProject {
+  id: string;
+  name: string;
+  blurb: string | null;
+  goal: number;
+  country: string | null;
+  currency: string | null;
+  category_parent: string | null;
+  category_name: string | null;
+  launched_at: number | null;
+  deadline: number | null;
+  source_url: string | null;
+  image_url: string | null;
+  image_thumb_url: string | null;
+  pledged_usd: number;
+  live_backers_count: number;
+  latest_snapshot_at: number | null;
+  pledged_delta_24h: number;
+  backers_delta_24h: number;
+  pledged_delta_6h: number;
+  backers_delta_6h: number;
+  funded_pct: number;
+  projected_usd: number;
+  platform: 'indiegogo';
+}
+
+export interface LiveIntelResult {
+  generatedAt: number;
+  summary: { live_projects: number; pledged_delta_24h: number; backers_delta_24h: number; launched_24h: number; ending_24h: number; overfunded_projects: number };
+  fastestFunding: LiveIntelProject[];
+  fastestBackers: LiveIntelProject[];
+  newlyLaunched: LiveIntelProject[];
+  endingSoon: LiveIntelProject[];
+  overfunded: LiveIntelProject[];
+  categories: Array<{ category: string; live_projects: number; pledged_delta_24h: number; backers_delta_24h: number; avg_funded_pct: number; overfunded_projects: number }>;
+  allCategories: Array<{ category: string }>;
+}
+
+function emptyLiveIntel(): LiveIntelResult {
+  return {
+    generatedAt: Math.floor(Date.now() / 1000),
+    summary: { live_projects: 0, pledged_delta_24h: 0, backers_delta_24h: 0, launched_24h: 0, ending_24h: 0, overfunded_projects: 0 },
+    fastestFunding: [], fastestBackers: [], newlyLaunched: [], endingSoon: [], overfunded: [], categories: [], allCategories: [],
+  };
+}
+
+// Simplified live intel for Indiegogo. IGG snapshots are sparse/irregular, so
+// 24h/6h deltas are reported as 0; rankings use current pledged/backers as the
+// proxy. Kickstarter keeps its full snapshot-diff intel.
+export function getIndiegogoLiveIntel(limit = 12, filter: PlatformProjectFilter = {}): LiveIntelResult {
+  const db = openIndiegogoReadonly();
+  if (!db) return emptyLiveIntel();
+  try {
+    const { where, params } = buildWhere({ ...filter, state: 'live' });
+    const rows = (db.prepare(`SELECT ${SELECT_COLUMNS} FROM platform_projects ${where} LIMIT 5000`).all(params) as RawIggRow[]).map(mapRow);
+    const now = Math.floor(Date.now() / 1000);
+    const live: LiveIntelProject[] = rows.map(r => {
+      const goal = Number(r.goal ?? 0);
+      const pledged = Number(r.usd_pledged ?? 0);
+      return {
+        id: r.id, name: r.name, blurb: r.blurb, goal,
+        country: r.country, currency: r.currency,
+        category_parent: r.category_parent, category_name: r.category_name,
+        launched_at: r.launched_at, deadline: r.deadline,
+        source_url: r.source_url, image_url: r.image_url, image_thumb_url: r.image_thumb_url,
+        pledged_usd: pledged, live_backers_count: Number(r.backers_count ?? 0),
+        latest_snapshot_at: null,
+        pledged_delta_24h: 0, backers_delta_24h: 0, pledged_delta_6h: 0, backers_delta_6h: 0,
+        funded_pct: goal > 0 ? Math.round((pledged / goal) * 1000) / 10 : 0,
+        projected_usd: pledged,
+        platform: 'indiegogo',
+      };
+    });
+    const byPledged = [...live].sort((a, b) => b.pledged_usd - a.pledged_usd);
+    const fastestFunding = byPledged.slice(0, limit);
+    const fastestBackers = [...live].sort((a, b) => b.live_backers_count - a.live_backers_count).slice(0, limit);
+    const newlyLaunched = [...live].filter(p => p.launched_at).sort((a, b) => (b.launched_at ?? 0) - (a.launched_at ?? 0)).slice(0, limit);
+    const endingSoon = [...live].filter(p => p.deadline && p.deadline > now).sort((a, b) => (a.deadline ?? 0) - (b.deadline ?? 0)).slice(0, limit);
+    const overfunded = [...live].filter(p => p.funded_pct >= 100).sort((a, b) => b.funded_pct - a.funded_pct).slice(0, limit);
+
+    const catMap = new Map<string, { live_projects: number; funded_sum: number; overfunded_projects: number }>();
+    for (const p of live) {
+      const key = p.category_parent || '(uncategorized)';
+      const e = catMap.get(key) ?? { live_projects: 0, funded_sum: 0, overfunded_projects: 0 };
+      e.live_projects += 1;
+      e.funded_sum += p.funded_pct;
+      if (p.funded_pct >= 100) e.overfunded_projects += 1;
+      catMap.set(key, e);
+    }
+    const categories = [...catMap.entries()].map(([category, e]) => ({
+      category,
+      live_projects: e.live_projects,
+      pledged_delta_24h: 0,
+      backers_delta_24h: 0,
+      avg_funded_pct: e.live_projects > 0 ? Math.round((e.funded_sum / e.live_projects) * 10) / 10 : 0,
+      overfunded_projects: e.overfunded_projects,
+    })).sort((a, b) => b.live_projects - a.live_projects);
+
+    return {
+      generatedAt: now,
+      summary: {
+        live_projects: live.length,
+        pledged_delta_24h: 0,
+        backers_delta_24h: 0,
+        launched_24h: live.filter(p => p.launched_at && p.launched_at >= now - 86400).length,
+        ending_24h: live.filter(p => p.deadline && p.deadline > now && p.deadline <= now + 86400).length,
+        overfunded_projects: overfunded.length,
+      },
+      fastestFunding, fastestBackers, newlyLaunched, endingSoon, overfunded,
+      categories,
+      allCategories: categories.map(c => ({ category: c.category })),
+    };
+  } finally {
+    db.close();
+  }
+}
+
 // Distinct raw IGG categories with counts (for the single-platform IGG filter).
 export function getIndiegogoRawCategories(): Array<{ category: string; count: number }> {
   const db = openIndiegogoReadonly();
