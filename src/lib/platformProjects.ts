@@ -23,6 +23,40 @@ export function indiegogoSourceId(id: string): string {
   return id.startsWith(IGG_ID_PREFIX) ? id.slice(IGG_ID_PREFIX.length) : id;
 }
 
+const nowSec = () => Math.floor(Date.now() / 1000);
+
+// Effective-state expression: a stored `live` campaign whose deadline has
+// already passed is reclassified as successful/failed at read time, so the list,
+// filters and aggregations agree with the detail page (which derives the
+// countdown from the deadline). Ended campaigns stop being re-crawled, so their
+// stored state goes stale — deriving it on read keeps every view consistent
+// without a destructive backfill, and a future re-crawl self-heals the column.
+const EFFECTIVE_STATE_SQL = `(CASE
+  WHEN state = 'live' AND deadline IS NOT NULL AND deadline <= @now
+    THEN (CASE WHEN COALESCE(goal_amount, 0) > 0 AND COALESCE(pledged_amount, 0) >= goal_amount THEN 'successful' ELSE 'failed' END)
+  ELSE state END)`;
+
+function effectiveState(
+  state: string | null,
+  deadline: number | null,
+  goal: number | null,
+  pledged: number | null,
+  now = nowSec(),
+): string | null {
+  if (state === 'live' && deadline != null && deadline <= now) {
+    return Number(goal ?? 0) > 0 && Number(pledged ?? 0) >= Number(goal ?? 0) ? 'successful' : 'failed';
+  }
+  return state;
+}
+
+// Canonical public project URL. The stored source_url can be a tracking /
+// clickthrough link that 302s to the Indiegogo homepage, so prefer building it
+// from the slug, which is always the canonical `/projects/<slug>` permalink.
+function indiegogoPublicUrl(slug: string | null, fallback: string | null): string | null {
+  if (slug) return `https://www.indiegogo.com/projects/${slug}`;
+  return fallback ?? null;
+}
+
 // Superset row: same field names as the Kickstarter list row plus platform tags.
 export interface UnifiedProjectRow {
   id: string;
@@ -126,7 +160,7 @@ function mapRow(r: RawIggRow): UnifiedProjectRow {
     id: `${IGG_ID_PREFIX}${r.source_project_id}`,
     name: r.name,
     blurb: r.blurb,
-    state: r.state,
+    state: effectiveState(r.state, r.deadline, r.goal_amount, r.pledged_amount),
     country: r.country,
     country_name: r.country,
     currency: r.currency,
@@ -143,7 +177,7 @@ function mapRow(r: RawIggRow): UnifiedProjectRow {
     creator_name: r.creator_url_name,
     creator_slug: r.creator_url_name,
     creator_url: r.creator_url_name ? `https://www.indiegogo.com/individuals/${r.creator_url_name}` : null,
-    source_url: r.source_url,
+    source_url: indiegogoPublicUrl(r.project_url_name, r.source_url),
     slug: r.project_url_name,
     image_url: r.image_url,
     image_thumb_url: r.image_url,
@@ -165,10 +199,11 @@ function buildWhere(filter: PlatformProjectFilter): { where: string; params: Rec
   const params: Record<string, unknown> = { platform: IGG_PLATFORM };
 
   if (filter.state && filter.state !== 'all') {
+    params.now = nowSec();
     if (filter.state === 'successful') {
-      conditions.push("(state = 'successful' OR state = 'indemand')");
+      conditions.push(`(${EFFECTIVE_STATE_SQL} = 'successful' OR state = 'indemand')`);
     } else {
-      conditions.push('state = @state');
+      conditions.push(`${EFFECTIVE_STATE_SQL} = @state`);
       params.state = filter.state;
     }
   }
@@ -477,11 +512,15 @@ interface AnalysisDateFilter { dateFrom?: number; dateTo?: number }
 
 function analysisWhere(filter: AnalysisDateFilter, extra: string[] = []): { where: string; params: Record<string, unknown> } {
   const clauses = ['platform_id = @platform', ...extra];
-  const params: Record<string, unknown> = { platform: IGG_PLATFORM };
+  const params: Record<string, unknown> = { platform: IGG_PLATFORM, now: nowSec() };
   if (filter.dateFrom) { clauses.push('launched_at >= @dateFrom'); params.dateFrom = filter.dateFrom; }
   if (filter.dateTo) { clauses.push('launched_at <= @dateTo'); params.dateTo = filter.dateTo; }
   return { where: `WHERE ${clauses.join(' AND ')}`, params };
 }
+
+// Closed/decided campaigns for analysis (success-rate, trends, countries).
+const EFF_DECIDED = `${EFFECTIVE_STATE_SQL} IN ('successful','failed')`;
+const EFF_SUCCESS = `${EFFECTIVE_STATE_SQL} = 'successful'`;
 
 export interface AnalysisStatsBundle {
   stats: { total: number; successful: number; failed: number; live: number; canceled: number; success_rate: number; total_pledged_usd: number; avg_backers: number; avg_goal: number; category_count: number };
@@ -496,11 +535,11 @@ export function getIndiegogoAnalysisStats(filter: AnalysisDateFilter = {}): Anal
     const { where, params } = analysisWhere(filter);
     const stats = db.prepare(`
       SELECT COUNT(*) AS total,
-        SUM(state='successful') AS successful,
-        SUM(state='failed') AS failed,
-        SUM(state='live') AS live,
-        SUM(state='canceled') AS canceled,
-        ROUND(AVG(CASE WHEN state IN ('successful','failed') THEN (CASE WHEN state='successful' THEN 1.0 ELSE 0.0 END) END)*100, 1) AS success_rate,
+        SUM(${EFF_SUCCESS}) AS successful,
+        SUM(${EFFECTIVE_STATE_SQL}='failed') AS failed,
+        SUM(${EFFECTIVE_STATE_SQL}='live') AS live,
+        SUM(${EFFECTIVE_STATE_SQL}='canceled') AS canceled,
+        ROUND(AVG(CASE WHEN ${EFF_DECIDED} THEN (CASE WHEN ${EFF_SUCCESS} THEN 1.0 ELSE 0.0 END) END)*100, 1) AS success_rate,
         ROUND(SUM(pledged_usd)/1000000.0, 2) AS total_pledged_usd,
         ROUND(AVG(backers_count), 1) AS avg_backers,
         ROUND(AVG(goal_amount), 0) AS avg_goal,
@@ -508,7 +547,7 @@ export function getIndiegogoAnalysisStats(filter: AnalysisDateFilter = {}): Anal
       FROM platform_projects ${where}
     `).get(params) as AnalysisStatsBundle['stats'];
     const stateDistribution = db.prepare(
-      `SELECT lower(COALESCE(state, '')) AS state, COUNT(*) AS count FROM platform_projects ${where} GROUP BY 1 ORDER BY count DESC`
+      `SELECT lower(COALESCE(${EFFECTIVE_STATE_SQL}, '')) AS state, COUNT(*) AS count FROM platform_projects ${where} GROUP BY 1 ORDER BY count DESC`
     ).all(params) as Array<{ state: string; count: number }>;
     return {
       stats: {
@@ -533,13 +572,13 @@ export function getIndiegogoAnalysisCategories(filter: AnalysisDateFilter = {}):
   const db = openIndiegogoReadonly();
   if (!db) return [];
   try {
-    const { where, params } = analysisWhere(filter, ["category IS NOT NULL", "state IN ('successful','failed')"]);
+    const { where, params } = analysisWhere(filter, ["category IS NOT NULL", EFF_DECIDED]);
     return db.prepare(`
       SELECT category,
         COUNT(*) AS total,
-        SUM(state='successful') AS successful,
-        SUM(state='failed') AS failed,
-        ROUND(AVG(CASE WHEN state IN ('successful','failed') THEN (CASE WHEN state='successful' THEN 1.0 ELSE 0.0 END) END)*100, 1) AS success_rate,
+        SUM(${EFF_SUCCESS}) AS successful,
+        SUM(${EFFECTIVE_STATE_SQL}='failed') AS failed,
+        ROUND(AVG(CASE WHEN ${EFF_DECIDED} THEN (CASE WHEN ${EFF_SUCCESS} THEN 1.0 ELSE 0.0 END) END)*100, 1) AS success_rate,
         ROUND(SUM(pledged_usd)/1000000.0, 2) AS total_pledged_m,
         ROUND(AVG(pledged_usd), 0) AS avg_pledged,
         SUM(backers_count) AS total_backers
@@ -557,12 +596,12 @@ export function getIndiegogoAnalysisTrends(filter: AnalysisDateFilter = {}): Ana
   const db = openIndiegogoReadonly();
   if (!db) return [];
   try {
-    const { where, params } = analysisWhere(filter, ['launched_at IS NOT NULL', "state IN ('successful','failed')"]);
+    const { where, params } = analysisWhere(filter, ['launched_at IS NOT NULL', EFF_DECIDED]);
     return db.prepare(`
       SELECT strftime('%Y-%m', datetime(launched_at, 'unixepoch')) AS month,
         COUNT(*) AS total,
-        SUM(state='successful') AS successful,
-        ROUND(AVG(CASE WHEN state IN ('successful','failed') THEN (CASE WHEN state='successful' THEN 1.0 ELSE 0.0 END) END)*100, 1) AS success_rate,
+        SUM(${EFF_SUCCESS}) AS successful,
+        ROUND(AVG(CASE WHEN ${EFF_DECIDED} THEN (CASE WHEN ${EFF_SUCCESS} THEN 1.0 ELSE 0.0 END) END)*100, 1) AS success_rate,
         ROUND(SUM(pledged_usd)/1000000.0, 2) AS total_pledged_m
       FROM platform_projects ${where}
       GROUP BY month ORDER BY month ASC
@@ -581,12 +620,12 @@ export function getIndiegogoAnalysisCountries(filter: AnalysisDateFilter = {}): 
   const db = openIndiegogoReadonly();
   if (!db) return [];
   try {
-    const { where, params } = analysisWhere(filter, ['country IS NOT NULL', "state IN ('successful','failed')"]);
+    const { where, params } = analysisWhere(filter, ['country IS NOT NULL', EFF_DECIDED]);
     return db.prepare(`
       SELECT country, country AS country_name,
         COUNT(*) AS total,
-        SUM(state='successful') AS successful,
-        ROUND(AVG(CASE WHEN state IN ('successful','failed') THEN (CASE WHEN state='successful' THEN 1.0 ELSE 0.0 END) END)*100, 1) AS success_rate,
+        SUM(${EFF_SUCCESS}) AS successful,
+        ROUND(AVG(CASE WHEN ${EFF_DECIDED} THEN (CASE WHEN ${EFF_SUCCESS} THEN 1.0 ELSE 0.0 END) END)*100, 1) AS success_rate,
         ROUND(SUM(pledged_usd)/1000000.0, 2) AS total_pledged_m,
         SUM(backers_count) AS total_backers
       FROM platform_projects ${where}

@@ -428,6 +428,7 @@ export default function LeaderboardPage() {
     totalParts: number,
     isCnShare: boolean,
     kickstarterLogo: HTMLImageElement | null,
+    indiegogoLogo: HTMLImageElement | null,
   ): string => {
     const rowH = 48;
     const tableX = 54;
@@ -458,21 +459,31 @@ export default function LeaderboardPage() {
       : new Date().toLocaleDateString(shareLocale);
     const generatedLabel = isCnShare ? `数据时间：${shareDate}` : `Data as of ${shareDate}`;
 
-    // Header lockup on a white rounded chip for clean contrast; logo at native ratio.
+    // Header lockup on a white rounded chip for clean contrast. The logos after
+    // "Kicksonar x" are platform-aware: KS-only, IGG-only, or both (Global),
+    // drawn side by side at their native aspect ratios.
     const headerText = 'Kicksonar x';
     ctx.font = '700 34px Arial, sans-serif';
     const headerTextW = ctx.measureText(headerText).width;
     const logoH = 52;
-    const logoRatio = kickstarterLogo && kickstarterLogo.naturalWidth && kickstarterLogo.naturalHeight
-      ? kickstarterLogo.naturalWidth / kickstarterLogo.naturalHeight
-      : 3840 / 561;
-    const logoW = Math.round(logoH * logoRatio);
     const chipPadX = 28;
     const chipGap = 16;
+    const logoGap = 18;
+    const ratioOf = (img: HTMLImageElement | null, fallback: number) =>
+      img && img.naturalWidth && img.naturalHeight ? img.naturalWidth / img.naturalHeight : fallback;
+    const logoSpecs: Array<{ img: HTMLImageElement | null; label: string; color: string; ratio: number }> = [];
+    if (platform === 'kickstarter' || platform === 'global') {
+      logoSpecs.push({ img: kickstarterLogo, label: 'KICKSTARTER', color: '#05ce78', ratio: ratioOf(kickstarterLogo, 3840 / 561) });
+    }
+    if (platform === 'indiegogo' || platform === 'global') {
+      logoSpecs.push({ img: indiegogoLogo, label: 'INDIEGOGO', color: '#eb1478', ratio: ratioOf(indiegogoLogo, 720 / 150) });
+    }
+    const logos = logoSpecs.map(s => ({ ...s, w: Math.round(logoH * s.ratio) }));
+    const logosW = logos.reduce((sum, l) => sum + l.w, 0) + Math.max(0, logos.length - 1) * logoGap;
     const chipX = 48;
     const chipY = 30;
     const chipH = 88;
-    const chipW = chipPadX * 2 + headerTextW + chipGap + logoW;
+    const chipW = chipPadX * 2 + headerTextW + chipGap + logosW;
     const centerY = chipY + chipH / 2;
 
     ctx.save();
@@ -490,12 +501,16 @@ export default function LeaderboardPage() {
     ctx.fillStyle = '#09351f';
     ctx.font = '700 34px Arial, sans-serif';
     ctx.fillText(headerText, contentX, centerY);
-    if (kickstarterLogo) {
-      ctx.drawImage(kickstarterLogo, contentX + headerTextW + chipGap, centerY - logoH / 2, logoW, logoH);
-    } else {
-      ctx.fillStyle = '#05ce78';
-      ctx.font = '900 30px Arial, sans-serif';
-      ctx.fillText('KICKSTARTER', contentX + headerTextW + chipGap, centerY);
+    let logoX = contentX + headerTextW + chipGap;
+    for (const l of logos) {
+      if (l.img) {
+        ctx.drawImage(l.img, logoX, centerY - logoH / 2, l.w, logoH);
+      } else {
+        ctx.fillStyle = l.color;
+        ctx.font = '900 30px Arial, sans-serif';
+        ctx.fillText(l.label, logoX, centerY);
+      }
+      logoX += l.w + logoGap;
     }
     ctx.textBaseline = 'alphabetic';
     // Extra breathing room below the chip so the big year no longer kisses it.
@@ -573,7 +588,27 @@ export default function LeaderboardPage() {
       // Live marker: a small labelled pill (dot + 进行中/LIVE) before the name.
       // Clearer than a bare dot but kept soft (pale fill, no loud color block).
       const nameX = 185;
-      let liveDotPad = 0;
+      let markX = nameX;
+      // Platform chip (Global only): mirror the list's KS / IGG tag so viewers
+      // can tell at a glance which platform each ranked project belongs to.
+      if (platform === 'global') {
+        const isIggRow = project.platform === 'indiegogo';
+        const tag = isIggRow ? 'IGG' : 'KS';
+        ctx.font = '700 14px Arial, sans-serif';
+        const tagW = ctx.measureText(tag).width;
+        const padX = 8, pillH = 22;
+        const pillW = padX * 2 + tagW;
+        const pillY = y - 7 - pillH / 2;
+        ctx.fillStyle = isIggRow ? '#fde4f1' : '#dcfce0';
+        ctx.beginPath();
+        ctx.roundRect(markX, pillY, pillW, pillH, 6);
+        ctx.fill();
+        ctx.fillStyle = isIggRow ? '#c01073' : '#0a7a43';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(tag, markX + padX, y - 6);
+        ctx.textBaseline = 'alphabetic';
+        markX += pillW + 10;
+      }
       if (project.state === 'live') {
         const tag = isCnShare ? '进行中' : 'LIVE';
         ctx.font = '700 15px Arial, sans-serif';
@@ -583,17 +618,17 @@ export default function LeaderboardPage() {
         const pillY = y - 7 - pillH / 2;
         ctx.fillStyle = '#d4f7e0';
         ctx.beginPath();
-        ctx.roundRect(nameX, pillY, pillW, pillH, pillH / 2);
+        ctx.roundRect(markX, pillY, pillW, pillH, pillH / 2);
         ctx.fill();
         ctx.fillStyle = '#16a34a';
         ctx.beginPath();
-        ctx.arc(nameX + padX + dotR, y - 7, dotR, 0, Math.PI * 2);
+        ctx.arc(markX + padX + dotR, y - 7, dotR, 0, Math.PI * 2);
         ctx.fill();
         ctx.fillStyle = '#0a7a43';
         ctx.textBaseline = 'middle';
-        ctx.fillText(tag, nameX + padX + dotR * 2 + dotGap, y - 6);
+        ctx.fillText(tag, markX + padX + dotR * 2 + dotGap, y - 6);
         ctx.textBaseline = 'alphabetic';
-        liveDotPad = pillW + 12;
+        markX += pillW + 12;
       }
 
       ctx.fillStyle = '#0f2f20';
@@ -601,7 +636,7 @@ export default function LeaderboardPage() {
       const translatedName = names[i] || project.name;
       // Truncate by measured width (not a fixed char count) so names fill the
       // column up to just before the right-aligned Pledged column (x=805).
-      const nameStartX = nameX + liveDotPad;
+      const nameStartX = markX;
       const nameMaxWidth = 690 - nameStartX;
       let name = translatedName;
       if (ctx.measureText(name).width > nameMaxWidth) {
@@ -620,9 +655,14 @@ export default function LeaderboardPage() {
     const noteY = tableY + tableHeight + 44;
     ctx.fillStyle = '#0f2f20';
     ctx.font = '700 24px Arial, sans-serif';
+    const noteScope = platform === 'global'
+      ? (isCnShare ? 'Kickstarter 与 Indiegogo' : 'Kickstarter & Indiegogo')
+      : platform === 'indiegogo'
+        ? 'Indiegogo'
+        : 'Kickstarter';
     const note = isCnShare
-      ? '注：金额已统一换算为美元，包含全球 Kickstarter 公开项目。'
-      : 'Note: Amounts normalized to USD for public Kickstarter projects.';
+      ? `注：金额已统一换算为美元，包含全球 ${noteScope} 公开项目。`
+      : `Note: Amounts normalized to USD for public ${noteScope} projects.`;
     ctx.fillText(note, 64, noteY);
     return canvas.toDataURL('image/png');
   };
@@ -636,14 +676,20 @@ export default function LeaderboardPage() {
     const isCnShare = langOverride === 'cn';
     const totalRows = projects.slice(0, count);
     const names = await translateTitles(totalRows, langOverride);
-    const kickstarterLogo = await loadCanvasImage('/Kickstarter-Logo3.svg');
+    // Logos for the header lockup are platform-aware: KS-only / IGG-only / both.
+    const needKs = platform === 'kickstarter' || platform === 'global';
+    const needIgg = platform === 'indiegogo' || platform === 'global';
+    const [kickstarterLogo, indiegogoLogo] = await Promise.all([
+      needKs ? loadCanvasImage('/Kickstarter-Logo3.svg') : Promise.resolve(null),
+      needIgg ? loadCanvasImage('/indiegogo-logo.svg') : Promise.resolve(null),
+    ]);
     const totalParts = Math.max(1, Math.ceil(totalRows.length / 20));
     const images: string[] = [];
     for (let part = 0; part < totalParts; part++) {
       const start = part * 20;
       const pageRows = totalRows.slice(start, start + 20);
       const pageNames = names.slice(start, start + 20);
-      images.push(renderSharePart(pageRows, pageNames, start + 1, part + 1, totalParts, isCnShare, kickstarterLogo));
+      images.push(renderSharePart(pageRows, pageNames, start + 1, part + 1, totalParts, isCnShare, kickstarterLogo, indiegogoLogo));
     }
     setShareImages(images);
     setShareGenerating(false);
@@ -669,9 +715,14 @@ export default function LeaderboardPage() {
   const shareCaption = () => {
     const cnShare = isZhLang(shareLang);
     const cat = categoryParent ? `${categoryParent}${categoryName ? ` · ${categoryName}` : ''} ` : '';
+    const scope = platform === 'global'
+      ? (cnShare ? '全球众筹' : 'Global')
+      : platform === 'indiegogo'
+        ? 'Indiegogo'
+        : 'Kickstarter';
     return cnShare
-      ? `Kicksonar ${activeYear} ${cat}Kickstarter TOP${shareCount} 榜单（金额已统一换算为美元）`
-      : `Kicksonar ${activeYear} ${cat}Kickstarter Top ${shareCount} — pledged normalized to USD.`;
+      ? `Kicksonar ${activeYear} ${cat}${scope} TOP${shareCount} 榜单（金额已统一换算为美元）`
+      : `Kicksonar ${activeYear} ${cat}${scope} Top ${shareCount} — pledged normalized to USD.`;
   };
 
   const dataUrlToFile = async (dataUrl: string, filename: string): Promise<File | null> => {
