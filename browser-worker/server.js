@@ -185,9 +185,9 @@ const USE_NEW_HEADLESS = !USE_HEADED && HEADLESS_MODE !== 'old';
 const CHROME_CHANNEL = (process.env.BROWSER_CHROME_CHANNEL || '').trim();
 
 const CHROMIUM_LAUNCH_ARGS = [
-  '--disable-blink-features=AutomationControlled',
-  '--disable-dev-shm-usage',
-  '--no-sandbox',
+      '--disable-blink-features=AutomationControlled',
+      '--disable-dev-shm-usage',
+      '--no-sandbox',
   // Avoid the GPU-disabled fingerprint when running headless.
   '--use-gl=swiftshader',
   '--enable-webgl',
@@ -1242,10 +1242,10 @@ async function waitForChallengeResolution(page, response, _label) {
     await page.waitForTimeout(500);
     const url = page.url();
     const onChallengeUrl = /__cf_chl_(?:rt_)?tk=/.test(url);
-    const stillBlocked = await page.evaluate(() => {
+  const stillBlocked = await page.evaluate(() => {
       const text = (document.body?.innerText || document.documentElement?.textContent || '').slice(0, 4000);
       return /cf_chl|just a moment|enable javascript and cookies|access denied|forbidden/i.test(text);
-    }).catch(() => true);
+  }).catch(() => true);
     if (!onChallengeUrl && !stillBlocked) {
       cleared = true;
       break;

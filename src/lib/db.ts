@@ -1270,6 +1270,28 @@ function getDB(): Database {
     );
     CREATE INDEX IF NOT EXISTS idx_otps_email ON email_otps(email);
 
+    CREATE TABLE IF NOT EXISTS api_keys (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      name TEXT,
+      key_hash TEXT UNIQUE NOT NULL,
+      prefix TEXT NOT NULL,
+      created_at INTEGER DEFAULT (unixepoch()),
+      last_used_at INTEGER,
+      revoked_at INTEGER,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys(user_id);
+    CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);
+
+    CREATE TABLE IF NOT EXISTS api_key_usage (
+      key_id INTEGER NOT NULL,
+      day TEXT NOT NULL,
+      count INTEGER DEFAULT 0,
+      PRIMARY KEY (key_id, day),
+      FOREIGN KEY (key_id) REFERENCES api_keys(id) ON DELETE CASCADE
+    );
+
     CREATE TABLE IF NOT EXISTS pending_registrations (
       email TEXT PRIMARY KEY,
       username TEXT NOT NULL,
@@ -2150,6 +2172,133 @@ export async function getCountryList(): Promise<{ country: string; country_name:
   return getDB().prepare(
     `SELECT DISTINCT country, country_name FROM projects WHERE country IS NOT NULL ORDER BY country`
   ).all() as { country: string; country_name: string }[];
+}
+
+// ── SEO: data-insight aggregates + sitemap helpers ───────────────────────────
+
+export interface SeoSegmentStats {
+  total: number;
+  successful: number;
+  failed: number;
+  success_rate: number;
+  avg_pledged: number;
+  total_pledged_m: number;
+  total_backers: number;
+}
+
+export interface SeoTopProject {
+  id: string;
+  name: string;
+  blurb: string | null;
+  state: string;
+  usd_pledged: number;
+  backers_count: number;
+  goal: number;
+  slug: string | null;
+  creator_name: string | null;
+  category_name: string | null;
+  country_name: string | null;
+  launched_at: number | null;
+}
+
+// Aggregate stats for a single parent category (ended campaigns only, matching
+// the convention used by getCategories). Returns null when the category has no
+// ended projects (so the page can 404).
+export function getCategoryDetailStats(categoryParent: string): SeoSegmentStats | null {
+  const row = getDB().prepare(`
+    SELECT
+      COUNT(*) as total,
+      SUM(CASE WHEN state='successful' THEN 1 ELSE 0 END) as successful,
+      SUM(CASE WHEN state='failed' THEN 1 ELSE 0 END) as failed,
+      ROUND(AVG(CASE WHEN state IN ('successful','failed')
+        THEN (CASE WHEN state='successful' THEN 1.0 ELSE 0.0 END) END)*100, 1) as success_rate,
+      ROUND(AVG(usd_pledged), 0) as avg_pledged,
+      ROUND(SUM(usd_pledged)/1000000.0, 2) as total_pledged_m,
+      SUM(backers_count) as total_backers
+    FROM projects
+    WHERE category_parent = @cat AND state IN ('successful','failed')
+  `).get({ cat: categoryParent }) as SeoSegmentStats | undefined;
+  if (!row || !row.total) return null;
+  return row;
+}
+
+export function getCountryDetailStats(country: string): SeoSegmentStats | null {
+  const row = getDB().prepare(`
+    SELECT
+      COUNT(*) as total,
+      SUM(CASE WHEN state='successful' THEN 1 ELSE 0 END) as successful,
+      SUM(CASE WHEN state='failed' THEN 1 ELSE 0 END) as failed,
+      ROUND(AVG(CASE WHEN state IN ('successful','failed')
+        THEN (CASE WHEN state='successful' THEN 1.0 ELSE 0.0 END) END)*100, 1) as success_rate,
+      ROUND(AVG(usd_pledged), 0) as avg_pledged,
+      ROUND(SUM(usd_pledged)/1000000.0, 2) as total_pledged_m,
+      SUM(backers_count) as total_backers
+    FROM projects
+    WHERE country = @country AND state IN ('successful','failed')
+  `).get({ country }) as SeoSegmentStats | undefined;
+  if (!row || !row.total) return null;
+  return row;
+}
+
+export function getTopProjectsByCategory(categoryParent: string, limit = 10): SeoTopProject[] {
+  return getDB().prepare(`
+    SELECT id, name, blurb, state, COALESCE(usd_pledged,0) as usd_pledged,
+           COALESCE(backers_count,0) as backers_count, COALESCE(goal,0) as goal,
+           slug, creator_name, category_name, country_name, launched_at
+    FROM projects
+    WHERE category_parent = @cat AND COALESCE(usd_pledged,0) > 0
+    ORDER BY usd_pledged DESC
+    LIMIT @limit
+  `).all({ cat: categoryParent, limit }) as SeoTopProject[];
+}
+
+export function getTopProjectsByCountry(country: string, limit = 10): SeoTopProject[] {
+  return getDB().prepare(`
+    SELECT id, name, blurb, state, COALESCE(usd_pledged,0) as usd_pledged,
+           COALESCE(backers_count,0) as backers_count, COALESCE(goal,0) as goal,
+           slug, creator_name, category_name, country_name, launched_at
+    FROM projects
+    WHERE country = @country AND COALESCE(usd_pledged,0) > 0
+    ORDER BY usd_pledged DESC
+    LIMIT @limit
+  `).all({ country, limit }) as SeoTopProject[];
+}
+
+// SQL fragment mirroring isProjectIndexable() in src/lib/seo.ts. Keep both in sync.
+const SEO_INDEXABLE_WHERE = `(
+  state IN ('live','successful')
+  OR staff_pick = 1
+  OR (COALESCE(usd_pledged, 0) >= 1000 AND COALESCE(backers_count, 0) >= 10)
+)`;
+
+export function getIndexableProjectCount(): number {
+  const row = getDB().prepare(
+    `SELECT COUNT(*) as c FROM projects WHERE ${SEO_INDEXABLE_WHERE}`
+  ).get() as { c: number };
+  return row.c;
+}
+
+export interface SitemapProjectRow {
+  id: string;
+  lastmod: number | null;
+}
+
+// Stable id-ordered page of indexable project ids for sitemap chunking.
+export function getIndexableProjectsPage(limit: number, offset: number): SitemapProjectRow[] {
+  return getDB().prepare(`
+    SELECT id, COALESCE(deadline, launched_at, created_at) as lastmod
+    FROM projects
+    WHERE ${SEO_INDEXABLE_WHERE}
+    ORDER BY id
+    LIMIT @limit OFFSET @offset
+  `).all({ limit, offset }) as SitemapProjectRow[];
+}
+
+export function getMaxProjectTimestamp(): number | null {
+  const row = getDB().prepare(
+    `SELECT MAX(COALESCE(last_seen_at, deadline, launched_at, created_at)) as ts FROM projects`
+  ).get() as { ts: number | null };
+  return row?.ts ?? null;
 }
 
 // Returns the DB instance for use in sync

@@ -21,6 +21,8 @@ import {
   Megaphone,
   LogOut,
   User,
+  KeyRound,
+  BookOpen,
 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { useLanguage } from '@/hooks/useLanguage';
@@ -166,6 +168,32 @@ export default function Sidebar({
             <Info className="w-3.5 h-3.5 shrink-0" />
             {tr.about}
           </Link>
+          <Link
+            href="/mcp"
+            onClick={onNavigate}
+            className={`flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-medium transition-all ${
+              pathname === '/mcp'
+                ? 'bg-ks-green text-white'
+                : 'text-white/40 hover:bg-white/8 hover:text-white/70'
+            }`}
+          >
+            <BookOpen className="w-3.5 h-3.5 shrink-0" />
+            {tr.mcpDocs}
+          </Link>
+          {user && (
+            <Link
+              href="/settings"
+              onClick={onNavigate}
+              className={`flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-medium transition-all ${
+                pathname === '/settings'
+                  ? 'bg-ks-green text-white'
+                  : 'text-white/40 hover:bg-white/8 hover:text-white/70'
+              }`}
+            >
+              <KeyRound className="w-3.5 h-3.5 shrink-0" />
+              {tr.apiAccess}
+            </Link>
+          )}
           {/*
           <a
             href="https://github.com/nikoedwards/ks"

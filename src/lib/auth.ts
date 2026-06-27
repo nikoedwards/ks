@@ -39,6 +39,26 @@ function ensureAuthMigrations(db: BetterSqlite3.Database) {
       expires_at INTEGER NOT NULL,
       created_at INTEGER DEFAULT (unixepoch())
     );
+    CREATE TABLE IF NOT EXISTS api_keys (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      name TEXT,
+      key_hash TEXT UNIQUE NOT NULL,
+      prefix TEXT NOT NULL,
+      created_at INTEGER DEFAULT (unixepoch()),
+      last_used_at INTEGER,
+      revoked_at INTEGER,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys(user_id);
+    CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);
+    CREATE TABLE IF NOT EXISTS api_key_usage (
+      key_id INTEGER NOT NULL,
+      day TEXT NOT NULL,
+      count INTEGER DEFAULT 0,
+      PRIMARY KEY (key_id, day),
+      FOREIGN KEY (key_id) REFERENCES api_keys(id) ON DELETE CASCADE
+    );
   `);
   const adminEmail = process.env.ADMIN_EMAIL?.trim().toLowerCase();
   if (adminEmail) {
@@ -215,6 +235,105 @@ export function getSessionUser(token: string): AuthUser | null {
 
 export function deleteSession(token: string): void {
   getDB().prepare(`DELETE FROM sessions WHERE token = ?`).run(token);
+}
+
+// ── API keys ───────────────────────────────────────────────────────────────────
+//
+// Personal access tokens that let a registered user's own tooling (MCP server,
+// scripts) authenticate to the data APIs without a browser cookie. The raw key
+// is shown to the user exactly once at creation time; only its sha256 hash is
+// stored. Lookups hash the presented key and match against the stored hash.
+
+const API_KEY_PREFIX = 'ks_';
+
+export interface ApiKeyInfo {
+  id: number;
+  name: string | null;
+  prefix: string;
+  created_at: number;
+  last_used_at: number | null;
+  revoked_at: number | null;
+}
+
+function hashApiKey(raw: string): string {
+  return createHash('sha256').update('ks-apikey:' + raw).digest('hex');
+}
+
+/** Create a new API key for a user. Returns the one-time plaintext key. */
+export function createApiKey(userId: number, name?: string): { id: number; key: string; info: ApiKeyInfo } {
+  const db = getDB();
+  const raw = API_KEY_PREFIX + randomBytes(24).toString('hex');
+  const prefix = raw.slice(0, 11); // "ks_" + first 8 hex chars, safe to display
+  const hash = hashApiKey(raw);
+  const result = db.prepare(
+    `INSERT INTO api_keys (user_id, name, key_hash, prefix) VALUES (?, ?, ?, ?)`
+  ).run(userId, name?.trim() || null, hash, prefix);
+  const id = Number(result.lastInsertRowid);
+  const info = db.prepare(
+    `SELECT id, name, prefix, created_at, last_used_at, revoked_at FROM api_keys WHERE id = ?`
+  ).get(id) as ApiKeyInfo;
+  return { id, key: raw, info };
+}
+
+/** Resolve an authenticated user from a raw API key, or null if invalid/revoked. */
+export function getUserByApiKey(rawKey: string): AuthUser | null {
+  if (!rawKey || !rawKey.startsWith(API_KEY_PREFIX)) return null;
+  const db = getDB();
+  const hash = hashApiKey(rawKey.trim());
+  const row = db.prepare(
+    `SELECT k.id AS key_id, u.id, u.username, u.email, u.role
+     FROM api_keys k JOIN users u ON u.id = k.user_id
+     WHERE k.key_hash = ? AND k.revoked_at IS NULL`
+  ).get(hash) as ({ key_id: number; id: number; username: string; email: string | null; role: UserRole }) | undefined;
+  if (!row) return null;
+  try { db.prepare(`UPDATE api_keys SET last_used_at = ? WHERE id = ?`).run(Math.floor(Date.now() / 1000), row.key_id); } catch { /* best-effort */ }
+  return { id: row.id, username: row.username, email: row.email, role: row.role ?? 'user' };
+}
+
+/** Resolve the api_keys.id for a raw key (for usage accounting). */
+export function getApiKeyId(rawKey: string): number | null {
+  if (!rawKey || !rawKey.startsWith(API_KEY_PREFIX)) return null;
+  const row = getDB().prepare(
+    `SELECT id FROM api_keys WHERE key_hash = ? AND revoked_at IS NULL`
+  ).get(hashApiKey(rawKey.trim())) as { id: number } | undefined;
+  return row?.id ?? null;
+}
+
+export function listApiKeys(userId: number): ApiKeyInfo[] {
+  return getDB().prepare(
+    `SELECT id, name, prefix, created_at, last_used_at, revoked_at
+     FROM api_keys WHERE user_id = ? ORDER BY created_at DESC`
+  ).all(userId) as ApiKeyInfo[];
+}
+
+/** Revoke a key the user owns. Returns true if a row was affected. */
+export function revokeApiKey(userId: number, keyId: number): boolean {
+  const res = getDB().prepare(
+    `UPDATE api_keys SET revoked_at = ? WHERE id = ? AND user_id = ? AND revoked_at IS NULL`
+  ).run(Math.floor(Date.now() / 1000), keyId, userId);
+  return res.changes > 0;
+}
+
+function todayKey(): string {
+  return new Date().toISOString().slice(0, 10); // YYYY-MM-DD (UTC)
+}
+
+/** Increment today's usage counter for a key by `n` (default 1). */
+export function bumpApiKeyUsage(keyId: number, n = 1): void {
+  try {
+    getDB().prepare(
+      `INSERT INTO api_key_usage (key_id, day, count) VALUES (?, ?, ?)
+       ON CONFLICT(key_id, day) DO UPDATE SET count = count + excluded.count`
+    ).run(keyId, todayKey(), n);
+  } catch { /* best-effort accounting */ }
+}
+
+/** Total usage for a key on the current (UTC) day. */
+export function getApiKeyUsageToday(keyId: number): number {
+  const row = getDB().prepare(
+    `SELECT count FROM api_key_usage WHERE key_id = ? AND day = ?`
+  ).get(keyId, todayKey()) as { count: number } | undefined;
+  return row?.count ?? 0;
 }
 
 // ── Favorites ──────────────────────────────────────────────────────────────────

@@ -1,0 +1,25 @@
+{
+  "name": "ks-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "MCP server exposing Kicksonar crowdfunding analytics to your own LLM via a personal API key.",
+  "type": "module",
+  "bin": {
+    "ks-mcp": "index.js"
+  },
+  "main": "index.js",
+  "files": [
+    "index.js",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "zod": "^3.23.8"
+  }
+}

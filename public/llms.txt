@@ -25,6 +25,20 @@ Kicksonar is a Kickstarter analytics platform for crowdfunding research, campaig
 - AI prediction: https://kicksonar.com/predict
 - About: https://kicksonar.com/about
 
+## Data-insight pages (per category & country)
+
+Kicksonar publishes statistics pages with success rates, total raised, average
+pledge, backer counts, and top campaigns for each category and country:
+
+- Category stats: https://kicksonar.com/categories/{category-slug}
+  (examples: /categories/technology, /categories/games, /categories/design,
+  /categories/tabletop-games, /categories/film-and-video)
+- Country stats: https://kicksonar.com/countries/{country-code}
+  (examples: /countries/us, /countries/gb, /countries/ca, /countries/de)
+
+Each page carries Schema.org Dataset structured data and a self-contained
+summary paragraph suitable for direct citation.
+
 ## What Kicksonar helps answer
 
 - Which Kickstarter categories have stronger historical success rates?

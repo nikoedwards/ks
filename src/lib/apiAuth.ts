@@ -11,10 +11,32 @@
 // are env-tunable.
 
 import { NextRequest, NextResponse } from 'next/server';
-import { getSessionUser, SESSION_COOKIE, type AuthUser } from './auth';
+import {
+  getSessionUser,
+  getUserByApiKey,
+  getApiKeyId,
+  getApiKeyUsageToday,
+  bumpApiKeyUsage,
+  SESSION_COOKIE,
+  type AuthUser,
+} from './auth';
 import { recordAnalyticsEvent } from './db';
 
+/** Extract a raw `ks_…` token from an `Authorization: Bearer` header, if present. */
+function bearerToken(req: NextRequest): string | null {
+  const header = req.headers.get('authorization');
+  if (header && header.startsWith('Bearer ')) {
+    const raw = header.slice(7).trim();
+    return raw || null;
+  }
+  return null;
+}
+
 export function getRequestUser(req: NextRequest): AuthUser | null {
+  // Programmatic clients (MCP server, scripts) authenticate with a personal API
+  // key; browsers fall back to the session cookie.
+  const raw = bearerToken(req);
+  if (raw) return getUserByApiKey(raw);
   const token = req.cookies.get(SESSION_COOKIE)?.value ?? '';
   return getSessionUser(token);
 }
@@ -39,6 +61,11 @@ const LIMITS = {
   guestPerMin: Number(process.env.RATE_GUEST_PER_MIN ?? 60),
   guestPerHour: Number(process.env.RATE_GUEST_PER_HOUR ?? 700),
 };
+
+// Per-API-key daily request cap. Each request returns at most ~100 rows, so this
+// bounds how much of the dataset a single key can pull per day via the MCP
+// server / scripts, on top of the per-minute/hour rate limits above.
+const API_KEY_DAILY_CAP = Number(process.env.API_KEY_DAILY_CAP ?? 2000);
 
 // key -> ascending list of request timestamps (ms), trimmed to the last hour.
 const hits = new Map<string, number[]>();
@@ -109,6 +136,30 @@ export function guardApi(
     );
     res.headers.set('Retry-After', String(decision.retryAfter));
     return { user, isGuest: !user, limited: res };
+  }
+
+  // Per-key daily quota: only applies to requests authenticated with an API key.
+  const raw = bearerToken(req);
+  if (user && raw) {
+    const keyId = getApiKeyId(raw);
+    if (keyId) {
+      if (getApiKeyUsageToday(keyId) >= API_KEY_DAILY_CAP) {
+        recordAnalyticsEvent({
+          event_type: 'api_key_quota_exceeded',
+          path: req.nextUrl.pathname,
+          user_id: user.id,
+          ip,
+          metadata: { keyId },
+        });
+        const res = NextResponse.json(
+          { error: 'Daily API key quota exceeded. Try again tomorrow (UTC).' },
+          { status: 429 },
+        );
+        res.headers.set('Retry-After', '3600');
+        return { user, isGuest: false, limited: res };
+      }
+      bumpApiKeyUsage(keyId);
+    }
   }
 
   return { user, isGuest: !user, limited: null };

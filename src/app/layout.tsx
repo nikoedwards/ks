@@ -1,13 +1,24 @@
 import type { Metadata } from 'next';
 import Script from 'next/script';
+import { SITE_URL, SITE_NAME, SITE_DESCRIPTION } from '@/lib/seo';
 import './globals.css';
 
 const GA_MEASUREMENT_ID = 'G-J06YFPTGV9';
 
 export const metadata: Metadata = {
+  metadataBase: new URL(SITE_URL),
   title: 'Kicksonar — Track What Funds. Launch What Works.',
-  description: 'Explore 200,000+ Kickstarter campaigns. Uncover funding patterns, benchmark your idea, and back the projects that matter.',
+  description: SITE_DESCRIPTION,
   icons: { icon: '/favicon.svg' },
+  openGraph: {
+    type: 'website',
+    url: SITE_URL,
+    siteName: SITE_NAME,
+    locale: 'en_US',
+  },
+  twitter: {
+    card: 'summary_large_image',
+  },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

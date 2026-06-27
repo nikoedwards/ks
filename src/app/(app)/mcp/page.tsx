@@ -1,5 +1,5 @@
-﻿import type { Metadata } from 'next';
-import AboutClient from './AboutClient';
+import type { Metadata } from 'next';
+import McpDocsClient from './McpDocsClient';
 import JsonLd from '@/components/JsonLd';
 import {
   WEBSITE_ID,
@@ -9,19 +9,20 @@ import {
   breadcrumbLd,
 } from '@/lib/seo';
 
-const TITLE = 'About Kicksonar — Kickstarter Analytics Platform | Kicksonar';
+const TITLE = 'API / MCP Access — Connect Kicksonar to Your Own LLM | Kicksonar';
 const DESCRIPTION =
-  'Kicksonar is a Kickstarter analytics platform for crowdfunding research, campaign benchmarking, and launch planning, built on 200,000+ public campaigns.';
-const PATH = '/about';
+  'Use a personal API key and the Kicksonar MCP server to connect 200,000+ crowdfunding campaigns to your own LLM (Claude, Cursor, ChatGPT) for custom analysis.';
+const PATH = '/mcp';
 
 export const metadata: Metadata = pageMetadata({ title: TITLE, description: DESCRIPTION, path: PATH });
 
-const aboutLd = {
+const articleLd = {
   '@context': 'https://schema.org',
-  '@type': 'AboutPage',
+  '@type': 'TechArticle',
   '@id': `${absoluteUrl(PATH)}#webpage`,
   url: absoluteUrl(PATH),
   name: TITLE,
+  headline: TITLE,
   description: DESCRIPTION,
   isPartOf: { '@id': WEBSITE_ID },
   about: { '@id': ORG_ID },
@@ -32,14 +33,14 @@ export default function Page() {
     <>
       <JsonLd
         data={[
-          aboutLd,
+          articleLd,
           breadcrumbLd([
             { name: 'Home', path: '/' },
-            { name: 'About', path: PATH },
+            { name: 'API / MCP Access', path: PATH },
           ]),
         ]}
       />
-      <AboutClient />
+      <McpDocsClient />
     </>
   );
 }

@@ -12,7 +12,7 @@ export function GET() {
     'Disallow: /data-quality',
     'Disallow: /favorites',
     '',
-    `Sitemap: ${SITE_URL}/sitemap.xml`,
+    `Sitemap: ${SITE_URL}/sitemap_index.xml`,
     `Host: ${SITE_URL}`,
     `# IndexNow: ${SITE_URL}/${INDEXNOW_KEY}.txt`,
     '',
