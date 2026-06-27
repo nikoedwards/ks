@@ -1,9 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getTrends } from '@/lib/db';
 import { guardApi } from '@/lib/apiAuth';
+import { getIndiegogoAnalysisTrends, type AnalysisTrendRow } from '@/lib/platformProjects';
+import { mergeTrends } from '@/lib/analysisMerge';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+
+function parsePlatform(value: string | null) {
+  if (value === 'global' || value === 'indiegogo') return value;
+  return 'kickstarter';
+}
 
 export async function GET(req: NextRequest) {
   try {
@@ -13,6 +20,16 @@ export async function GET(req: NextRequest) {
     const sp = req.nextUrl.searchParams;
     const dateFrom = sp.get('dateFrom') ? Number(sp.get('dateFrom')) : undefined;
     const dateTo   = sp.get('dateTo')   ? Number(sp.get('dateTo'))   : undefined;
+    const platform = parsePlatform(sp.get('platform'));
+
+    if (platform === 'indiegogo') {
+      return NextResponse.json({ data: getIndiegogoAnalysisTrends({ dateFrom, dateTo }) });
+    }
+    if (platform === 'global') {
+      const ks = await getTrends({ dateFrom, dateTo }) as AnalysisTrendRow[];
+      const igg = getIndiegogoAnalysisTrends({ dateFrom, dateTo });
+      return NextResponse.json({ data: mergeTrends(ks, igg) });
+    }
     const data = await getTrends({ dateFrom, dateTo });
     return NextResponse.json({ data });
   } catch (err) {

@@ -471,6 +471,132 @@ export function getIndiegogoLiveIntel(limit = 12, filter: PlatformProjectFilter 
   }
 }
 
+// ── Analysis aggregations (mirror the Kickstarter /api/stats|categories|trends|countries shapes) ──
+
+interface AnalysisDateFilter { dateFrom?: number; dateTo?: number }
+
+function analysisWhere(filter: AnalysisDateFilter, extra: string[] = []): { where: string; params: Record<string, unknown> } {
+  const clauses = ['platform_id = @platform', ...extra];
+  const params: Record<string, unknown> = { platform: IGG_PLATFORM };
+  if (filter.dateFrom) { clauses.push('launched_at >= @dateFrom'); params.dateFrom = filter.dateFrom; }
+  if (filter.dateTo) { clauses.push('launched_at <= @dateTo'); params.dateTo = filter.dateTo; }
+  return { where: `WHERE ${clauses.join(' AND ')}`, params };
+}
+
+export interface AnalysisStatsBundle {
+  stats: { total: number; successful: number; failed: number; live: number; canceled: number; success_rate: number; total_pledged_usd: number; avg_backers: number; avg_goal: number; category_count: number };
+  stateDistribution: Array<{ state: string; count: number }>;
+}
+
+export function getIndiegogoAnalysisStats(filter: AnalysisDateFilter = {}): AnalysisStatsBundle {
+  const db = openIndiegogoReadonly();
+  const zero: AnalysisStatsBundle = { stats: { total: 0, successful: 0, failed: 0, live: 0, canceled: 0, success_rate: 0, total_pledged_usd: 0, avg_backers: 0, avg_goal: 0, category_count: 0 }, stateDistribution: [] };
+  if (!db) return zero;
+  try {
+    const { where, params } = analysisWhere(filter);
+    const stats = db.prepare(`
+      SELECT COUNT(*) AS total,
+        SUM(state='successful') AS successful,
+        SUM(state='failed') AS failed,
+        SUM(state='live') AS live,
+        SUM(state='canceled') AS canceled,
+        ROUND(AVG(CASE WHEN state IN ('successful','failed') THEN (CASE WHEN state='successful' THEN 1.0 ELSE 0.0 END) END)*100, 1) AS success_rate,
+        ROUND(SUM(pledged_usd)/1000000.0, 2) AS total_pledged_usd,
+        ROUND(AVG(backers_count), 1) AS avg_backers,
+        ROUND(AVG(goal_amount), 0) AS avg_goal,
+        COUNT(DISTINCT category) AS category_count
+      FROM platform_projects ${where}
+    `).get(params) as AnalysisStatsBundle['stats'];
+    const stateDistribution = db.prepare(
+      `SELECT lower(COALESCE(state, '')) AS state, COUNT(*) AS count FROM platform_projects ${where} GROUP BY 1 ORDER BY count DESC`
+    ).all(params) as Array<{ state: string; count: number }>;
+    return {
+      stats: {
+        total: Number(stats.total ?? 0), successful: Number(stats.successful ?? 0), failed: Number(stats.failed ?? 0),
+        live: Number(stats.live ?? 0), canceled: Number(stats.canceled ?? 0), success_rate: Number(stats.success_rate ?? 0),
+        total_pledged_usd: Number(stats.total_pledged_usd ?? 0), avg_backers: Number(stats.avg_backers ?? 0),
+        avg_goal: Number(stats.avg_goal ?? 0), category_count: Number(stats.category_count ?? 0),
+      },
+      stateDistribution,
+    };
+  } finally {
+    db.close();
+  }
+}
+
+export interface AnalysisCategoryRow {
+  category: string; total: number; successful: number; failed: number;
+  success_rate: number; total_pledged_m: number; avg_pledged: number; total_backers: number;
+}
+
+export function getIndiegogoAnalysisCategories(filter: AnalysisDateFilter = {}): AnalysisCategoryRow[] {
+  const db = openIndiegogoReadonly();
+  if (!db) return [];
+  try {
+    const { where, params } = analysisWhere(filter, ["category IS NOT NULL", "state IN ('successful','failed')"]);
+    return db.prepare(`
+      SELECT category,
+        COUNT(*) AS total,
+        SUM(state='successful') AS successful,
+        SUM(state='failed') AS failed,
+        ROUND(AVG(CASE WHEN state IN ('successful','failed') THEN (CASE WHEN state='successful' THEN 1.0 ELSE 0.0 END) END)*100, 1) AS success_rate,
+        ROUND(SUM(pledged_usd)/1000000.0, 2) AS total_pledged_m,
+        ROUND(AVG(pledged_usd), 0) AS avg_pledged,
+        SUM(backers_count) AS total_backers
+      FROM platform_projects ${where}
+      GROUP BY category ORDER BY total DESC LIMIT 25
+    `).all(params) as AnalysisCategoryRow[];
+  } finally {
+    db.close();
+  }
+}
+
+export interface AnalysisTrendRow { month: string; total: number; successful: number; success_rate: number; total_pledged_m: number }
+
+export function getIndiegogoAnalysisTrends(filter: AnalysisDateFilter = {}): AnalysisTrendRow[] {
+  const db = openIndiegogoReadonly();
+  if (!db) return [];
+  try {
+    const { where, params } = analysisWhere(filter, ['launched_at IS NOT NULL', "state IN ('successful','failed')"]);
+    return db.prepare(`
+      SELECT strftime('%Y-%m', datetime(launched_at, 'unixepoch')) AS month,
+        COUNT(*) AS total,
+        SUM(state='successful') AS successful,
+        ROUND(AVG(CASE WHEN state IN ('successful','failed') THEN (CASE WHEN state='successful' THEN 1.0 ELSE 0.0 END) END)*100, 1) AS success_rate,
+        ROUND(SUM(pledged_usd)/1000000.0, 2) AS total_pledged_m
+      FROM platform_projects ${where}
+      GROUP BY month ORDER BY month ASC
+    `).all(params) as AnalysisTrendRow[];
+  } finally {
+    db.close();
+  }
+}
+
+export interface AnalysisCountryRow {
+  country: string; country_name: string; total: number; successful: number;
+  success_rate: number; total_pledged_m: number; total_backers: number;
+}
+
+export function getIndiegogoAnalysisCountries(filter: AnalysisDateFilter = {}): AnalysisCountryRow[] {
+  const db = openIndiegogoReadonly();
+  if (!db) return [];
+  try {
+    const { where, params } = analysisWhere(filter, ['country IS NOT NULL', "state IN ('successful','failed')"]);
+    return db.prepare(`
+      SELECT country, country AS country_name,
+        COUNT(*) AS total,
+        SUM(state='successful') AS successful,
+        ROUND(AVG(CASE WHEN state IN ('successful','failed') THEN (CASE WHEN state='successful' THEN 1.0 ELSE 0.0 END) END)*100, 1) AS success_rate,
+        ROUND(SUM(pledged_usd)/1000000.0, 2) AS total_pledged_m,
+        SUM(backers_count) AS total_backers
+      FROM platform_projects ${where}
+      GROUP BY country ORDER BY total DESC LIMIT 20
+    `).all(params) as AnalysisCountryRow[];
+  } finally {
+    db.close();
+  }
+}
+
 // Distinct raw IGG categories with counts (for the single-platform IGG filter).
 export function getIndiegogoRawCategories(): Array<{ category: string; count: number }> {
   const db = openIndiegogoReadonly();

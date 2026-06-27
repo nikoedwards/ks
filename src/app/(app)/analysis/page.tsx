@@ -9,6 +9,7 @@ import EmptyState from '@/components/EmptyState';
 import DataSource from '@/components/DataSource';
 import { useLanguage } from '@/hooks/useLanguage';
 import { t, uiCopy } from '@/lib/i18n';
+import PlatformPicker, { type PlatformView } from '@/components/PlatformPicker';
 import { useAuth } from '@/contexts/AuthContext';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -88,10 +89,11 @@ function yearRange(y: string): { dateFrom: number; dateTo: number } {
   return { dateFrom, dateTo };
 }
 
-function buildQuery(dateFrom?: number, dateTo?: number): string {
+function buildQuery(dateFrom?: number, dateTo?: number, platform?: string): string {
   const params = new URLSearchParams();
   if (dateFrom) params.set('dateFrom', String(dateFrom));
   if (dateTo)   params.set('dateTo',   String(dateTo));
+  if (platform) params.set('platform', platform);
   const qs = params.toString();
   return qs ? `?${qs}` : '';
 }
@@ -115,6 +117,7 @@ export default function AnalysisPage() {
   const gate = (fn: () => void) => { if (user) { fn(); return; } showLogin(fn); };
 
   const [tab, setTab] = useState<Tab>('overview');
+  const [platform, setPlatform] = useState<PlatformView>('kickstarter');
   const [period, setPeriod] = useState<Period>('all');
   const [customFrom, setCustomFrom] = useState('');
   const [customTo, setCustomTo]   = useState('');
@@ -147,7 +150,7 @@ export default function AnalysisPage() {
 
   const fetchAll = useCallback(() => {
     const { dateFrom, dateTo } = tab === 'time' ? {} : getDateRange();
-    const qs = buildQuery(dateFrom, dateTo);
+    const qs = buildQuery(dateFrom, dateTo, platform);
     setLoading(true);
     setEmpty(false);
 
@@ -173,7 +176,7 @@ export default function AnalysisPage() {
       if (!stats?.stats && !catData.length && !trendData.length && !counData.length) setEmpty(true);
       setLoading(false);
     }).catch(() => setLoading(false));
-  }, [getDateRange, tab, timeCategory, timeCountry]);
+  }, [getDateRange, tab, platform, timeCategory, timeCountry]);
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
 
@@ -240,6 +243,15 @@ export default function AnalysisPage() {
     </div>
   );
 
+  const changePlatform = (next: PlatformView) => gate(() => { if (next !== platform) setPlatform(next); });
+
+  const platformBar = (
+    <div className="flex flex-wrap items-center gap-2">
+      <span className="text-xs font-semibold uppercase tracking-wide text-gray-400">{lang === 'cn' || lang === 'zh-tw' ? '平台' : 'Platform'}</span>
+      <PlatformPicker value={platform} onChange={changePlatform} cn={lang === 'cn' || lang === 'zh-tw'} />
+    </div>
+  );
+
   // ── Tab bar ─────────────────────────────────────────────────────────────────
 
   const tabs: { key: Tab; label: string }[] = [
@@ -272,6 +284,7 @@ export default function AnalysisPage() {
 
   if (loading) return (
     <div className="max-w-7xl mx-auto space-y-5">
+      {platformBar}
       {periodBar}
       <div className="flex items-center justify-center h-48 text-gray-400">
         {uiCopy[lang].common.loading}
@@ -281,6 +294,7 @@ export default function AnalysisPage() {
 
   if (empty) return (
     <div className="max-w-7xl mx-auto space-y-5">
+      {platformBar}
       {periodBar}
       <EmptyState />
     </div>
@@ -752,8 +766,18 @@ export default function AnalysisPage() {
     </div>
   );
 
+  const cn = lang === 'cn' || lang === 'zh-tw';
+  const timeNote = (
+    <div className="rounded-lg border border-amber-100 bg-amber-50 px-4 py-6 text-center text-sm text-amber-800">
+      {cn
+        ? '时间分析（按发起年月的成败队列）目前仅支持 Kickstarter。请切换到 Kickstarter 查看。'
+        : 'Time analysis (launch-cohort success curves) is currently Kickstarter-only. Switch to Kickstarter to view it.'}
+    </div>
+  );
+
   return (
     <div className="max-w-7xl mx-auto space-y-5">
+      {platformBar}
       {periodBar}
 
       <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
@@ -763,7 +787,7 @@ export default function AnalysisPage() {
           {tab === 'categories' && categoryContent}
           {tab === 'trends'     && trendsContent}
           {tab === 'countries'  && countriesContent}
-          {tab === 'time'       && timeContent}
+          {tab === 'time'       && (platform === 'kickstarter' ? timeContent : timeNote)}
         </div>
       </div>
 
