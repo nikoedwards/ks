@@ -1,0 +1,17 @@
+feat(seo): deepen category/country pages, add ItemList/FAQ schema + OG images
+
+Acts on the SEO/GEO baseline audit findings (thin programmatic content was the
+top issue):
+- Category & country data pages: second summary paragraph, two question-based
+  H2 sections (funding difficulty vs site-wide average, realistic goal from
+  median/avg of successful campaigns), and a data-driven FAQ section. Roughly
+  doubles on-page word count with fact-first, AI-citable copy.
+- seo.ts: add itemListLd() (top-campaign lists) and faqLd() (FAQPage);
+  formatUsdCompact now supports billions ($1.4B).
+- db.ts: add getCategoryFundingStats/getCountryFundingStats (USD median/avg of
+  successful campaigns) and getOverallSuccessRate for comparisons.
+- Add dedicated opengraph-image routes for category & country pages (were
+  missing OG images).
+- Homepage H1 -> "Kickstarter Analytics, Decoded" (keyword-richer).
+- llms.txt advertises the new ItemList/FAQPage + Q&A insights.
+- ORG_SAME_AS left as a documented placeholder pending real owned profiles.

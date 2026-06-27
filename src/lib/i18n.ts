@@ -823,7 +823,7 @@ const baseT = {
       remove: 'Remove',
     },
     landing: {
-      tagline: 'Kickstarter Data, Decoded',
+      tagline: 'Kickstarter Analytics, Decoded',
       subtitle: 'Discover patterns and opportunities hidden in 200,000+ Kickstarter campaign records',
       cta: 'Go to Dashboard',
       learnMore: 'Learn More',

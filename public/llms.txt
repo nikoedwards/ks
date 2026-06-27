@@ -36,8 +36,10 @@ pledge, backer counts, and top campaigns for each category and country:
 - Country stats: https://kicksonar.com/countries/{country-code}
   (examples: /countries/us, /countries/gb, /countries/ca, /countries/de)
 
-Each page carries Schema.org Dataset structured data and a self-contained
-summary paragraph suitable for direct citation.
+Each page carries Schema.org Dataset, ItemList, and FAQPage structured data
+plus self-contained, fact-rich summary paragraphs and a question-and-answer
+section (success rate, realistic funding goal, total raised, backer counts)
+written for direct citation by AI search engines.
 
 ## What Kicksonar helps answer
 

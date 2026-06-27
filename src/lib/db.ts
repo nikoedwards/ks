@@ -2240,6 +2240,57 @@ export function getCountryDetailStats(country: string): SeoSegmentStats | null {
   return row;
 }
 
+// Funding distribution (USD) for successful campaigns in a segment. Used to
+// answer "what's a realistic goal" on data-insight pages. Uses usd_pledged
+// (not goal) to stay currency-consistent across a mixed-currency corpus.
+export interface SeoFundingStats {
+  median_pledged_successful: number;
+  avg_pledged_successful: number;
+  successful_with_pledge: number;
+}
+
+function fundingStatsWhere(where: string, param: Record<string, unknown>): SeoFundingStats | null {
+  const db = getDB();
+  const base = db.prepare(`
+    SELECT ROUND(AVG(usd_pledged), 0) as avg_pledged_successful, COUNT(*) as n
+    FROM projects
+    WHERE ${where} AND state = 'successful' AND COALESCE(usd_pledged, 0) > 0
+  `).get(param) as { avg_pledged_successful: number; n: number } | undefined;
+  if (!base || !base.n) return null;
+  const off = Math.floor((base.n - 1) / 2);
+  const med = db.prepare(`
+    SELECT usd_pledged FROM projects
+    WHERE ${where} AND state = 'successful' AND COALESCE(usd_pledged, 0) > 0
+    ORDER BY usd_pledged
+    LIMIT 1 OFFSET @off
+  `).get({ ...param, off }) as { usd_pledged: number } | undefined;
+  return {
+    avg_pledged_successful: base.avg_pledged_successful || 0,
+    median_pledged_successful: med ? med.usd_pledged : 0,
+    successful_with_pledge: base.n,
+  };
+}
+
+export function getCategoryFundingStats(categoryParent: string): SeoFundingStats | null {
+  return fundingStatsWhere('category_parent = @cat', { cat: categoryParent });
+}
+
+export function getCountryFundingStats(country: string): SeoFundingStats | null {
+  return fundingStatsWhere('country = @country', { country });
+}
+
+// Site-wide success rate, for "harder/easier than average" comparisons.
+let _overallSuccessRate: number | null = null;
+export function getOverallSuccessRate(): number {
+  if (_overallSuccessRate !== null) return _overallSuccessRate;
+  const row = getDB().prepare(
+    `SELECT ROUND(AVG(CASE WHEN state='successful' THEN 1.0 ELSE 0.0 END) * 100, 1) as r
+     FROM projects WHERE state IN ('successful','failed')`
+  ).get() as { r: number } | undefined;
+  _overallSuccessRate = row?.r ?? 0;
+  return _overallSuccessRate;
+}
+
 export function getTopProjectsByCategory(categoryParent: string, limit = 10): SeoTopProject[] {
   return getDB().prepare(`
     SELECT id, name, blurb, state, COALESCE(usd_pledged,0) as usd_pledged,

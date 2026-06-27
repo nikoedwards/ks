@@ -5,9 +5,12 @@ import { notFound } from 'next/navigation';
 import {
   getCategoryList,
   getCategoryDetailStats,
+  getCategoryFundingStats,
+  getOverallSuccessRate,
   getTopProjectsByCategory,
   getMaxProjectTimestamp,
   type SeoSegmentStats,
+  type SeoFundingStats,
   type SeoTopProject,
 } from '@/lib/db';
 import JsonLd from '@/components/JsonLd';
@@ -17,8 +20,11 @@ import {
   pageMetadata,
   breadcrumbLd,
   datasetLd,
+  itemListLd,
+  faqLd,
   formatUsdCompact,
   formatInt,
+  type FaqItem,
 } from '@/lib/seo';
 
 export const dynamic = 'force-dynamic';
@@ -26,6 +32,8 @@ export const dynamic = 'force-dynamic';
 interface Loaded {
   category: string;
   stats: SeoSegmentStats;
+  funding: SeoFundingStats | null;
+  overall: number;
   top: SeoTopProject[];
   others: string[];
 }
@@ -36,9 +44,11 @@ const load = cache(async (slug: string): Promise<Loaded | null> => {
   if (!category) return null;
   const stats = getCategoryDetailStats(category);
   if (!stats) return null;
+  const funding = getCategoryFundingStats(category);
+  const overall = getOverallSuccessRate();
   const top = getTopProjectsByCategory(category, 10);
   const others = categories.filter((c) => c !== category);
-  return { category, stats, top, others };
+  return { category, stats, funding, overall, top, others };
 });
 
 const YEAR = new Date().getFullYear();
@@ -55,6 +65,58 @@ function summaryFor(category: string, s: SeoSegmentStats): string {
     `averaging ${formatUsdCompact(s.avg_pledged)} pledged per campaign. ` +
     `Use these ${category} benchmarks to set a realistic goal and gauge demand before launching.`
   );
+}
+
+function avgBackers(s: SeoSegmentStats): number {
+  return s.total ? Math.round(s.total_backers / s.total) : 0;
+}
+
+function hardnessAnswer(category: string, s: SeoSegmentStats, overall: number): string {
+  const diff = Number((s.success_rate - overall).toFixed(1));
+  const rel = diff >= 2 ? 'above' : diff <= -2 ? 'below' : 'in line with';
+  const cmp = diff >= 2 ? 'easier' : diff <= -2 ? 'harder' : 'about as hard';
+  return (
+    `${s.success_rate}% of ended Kickstarter ${category} campaigns reached their funding goal, ` +
+    `${rel} the ${overall}% Kickstarter-wide average. ` +
+    `That makes getting funded in ${category} ${cmp} than the typical Kickstarter category. ` +
+    `Of ${formatInt(s.total)} ended ${category} campaigns, ${formatInt(s.successful)} succeeded and ${formatInt(s.failed)} fell short.`
+  );
+}
+
+function goalAnswer(category: string, f: SeoFundingStats | null): string {
+  if (!f || !f.median_pledged_successful) {
+    return `Funding outcomes for ${category} campaigns vary widely; review the top campaigns below for concrete reference points.`;
+  }
+  return (
+    `Successful Kickstarter ${category} campaigns raised a median of ${formatUsdCompact(f.median_pledged_successful)} ` +
+    `(average ${formatUsdCompact(f.avg_pledged_successful)}). ` +
+    `Because a few breakout campaigns pull the average up, the median is the more realistic target — ` +
+    `a goal near or below it is generally more achievable than an outlier figure.`
+  );
+}
+
+function buildFaq(category: string, s: SeoSegmentStats, f: SeoFundingStats | null): FaqItem[] {
+  const faq: FaqItem[] = [
+    {
+      question: `What percentage of Kickstarter ${category} projects succeed?`,
+      answer: `${s.success_rate}% of the ${formatInt(s.total)} ended Kickstarter ${category} campaigns tracked by Kicksonar reached their funding goal (${formatInt(s.successful)} successful, ${formatInt(s.failed)} failed).`,
+    },
+    {
+      question: `How much money do Kickstarter ${category} campaigns raise?`,
+      answer: `Kickstarter ${category} campaigns have raised a combined ${formatUsdCompact(s.total_pledged_m * 1_000_000)} from ${formatInt(s.total_backers)} backers, averaging ${formatUsdCompact(s.avg_pledged)} per campaign.`,
+    },
+  ];
+  if (f && f.median_pledged_successful) {
+    faq.push({
+      question: `What is a realistic funding goal for a ${category} Kickstarter?`,
+      answer: `Successful ${category} campaigns raised a median of ${formatUsdCompact(f.median_pledged_successful)} and an average of ${formatUsdCompact(f.avg_pledged_successful)} — a useful reference range when setting your goal.`,
+    });
+  }
+  faq.push({
+    question: `How many backers does a typical ${category} Kickstarter get?`,
+    answer: `Kickstarter ${category} campaigns average ${formatInt(avgBackers(s))} backers each, totaling ${formatInt(s.total_backers)} backers across all tracked ${category} campaigns.`,
+  });
+  return faq;
 }
 
 export async function generateMetadata({ params }: { params: Promise<{ slug: string }> }): Promise<Metadata> {
@@ -80,9 +142,10 @@ export default async function CategoryStatsPage({ params }: { params: Promise<{ 
   const { slug } = await params;
   const data = await load(slug);
   if (!data) notFound();
-  const { category, stats, top, others } = data;
+  const { category, stats, funding, overall, top, others } = data;
   const path = `/categories/${slug}`;
   const dateModified = getMaxProjectTimestamp();
+  const faq = buildFaq(category, stats, funding);
 
   const cards = [
     { label: 'Ended campaigns', value: formatInt(stats.total) },
@@ -109,6 +172,11 @@ export default async function CategoryStatsPage({ params }: { params: Promise<{ 
             { name: 'Categories', path: '/categories' },
             { name: category, path },
           ]),
+          itemListLd(
+            `Top Kickstarter ${category} campaigns by funds raised`,
+            top.map((p) => ({ name: p.name, path: `/projects/${p.id}` })),
+          ),
+          faqLd(faq),
         ]}
       />
 
@@ -124,6 +192,11 @@ export default async function CategoryStatsPage({ params }: { params: Promise<{ 
         Kickstarter {category} Statistics {YEAR}
       </h1>
       <p className="mt-3 text-gray-600 leading-relaxed">{summaryFor(category, stats)}</p>
+      <p className="mt-3 text-gray-600 leading-relaxed">
+        The benchmarks below are computed from Kicksonar&apos;s full history of ended Kickstarter{' '}
+        {category} campaigns, sourced from public Kickstarter datasets. Use them to gauge demand,
+        set a realistic funding goal, and study the campaigns that raised the most in {category}.
+      </p>
 
       <div className="mt-6 grid grid-cols-2 sm:grid-cols-3 gap-3">
         {cards.map((c) => (
@@ -133,6 +206,16 @@ export default async function CategoryStatsPage({ params }: { params: Promise<{ 
           </div>
         ))}
       </div>
+
+      <h2 className="mt-8 text-lg font-semibold text-gray-900">
+        How hard is it to get funded in {category} on Kickstarter?
+      </h2>
+      <p className="mt-3 text-gray-600 leading-relaxed">{hardnessAnswer(category, stats, overall)}</p>
+
+      <h2 className="mt-8 text-lg font-semibold text-gray-900">
+        What&apos;s a realistic funding goal for a {category} campaign?
+      </h2>
+      <p className="mt-3 text-gray-600 leading-relaxed">{goalAnswer(category, funding)}</p>
 
       <h2 className="mt-8 text-lg font-semibold text-gray-900">
         Top {category} campaigns by funds raised
@@ -166,7 +249,19 @@ export default async function CategoryStatsPage({ params }: { params: Promise<{ 
         <Link href="/analysis" className="text-gray-500 hover:underline">Full data analysis →</Link>
       </div>
 
-      <h2 className="mt-8 text-sm font-semibold text-gray-700">Other categories</h2>
+      <h2 className="mt-10 text-lg font-semibold text-gray-900">
+        Kickstarter {category} FAQ
+      </h2>
+      <div className="mt-3 space-y-4">
+        {faq.map((item) => (
+          <div key={item.question}>
+            <h3 className="font-semibold text-gray-900">{item.question}</h3>
+            <p className="mt-1 text-gray-600 leading-relaxed">{item.answer}</p>
+          </div>
+        ))}
+      </div>
+
+      <h2 className="mt-10 text-sm font-semibold text-gray-700">Other categories</h2>
       <div className="mt-2 flex flex-wrap gap-2">
         {others.map((c) => (
           <Link

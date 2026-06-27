@@ -9,8 +9,17 @@ export const SITE_NAME = 'Kicksonar';
 export const SITE_DESCRIPTION =
   'Kicksonar is a Kickstarter analytics platform for exploring crowdfunding campaign data, benchmarking categories, and spotting launch opportunities.';
 
-// Brand entity signals (sameAs). Add real, owned profiles here as they go live.
-export const ORG_SAME_AS = ['https://github.com/nikoedwards/ks'];
+// Brand entity signals (sameAs) — the single biggest GEO lever for AI search,
+// which weighs off-site brand presence heavily. Add ONLY real, owned profiles
+// (never fabricate). Create and paste the live URLs as they go up:
+//   - X / Twitter:      https://x.com/<handle>
+//   - LinkedIn company: https://www.linkedin.com/company/<slug>
+//   - Product Hunt:     https://www.producthunt.com/products/<slug>
+//   - Crunchbase:       https://www.crunchbase.com/organization/<slug>
+//   - Reddit:           https://www.reddit.com/user/<handle>  (or a subreddit)
+export const ORG_SAME_AS = [
+  'https://github.com/nikoedwards/ks',
+];
 
 export const ORG_ID = `${SITE_URL}/#organization`;
 export const WEBSITE_ID = `${SITE_URL}/#website`;
@@ -31,9 +40,10 @@ export function slugify(value: string): string {
     .replace(/^-+|-+$/g, '');
 }
 
-/** Compact USD for titles/descriptions, e.g. 5_599_379 -> "$5.6M". */
+/** Compact USD for titles/descriptions, e.g. 5_599_379 -> "$5.6M", 1.4e9 -> "$1.4B". */
 export function formatUsdCompact(n: number | null | undefined): string {
   const v = Number(n) || 0;
+  if (v >= 1_000_000_000) return `$${(v / 1_000_000_000).toFixed(1)}B`;
   if (v >= 10_000_000) return `$${Math.round(v / 1_000_000)}M`;
   if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(1)}M`;
   if (v >= 1_000) return `$${Math.round(v / 1_000)}K`;
@@ -232,6 +242,49 @@ export function datasetLd({ name, description, path, keywords, dateModified }: D
     creator: { '@id': ORG_ID },
     ...(keywords && keywords.length ? { keywords } : {}),
     ...(dateModified ? { dateModified } : {}),
+  };
+}
+
+export interface ItemListEntry {
+  name: string;
+  path: string;
+}
+
+/** Ordered list (e.g. "top campaigns by funds raised") as schema.org ItemList. */
+export function itemListLd(name: string, items: ItemListEntry[]): JsonLdNode {
+  return {
+    '@context': 'https://schema.org',
+    '@type': 'ItemList',
+    name,
+    numberOfItems: items.length,
+    itemListElement: items.map((it, i) => ({
+      '@type': 'ListItem',
+      position: i + 1,
+      name: it.name,
+      url: absoluteUrl(it.path),
+    })),
+  };
+}
+
+export interface FaqItem {
+  question: string;
+  answer: string;
+}
+
+/**
+ * Editorial FAQ as schema.org FAQPage. Note: Google retired FAQ rich results in
+ * May 2026, so this no longer yields a SERP feature — it is kept for AI-search
+ * citation (ChatGPT/Perplexity/AI Overviews parse Q&A pairs).
+ */
+export function faqLd(items: FaqItem[]): JsonLdNode {
+  return {
+    '@context': 'https://schema.org',
+    '@type': 'FAQPage',
+    mainEntity: items.map((it) => ({
+      '@type': 'Question',
+      name: it.question,
+      acceptedAnswer: { '@type': 'Answer', text: it.answer },
+    })),
   };
 }
 

@@ -5,9 +5,12 @@ import { notFound } from 'next/navigation';
 import {
   getCountryList,
   getCountryDetailStats,
+  getCountryFundingStats,
+  getOverallSuccessRate,
   getTopProjectsByCountry,
   getMaxProjectTimestamp,
   type SeoSegmentStats,
+  type SeoFundingStats,
   type SeoTopProject,
 } from '@/lib/db';
 import JsonLd from '@/components/JsonLd';
@@ -17,8 +20,11 @@ import {
   pageMetadata,
   breadcrumbLd,
   datasetLd,
+  itemListLd,
+  faqLd,
   formatUsdCompact,
   formatInt,
+  type FaqItem,
 } from '@/lib/seo';
 
 export const dynamic = 'force-dynamic';
@@ -27,6 +33,8 @@ interface Loaded {
   code: string;
   name: string;
   stats: SeoSegmentStats;
+  funding: SeoFundingStats | null;
+  overall: number;
   top: SeoTopProject[];
   others: { country: string; country_name: string }[];
 }
@@ -37,9 +45,11 @@ const load = cache(async (slug: string): Promise<Loaded | null> => {
   if (!match) return null;
   const stats = getCountryDetailStats(match.country);
   if (!stats) return null;
+  const funding = getCountryFundingStats(match.country);
+  const overall = getOverallSuccessRate();
   const top = getTopProjectsByCountry(match.country, 10);
   const others = countries.filter((c) => c.country !== match.country).slice(0, 24);
-  return { code: match.country, name: match.country_name || match.country, stats, top, others };
+  return { code: match.country, name: match.country_name || match.country, stats, funding, overall, top, others };
 });
 
 const YEAR = new Date().getFullYear();
@@ -56,6 +66,57 @@ function summaryFor(name: string, s: SeoSegmentStats): string {
     `averaging ${formatUsdCompact(s.avg_pledged)} per campaign. ` +
     `Compare ${name}'s crowdfunding performance against other countries before planning a launch.`
   );
+}
+
+function avgBackers(s: SeoSegmentStats): number {
+  return s.total ? Math.round(s.total_backers / s.total) : 0;
+}
+
+function hardnessAnswer(name: string, s: SeoSegmentStats, overall: number): string {
+  const diff = Number((s.success_rate - overall).toFixed(1));
+  const rel = diff >= 2 ? 'above' : diff <= -2 ? 'below' : 'in line with';
+  const cmp = diff >= 2 ? 'easier' : diff <= -2 ? 'harder' : 'about as hard';
+  return (
+    `${s.success_rate}% of ended Kickstarter campaigns from ${name} reached their funding goal, ` +
+    `${rel} the ${overall}% Kickstarter-wide average. ` +
+    `That makes getting funded from ${name} ${cmp} than the global Kickstarter average. ` +
+    `Of ${formatInt(s.total)} ended campaigns from ${name}, ${formatInt(s.successful)} succeeded and ${formatInt(s.failed)} fell short.`
+  );
+}
+
+function goalAnswer(name: string, f: SeoFundingStats | null): string {
+  if (!f || !f.median_pledged_successful) {
+    return `Funding outcomes for campaigns from ${name} vary widely; review the top campaigns below for concrete reference points.`;
+  }
+  return (
+    `Successful Kickstarter campaigns from ${name} raised a median of ${formatUsdCompact(f.median_pledged_successful)} ` +
+    `(average ${formatUsdCompact(f.avg_pledged_successful)}). ` +
+    `The median is the more realistic target, since a few breakout campaigns pull the average up.`
+  );
+}
+
+function buildFaq(name: string, s: SeoSegmentStats, f: SeoFundingStats | null): FaqItem[] {
+  const faq: FaqItem[] = [
+    {
+      question: `What percentage of Kickstarter campaigns from ${name} succeed?`,
+      answer: `${s.success_rate}% of the ${formatInt(s.total)} ended Kickstarter campaigns from ${name} tracked by Kicksonar reached their funding goal (${formatInt(s.successful)} successful, ${formatInt(s.failed)} failed).`,
+    },
+    {
+      question: `How much do Kickstarter campaigns from ${name} raise?`,
+      answer: `Kickstarter campaigns from ${name} have raised a combined ${formatUsdCompact(s.total_pledged_m * 1_000_000)} from ${formatInt(s.total_backers)} backers, averaging ${formatUsdCompact(s.avg_pledged)} per campaign.`,
+    },
+  ];
+  if (f && f.median_pledged_successful) {
+    faq.push({
+      question: `What is a realistic funding goal for a Kickstarter in ${name}?`,
+      answer: `Successful campaigns from ${name} raised a median of ${formatUsdCompact(f.median_pledged_successful)} and an average of ${formatUsdCompact(f.avg_pledged_successful)} — a useful reference range when setting your goal.`,
+    });
+  }
+  faq.push({
+    question: `How many backers does a typical Kickstarter from ${name} get?`,
+    answer: `Kickstarter campaigns from ${name} average ${formatInt(avgBackers(s))} backers each, totaling ${formatInt(s.total_backers)} backers across all tracked ${name} campaigns.`,
+  });
+  return faq;
 }
 
 export async function generateMetadata({ params }: { params: Promise<{ slug: string }> }): Promise<Metadata> {
@@ -81,9 +142,10 @@ export default async function CountryStatsPage({ params }: { params: Promise<{ s
   const { slug } = await params;
   const data = await load(slug);
   if (!data) notFound();
-  const { code, name, stats, top, others } = data;
+  const { code, name, stats, funding, overall, top, others } = data;
   const path = `/countries/${code.toLowerCase()}`;
   const dateModified = getMaxProjectTimestamp();
+  const faq = buildFaq(name, stats, funding);
 
   const cards = [
     { label: 'Ended campaigns', value: formatInt(stats.total) },
@@ -110,6 +172,11 @@ export default async function CountryStatsPage({ params }: { params: Promise<{ s
             { name: 'Countries', path: '/countries' },
             { name, path },
           ]),
+          itemListLd(
+            `Top Kickstarter campaigns from ${name} by funds raised`,
+            top.map((p) => ({ name: p.name, path: `/projects/${p.id}` })),
+          ),
+          faqLd(faq),
         ]}
       />
 
@@ -123,6 +190,11 @@ export default async function CountryStatsPage({ params }: { params: Promise<{ s
 
       <h1 className="text-2xl font-bold text-gray-900">Kickstarter in {name} — Statistics {YEAR}</h1>
       <p className="mt-3 text-gray-600 leading-relaxed">{summaryFor(name, stats)}</p>
+      <p className="mt-3 text-gray-600 leading-relaxed">
+        These benchmarks are computed from Kicksonar&apos;s full history of ended Kickstarter
+        campaigns originating in {name}, sourced from public Kickstarter datasets. Use them to
+        compare {name} against other countries and set realistic expectations before launching.
+      </p>
 
       <div className="mt-6 grid grid-cols-2 sm:grid-cols-3 gap-3">
         {cards.map((c) => (
@@ -132,6 +204,16 @@ export default async function CountryStatsPage({ params }: { params: Promise<{ s
           </div>
         ))}
       </div>
+
+      <h2 className="mt-8 text-lg font-semibold text-gray-900">
+        How hard is it to get funded on Kickstarter from {name}?
+      </h2>
+      <p className="mt-3 text-gray-600 leading-relaxed">{hardnessAnswer(name, stats, overall)}</p>
+
+      <h2 className="mt-8 text-lg font-semibold text-gray-900">
+        What&apos;s a realistic funding goal for a campaign in {name}?
+      </h2>
+      <p className="mt-3 text-gray-600 leading-relaxed">{goalAnswer(name, funding)}</p>
 
       <h2 className="mt-8 text-lg font-semibold text-gray-900">Top campaigns from {name}</h2>
       <div className="mt-3 divide-y divide-gray-100 rounded-xl border border-gray-200 bg-white">
@@ -163,7 +245,17 @@ export default async function CountryStatsPage({ params }: { params: Promise<{ s
         <Link href="/countries" className="text-gray-500 hover:underline">All countries →</Link>
       </div>
 
-      <h2 className="mt-8 text-sm font-semibold text-gray-700">Other countries</h2>
+      <h2 className="mt-10 text-lg font-semibold text-gray-900">Kickstarter {name} FAQ</h2>
+      <div className="mt-3 space-y-4">
+        {faq.map((item) => (
+          <div key={item.question}>
+            <h3 className="font-semibold text-gray-900">{item.question}</h3>
+            <p className="mt-1 text-gray-600 leading-relaxed">{item.answer}</p>
+          </div>
+        ))}
+      </div>
+
+      <h2 className="mt-10 text-sm font-semibold text-gray-700">Other countries</h2>
       <div className="mt-2 flex flex-wrap gap-2">
         {others.map((c) => (
           <Link
