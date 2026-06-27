@@ -28,6 +28,7 @@ interface Project {
   staff_pick: number; created_at: number; launched_at: number; deadline: number;
   creator_name: string; creator_slug?: string; creator_url?: string; source_url: string; slug: string;
   image_url?: string | null; image_thumb_url?: string | null;
+  platform?: 'kickstarter' | 'indiegogo';
   similar?: SimilarProject[];
 }
 
@@ -345,12 +346,19 @@ export default function ProjectDetailPage() {
   const stateTr = t[lang].states;
   const { user, showLogin } = useAuth();
 
+  // Indiegogo projects only have pledge/backer history; rewards, text changes
+  // and collaborators are Kickstarter-only, so those tabs are hidden (graceful
+  // degradation).
+  const isIgg = !!params?.id && params.id.startsWith('igg-');
+
   const TABS = [
     { id: 'overview' as TabId, label: tr.tabOverview, icon: Activity },
     { id: 'curve' as TabId, label: tr.tabCurve, icon: TrendingUp },
-    { id: 'rewards' as TabId, label: tr.tabRewards, icon: Gift },
-    { id: 'changes' as TabId, label: tr.tabChanges, icon: FileText },
-    { id: 'collaborators' as TabId, label: tr.tabCollaborators, icon: Users },
+    ...(!isIgg ? [
+      { id: 'rewards' as TabId, label: tr.tabRewards, icon: Gift },
+      { id: 'changes' as TabId, label: tr.tabChanges, icon: FileText },
+      { id: 'collaborators' as TabId, label: tr.tabCollaborators, icon: Users },
+    ] : []),
     { id: 'similar' as TabId, label: tr.tabSimilar, icon: Layers },
   ];
 
@@ -436,12 +444,12 @@ export default function ProjectDetailPage() {
 
   // ── Fetch tracking settings ────────────────────────────────────────────────
   const loadTracking = useCallback(() => {
-    if (!id) return;
+    if (!id || isIgg) return; // tracking queue is Kickstarter-only
     fetch(`/api/track/${id}`).then(r => r.json()).then(d => {
       setTracking(d.settings);
       setPlatformTracking(d.platformSettings);
     }).catch(() => {});
-  }, [id]);
+  }, [id, isIgg]);
 
   useEffect(() => {
     loadTracking();
@@ -565,7 +573,7 @@ export default function ProjectDetailPage() {
   }, [lang]);
 
   const loadCachedKicktraqDebug = useCallback(async () => {
-    if (!id || !user) return null;
+    if (!id || !user || isIgg) return null; // Kicktraq import is Kickstarter-only
     try {
       const debugRes = await fetch(`/api/kicktraq/${id}`);
       if (!debugRes.ok) return null;
@@ -575,7 +583,7 @@ export default function ProjectDetailPage() {
     } catch {
       return null;
     }
-  }, [applyKicktraqPayload, id, user]);
+  }, [applyKicktraqPayload, id, user, isIgg]);
 
   useEffect(() => {
     loadCachedKicktraqDebug();
@@ -757,8 +765,11 @@ export default function ProjectDetailPage() {
   const timeLeft = fmtTimeLeft(project.deadline, lang);
   const grade = fundingGrade(fundingRate);
   const ksUrl = project.source_url?.startsWith('https://www.kickstarter.com/projects/') ? project.source_url : null;
-  const creatorUrl = project.creator_url || (project.creator_slug ? `https://www.kickstarter.com/profile/${project.creator_slug}` : null);
-  const kicktraqUrl = project.creator_slug && project.slug ? `https://www.kicktraq.com/projects/${project.creator_slug}/${project.slug}/` : null;
+  const iggUrl = isIgg ? (project.source_url || null) : null;
+  const creatorUrl = isIgg
+    ? (project.creator_url || null)
+    : (project.creator_url || (project.creator_slug ? `https://www.kickstarter.com/profile/${project.creator_slug}` : null));
+  const kicktraqUrl = !isIgg && project.creator_slug && project.slug ? `https://www.kicktraq.com/projects/${project.creator_slug}/${project.slug}/` : null;
   const heroImage = project.image_url || project.image_thumb_url;
   const hasRealData = snapshots.length > 0;
   const sharedTrackingActive = !!platformTracking?.is_tracking;
@@ -820,7 +831,7 @@ export default function ProjectDetailPage() {
                   <Award className="w-3 h-3" /> {tr.staffPick}
                 </span>
               )}
-              <span className="text-xs text-gray-500">{project.category_parent} · {project.category_name}</span>
+              <span className="text-xs text-gray-500">{project.category_parent}{project.category_name ? ` · ${project.category_name}` : ''}</span>
             </div>
             <h1 className="text-2xl font-bold text-white leading-snug">{project.name}</h1>
             {project.blurb && <p className="text-gray-400 mt-1 text-sm leading-relaxed">{project.blurb}</p>}
@@ -867,6 +878,12 @@ export default function ProjectDetailPage() {
               <a href={ksUrl} target="_blank" rel="noopener noreferrer"
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-ks-green text-white text-xs font-semibold hover:bg-ks-green-dark transition-colors">
                 <ExternalLink className="w-3.5 h-3.5" /> Kickstarter
+              </a>
+            )}
+            {iggUrl && (
+              <a href={iggUrl} target="_blank" rel="noopener noreferrer"
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-pink-600 text-white text-xs font-semibold hover:bg-pink-700 transition-colors">
+                <ExternalLink className="w-3.5 h-3.5" /> Indiegogo
               </a>
             )}
             {kicktraqUrl && (

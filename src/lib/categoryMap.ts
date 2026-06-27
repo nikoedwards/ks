@@ -137,3 +137,59 @@ export function toUnifiedCategory(platform: PlatformKey, raw: string | null | un
 export function unifiedCategoryLabel(category: UnifiedCategory, cn: boolean): string {
   return cn ? UNIFIED_CATEGORY_LABELS_ZH[category] : category;
 }
+
+export function isUnifiedCategory(value: string | null | undefined): value is UnifiedCategory {
+  return !!value && (UNIFIED_CATEGORIES as readonly string[]).includes(value);
+}
+
+function reverseLookup(table: Record<string, UnifiedCategory>, unified: UnifiedCategory): string[] {
+  return Object.keys(table).filter(key => table[key] === unified);
+}
+
+/**
+ * Lowercased raw category keys (as stored, but lowercased) that map to a unified
+ * parent for a given platform. Use with `LOWER(category) IN (...)` in SQL so a
+ * unified-category filter can be pushed down to each platform's raw column.
+ */
+export function rawCategoriesForUnified(platform: PlatformKey, unified: UnifiedCategory): string[] {
+  return reverseLookup(platform === 'kickstarter' ? KS_TO_UNIFIED : IGG_TO_UNIFIED, unified);
+}
+
+// Structured mapping for the frontend "how does this map?" tooltip.
+export interface UnifiedCategoryMappingEntry {
+  unified: UnifiedCategory;
+  labelZh: string;
+  kickstarter: string[];
+  indiegogo: string[];
+}
+
+const RAW_LABEL_KS: Record<string, string> = {
+  'film & video': 'Film & Video', music: 'Music', publishing: 'Publishing', games: 'Games',
+  technology: 'Technology', art: 'Art', food: 'Food', fashion: 'Fashion', design: 'Design',
+  comics: 'Comics', crafts: 'Crafts', photography: 'Photography', theater: 'Theater',
+  journalism: 'Journalism', dance: 'Dance',
+};
+
+const RAW_LABEL_IGG: Record<string, string> = {
+  film: 'Film', 'web series & tv shows': 'Web Series & TV Shows', music: 'Music', audio: 'Audio',
+  art: 'Art', 'other creations': 'Other Creations', 'writing & publishing': 'Writing & Publishing',
+  comics: 'Comics', photography: 'Photography', 'camera gear': 'Camera Gear',
+  'board & card games': 'Board & card games', 'video games': 'Video Games', 'tabletop games': 'Tabletop Games',
+  ttrpg: 'TTRPG', 'phones & accessories': 'Phones & Accessories', productivity: 'Productivity',
+  'energy & green tech': 'Energy & Green Tech', transportation: 'Transportation', home: 'Home',
+  'fashion & wearables': 'Fashion & Wearables', accessories: 'Accessories', 'food & beverages': 'Food & Beverages',
+  'dance & theater': 'Dance & Theater', 'podcasts, blogs & vlogs': 'Podcasts, Blogs & Vlogs',
+  'health & fitness': 'Health & Fitness', wellness: 'Wellness', 'travel & outdoors': 'Travel & Outdoors',
+  'human rights': 'Human Rights', environment: 'Environment', culture: 'Culture',
+  'local businesses': 'Local Businesses', education: 'Education', 'other community projects': 'Other Community Projects',
+  general: 'General', others: 'Others',
+};
+
+export function getUnifiedCategoryMapping(): UnifiedCategoryMappingEntry[] {
+  return UNIFIED_CATEGORIES.map(unified => ({
+    unified,
+    labelZh: UNIFIED_CATEGORY_LABELS_ZH[unified],
+    kickstarter: reverseLookup(KS_TO_UNIFIED, unified).map(k => RAW_LABEL_KS[k] ?? k),
+    indiegogo: reverseLookup(IGG_TO_UNIFIED, unified).map(k => RAW_LABEL_IGG[k] ?? k),
+  }));
+}

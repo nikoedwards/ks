@@ -5,8 +5,11 @@ import Link from 'next/link';
 import { Search, ExternalLink, ChevronLeft, ChevronRight, Download, ArrowUp, ArrowDown, ArrowUpDown, Heart, SlidersHorizontal, X } from 'lucide-react';
 import EmptyState from '@/components/EmptyState';
 import ImagePreview from '@/components/ImagePreview';
+import PlatformPicker, { type PlatformView } from '@/components/PlatformPicker';
+import CategoryMappingTooltip from '@/components/CategoryMappingTooltip';
 import { useLanguage } from '@/hooks/useLanguage';
 import { localeOf, t, uiCopy, type Lang } from '@/lib/i18n';
+import { unifiedCategoryLabel, isUnifiedCategory } from '@/lib/categoryMap';
 import { useAuth } from '@/contexts/AuthContext';
 
 interface Project {
@@ -36,6 +39,8 @@ interface Project {
   image_thumb_url?: string | null;
   has_service_agency?: number;
   service_agency_name?: string | null;
+  platform?: 'kickstarter' | 'indiegogo';
+  unified_category?: string;
   // Live snapshot fields
   live_pledged_usd?: number | null;
   live_backers_count?: number | null;
@@ -182,14 +187,16 @@ export default function ProjectsPage() {
   const stateTr = t[lang].states;
   const copy = uiCopy[lang].projects;
   const common = uiCopy[lang].common;
+  const cn = lang === 'cn' || lang === 'zh-tw';
   const { user, isLoading: authLoading, showLogin } = useAuth();
 
-  const [data, setData] = useState<{ total: number; rows: Project[]; categories: string[]; categoryOptions?: { category_parent: string; category_name: string | null; total: number }[]; countries: { country: string; country_name: string }[] } | null>(null);
+  const [data, setData] = useState<{ total: number; rows: Project[]; categories: string[]; categoryOptions?: { category_parent: string; category_name: string | null; total: number }[]; countries: { country: string; country_name: string }[]; platform?: string } | null>(null);
   const [loading, setLoading] = useState(true);
   const [empty, setEmpty] = useState(false);
 
   const [search, setSearch] = useState('');
   const [state, setState] = useState('live');
+  const [platform, setPlatform] = useState<PlatformView>('kickstarter');
   const [category, setCategory] = useState('');
   const [categoryName, setCategoryName] = useState('');
   const [country, setCountry] = useState('');
@@ -233,6 +240,8 @@ export default function ProjectsPage() {
     if (!guest) {
       if (sp.get('search')) setSearch(sp.get('search')!);
       if (sp.get('state')) setState(sp.get('state')!);
+      const pf = sp.get('platform');
+      if (pf === 'global' || pf === 'kickstarter' || pf === 'indiegogo') setPlatform(pf);
       if (sp.get('category')) setCategory(sp.get('category')!);
       if (sp.get('categoryName')) setCategoryName(sp.get('categoryName')!);
       if (sp.get('country')) setCountry(sp.get('country')!);
@@ -253,6 +262,7 @@ export default function ProjectsPage() {
     const params = new URLSearchParams();
     if (search) params.set('search', search);
     if (state !== 'live') params.set('state', state);
+    if (platform !== 'kickstarter') params.set('platform', platform);
     if (category) params.set('category', category);
     if (categoryName) params.set('categoryName', categoryName);
     if (country) params.set('country', country);
@@ -265,7 +275,7 @@ export default function ProjectsPage() {
     if (dateTo) params.set('dateTo', dateTo);
     const qs = params.toString();
     window.history.replaceState(null, '', qs ? `?${qs}` : window.location.pathname);
-  }, [search, state, category, categoryName, country, serviceAgency, sort, sortDir, page, timePeriod, dateFrom, dateTo]);
+  }, [search, state, platform, category, categoryName, country, serviceAgency, sort, sortDir, page, timePeriod, dateFrom, dateTo]);
 
   // Cross-page selection: Set for re-render, Map for data cache
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -317,13 +327,14 @@ export default function ProjectsPage() {
       : undefined;
     const tsTo = timePeriod === 'custom' && dateTo ? Math.floor(new Date(dateTo).getTime() / 1000) : undefined;
 
+    const ksOnly = platform === 'kickstarter';
     const params = new URLSearchParams({
-      page: String(page), limit: '20', sort, sortDir,
+      page: String(page), limit: '20', sort, sortDir, platform,
       ...(state !== 'all' ? { state } : {}),
       ...(category ? { category } : {}),
-      ...(categoryName ? { categoryName } : {}),
-      ...(country ? { country } : {}),
-      ...(serviceAgency ? { serviceAgency } : {}),
+      ...(ksOnly && categoryName ? { categoryName } : {}),
+      ...(ksOnly && country ? { country } : {}),
+      ...(ksOnly && serviceAgency ? { serviceAgency } : {}),
       ...(search ? { search } : {}),
       ...(tsFrom ? { dateFrom: String(tsFrom) } : {}),
       ...(tsTo ? { dateTo: String(tsTo) } : {}),
@@ -336,7 +347,19 @@ export default function ProjectsPage() {
         setLoading(false);
       })
       .catch(() => setLoading(false));
-  }, [page, sort, sortDir, state, category, categoryName, country, serviceAgency, search, timePeriod, dateFrom, dateTo]);
+  }, [page, sort, sortDir, platform, state, category, categoryName, country, serviceAgency, search, timePeriod, dateFrom, dateTo]);
+
+  // Switching platform resets the category taxonomy (KS raw / IGG raw / unified
+  // are not interchangeable) and any KS-only filters.
+  const changePlatform = (next: PlatformView) => {
+    if (next === platform) return;
+    setPlatform(next);
+    setCategory('');
+    setCategoryName('');
+    setCountry('');
+    setServiceAgency('');
+    setPage(1);
+  };
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
@@ -453,6 +476,12 @@ export default function ProjectsPage() {
     <div className="max-w-7xl mx-auto space-y-5">
       {/* Filters */}
       <div className="bg-white rounded-xl border border-gray-100 p-4 shadow-sm space-y-3">
+        {/* Platform */}
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs font-semibold text-gray-400 uppercase tracking-wide w-16">{cn ? '平台' : 'Platform'}</span>
+          <PlatformPicker value={platform} onChange={p => gate(() => changePlatform(p))} cn={cn} />
+        </div>
+
         {/* Time period */}
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-xs font-semibold text-gray-400 uppercase tracking-wide w-16">{tr.period}</span>
@@ -507,45 +536,58 @@ export default function ProjectsPage() {
           </div>
 
           <div>
-            <label className="text-xs font-medium text-gray-400 mb-1 block">{tr.categoryLabel}</label>
+            <label className="text-xs font-medium text-gray-400 mb-1 flex items-center gap-1">
+              {tr.categoryLabel}
+              {platform === 'global' && <CategoryMappingTooltip cn={cn} />}
+            </label>
             <select value={category} onChange={e => gate(() => { setCategory(e.target.value); setCategoryName(''); setPage(1); })} className={selectCls}>
               <option value="">{tr.allCategories}</option>
-              {(data?.categories ?? []).map(c => <option key={c} value={c}>{c}</option>)}
-            </select>
-          </div>
-
-          <div>
-            <label className="text-xs font-medium text-gray-400 mb-1 block">{copy.subcategory}</label>
-            <select value={categoryName} onChange={e => gate(() => { setCategoryName(e.target.value); setPage(1); })} className={selectCls}>
-              <option value="">{copy.allSubcategories}</option>
-              {childCategories.map(c => (
-                <option key={`${c.category_parent}-${c.category_name}`} value={c.category_name ?? ''}>
-                  {c.category_name ?? '-'} ({c.total})
+              {(data?.categories ?? []).map(c => (
+                <option key={c} value={c}>
+                  {platform === 'global' && isUnifiedCategory(c) ? unifiedCategoryLabel(c, cn) : c}
                 </option>
               ))}
             </select>
           </div>
 
-          <div>
-            <label className="text-xs font-medium text-gray-400 mb-1 block">{tr.countryLabel}</label>
-            <select value={country} onChange={e => gate(() => { setCountry(e.target.value); setPage(1); })} className={selectCls}>
-              <option value="">{tr.allCountries}</option>
-              {(data?.countries ?? []).map(c => (
-                <option key={c.country} value={c.country}>{c.country_name || c.country}</option>
-              ))}
-            </select>
-          </div>
+          {platform === 'kickstarter' && (
+            <div>
+              <label className="text-xs font-medium text-gray-400 mb-1 block">{copy.subcategory}</label>
+              <select value={categoryName} onChange={e => gate(() => { setCategoryName(e.target.value); setPage(1); })} className={selectCls}>
+                <option value="">{copy.allSubcategories}</option>
+                {childCategories.map(c => (
+                  <option key={`${c.category_parent}-${c.category_name}`} value={c.category_name ?? ''}>
+                    {c.category_name ?? '-'} ({c.total})
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
 
-          <div>
-            <label className="text-xs font-medium text-gray-400 mb-1 block">{copy.agency}</label>
-            <select value={serviceAgency} onChange={e => gate(() => { setServiceAgency(e.target.value); setPage(1); })} className={selectCls}>
-              <option value="">{copy.allAgencies}</option>
-              <option value="__has_agency__">{copy.hasAgency}</option>
-              <option value="Longham">Longham</option>
-              <option value="Global OneClick">Global OneClick</option>
-              <option value="Vinyl">Vinyl</option>
-            </select>
-          </div>
+          {platform === 'kickstarter' && (
+            <div>
+              <label className="text-xs font-medium text-gray-400 mb-1 block">{tr.countryLabel}</label>
+              <select value={country} onChange={e => gate(() => { setCountry(e.target.value); setPage(1); })} className={selectCls}>
+                <option value="">{tr.allCountries}</option>
+                {(data?.countries ?? []).map(c => (
+                  <option key={c.country} value={c.country}>{c.country_name || c.country}</option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {platform === 'kickstarter' && (
+            <div>
+              <label className="text-xs font-medium text-gray-400 mb-1 block">{copy.agency}</label>
+              <select value={serviceAgency} onChange={e => gate(() => { setServiceAgency(e.target.value); setPage(1); })} className={selectCls}>
+                <option value="">{copy.allAgencies}</option>
+                <option value="__has_agency__">{copy.hasAgency}</option>
+                <option value="Longham">Longham</option>
+                <option value="Global OneClick">Global OneClick</option>
+                <option value="Vinyl">Vinyl</option>
+              </select>
+            </div>
+          )}
 
           <button type="submit"
             className="bg-ks-green hover:bg-ks-green-dark text-white px-4 py-2 rounded-lg text-sm font-semibold transition-colors shadow-sm">
@@ -672,7 +714,10 @@ export default function ProjectsPage() {
                     const money = projectMoney(p);
                     const ksUrl = p.source_url?.startsWith('https://www.kickstarter.com/projects/')
                       ? p.source_url : null;
-                    const creatorUrl = p.creator_url || (p.creator_slug ? `https://www.kickstarter.com/profile/${p.creator_slug}` : null);
+                    const extUrl = p.platform === 'indiegogo' ? (p.source_url || null) : ksUrl;
+                    const creatorUrl = p.platform === 'indiegogo'
+                      ? p.creator_url
+                      : (p.creator_url || (p.creator_slug ? `https://www.kickstarter.com/profile/${p.creator_slug}` : null));
                     const selected = selectedIds.has(p.id);
                     return (
                       <tr key={p.id} className={`transition-colors ${selected ? 'bg-ks-green-light/40' : 'hover:bg-gray-50/80'}`}>
@@ -702,7 +747,15 @@ export default function ProjectsPage() {
                         )}
                         <td className="px-4 py-3">
                           <Link href={`/projects/${p.id}`} target="_blank" rel="noopener noreferrer" className="group block">
-                            <div className="font-medium text-gray-900 max-w-xs truncate group-hover:text-ks-green transition-colors">{p.name}</div>
+                            <div className="font-medium text-gray-900 max-w-xs truncate group-hover:text-ks-green transition-colors">
+                              {platform === 'global' && p.platform === 'indiegogo' && (
+                                <span className="mr-1.5 inline-block rounded bg-pink-50 px-1.5 py-0.5 align-middle text-[10px] font-bold text-pink-600">IGG</span>
+                              )}
+                              {platform === 'global' && p.platform === 'kickstarter' && (
+                                <span className="mr-1.5 inline-block rounded bg-ks-green-light px-1.5 py-0.5 align-middle text-[10px] font-bold text-ks-green-dark">KS</span>
+                              )}
+                              {p.name}
+                            </div>
                             <div className="text-xs text-gray-400 max-w-xs truncate mt-0.5">{p.blurb}</div>
                           </Link>
                         </td>
@@ -793,8 +846,8 @@ export default function ProjectsPage() {
                             >
                               <Heart className={`w-4 h-4 ${favoriteIds.has(p.id) ? 'fill-current' : ''}`} />
                             </button>
-                            {ksUrl && (
-                              <a href={ksUrl} target="_blank" rel="noopener noreferrer"
+                            {extUrl && (
+                              <a href={extUrl} target="_blank" rel="noopener noreferrer"
                                 className="text-gray-300 hover:text-ks-green transition-colors">
                                 <ExternalLink className="w-4 h-4" />
                               </a>

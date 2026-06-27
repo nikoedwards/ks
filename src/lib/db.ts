@@ -1547,6 +1547,7 @@ export async function getStateDistribution(filter: { dateFrom?: number; dateTo?:
 export interface ProjectFilter {
   state?: string;
   category?: string;
+  categoryParents?: string[];
   categoryName?: string;
   country?: string;
   search?: string;
@@ -1561,12 +1562,17 @@ export interface ProjectFilter {
 
 export async function getProjects(filter: ProjectFilter = {}) {
   const db = getDB();
-  const { state, category, categoryName, country, search, sort = 'usd_pledged', sortDir = 'desc', page = 1, limit = 20, dateFrom, dateTo, serviceAgency } = filter;
+  const { state, category, categoryParents, categoryName, country, search, sort = 'usd_pledged', sortDir = 'desc', page = 1, limit = 20, dateFrom, dateTo, serviceAgency } = filter;
 
   const conditions: string[] = [];
   const params: Record<string, unknown> = {};
 
   if (state && state !== 'all') { conditions.push('p.state = @state'); params.state = state; }
+  if (categoryParents && categoryParents.length) {
+    const placeholders = categoryParents.map((_, i) => `@cp${i}`);
+    conditions.push(`LOWER(p.category_parent) IN (${placeholders.join(', ')})`);
+    categoryParents.forEach((value, i) => { params[`cp${i}`] = value.trim().toLowerCase(); });
+  }
   if (category) { conditions.push('p.category_parent = @category'); params.category = category; }
   if (categoryName) { conditions.push('p.category_name = @categoryName'); params.categoryName = categoryName; }
   if (country) { conditions.push('p.country = @country'); params.country = country; }
