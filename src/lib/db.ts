@@ -598,6 +598,12 @@ function ensureRuntimeMigrations(db: Database) {
   // Separate from the live refresh timestamps so the backfill never touches the
   // live core/rich cadence.
   try { db.exec('ALTER TABLE projects ADD COLUMN collab_checked_at INTEGER'); } catch { /* already exists */ }
+  // Isolated "rewards + collaborators backfill": when a tracked live project's
+  // reward tiers + collaborators were last probed by the dedicated backfill pass
+  // (worker /project). Deliberately a SEPARATE timestamp from rewards_synced_at
+  // (RICH pass) and collab_checked_at (collab pass) so this backfill never
+  // perturbs the existing live core/rich/collab cadence.
+  try { db.exec('ALTER TABLE projects ADD COLUMN reward_collab_checked_at INTEGER'); } catch { /* already exists */ }
   db.exec(`
     CREATE TABLE IF NOT EXISTS project_collaborators (
       project_id TEXT NOT NULL,
@@ -4833,6 +4839,50 @@ export function getCollabBackfillDue(
 export function markCollabChecked(projectId: string, ts?: number) {
   const now = ts ?? Math.floor(Date.now() / 1000);
   getDB().prepare('UPDATE projects SET collab_checked_at = ? WHERE id = ?').run(now, projectId);
+}
+
+/**
+ * Isolated "rewards + collaborators backfill" selection — completely separate
+ * from the live core/rich/collab passes. Returns tracked, currently-live
+ * projects with a usable Kickstarter URL whose reward tiers OR collaborators are
+ * still missing and that haven't been probed by this backfill recently
+ * (least-recently-checked first). The backfill pass (gated by
+ * KS_REWARD_COLLAB_BACKFILL) probes these via the worker /project endpoint and
+ * stores ONLY rewards + collaborators.
+ *
+ * Scope is deliberately limited to `is_tracking = 1 AND state = 'live'` — the
+ * "new + tracked" projects. Ended projects are handled on demand via the admin
+ * endpoint, never by this automatic pass.
+ */
+export function getRewardCollabBackfillDue(
+  limit = 10,
+  staleBeforeSec?: number,
+): { project_id: string }[] {
+  const stale = staleBeforeSec ?? Math.floor(Date.now() / 1000) - 14 * 24 * 3600;
+  return getDB().prepare(`
+    SELECT p.id AS project_id
+    FROM projects p
+    JOIN tracking_settings t ON t.project_id = p.id
+    WHERE t.is_tracking = 1
+      AND p.state = 'live'
+      AND (
+        p.source_url LIKE 'https://www.kickstarter.com/projects/%'
+        OR (p.creator_slug IS NOT NULL AND p.slug IS NOT NULL)
+      )
+      AND (
+        NOT EXISTS (SELECT 1 FROM reward_snapshots rs WHERE rs.project_id = p.id)
+        OR NOT EXISTS (SELECT 1 FROM project_collaborators pc WHERE pc.project_id = p.id)
+      )
+      AND (p.reward_collab_checked_at IS NULL OR p.reward_collab_checked_at <= @stale)
+    ORDER BY (p.reward_collab_checked_at IS NOT NULL), p.reward_collab_checked_at ASC,
+             COALESCE(p.last_seen_at, 0) DESC
+    LIMIT @limit
+  `).all({ stale, limit }) as { project_id: string }[];
+}
+
+export function markRewardCollabChecked(projectId: string, ts?: number) {
+  const now = ts ?? Math.floor(Date.now() / 1000);
+  getDB().prepare('UPDATE projects SET reward_collab_checked_at = ? WHERE id = ?').run(now, projectId);
 }
 
 /**

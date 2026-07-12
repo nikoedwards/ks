@@ -18,6 +18,8 @@ import {
   markPrelaunchChecked,
   getCollabBackfillDue,
   markCollabChecked,
+  getRewardCollabBackfillDue,
+  markRewardCollabChecked,
 } from './db';
 import {
   buildKSJsonUrl,
@@ -29,6 +31,7 @@ import {
   fetchCollaboratorsViaWorker,
   storeCollaboratorsFromWorker,
   storeWorkerCoreResult,
+  backfillRewardsAndCollaborators,
 } from './scraper';
 import { normalizeState } from './projectState';
 import { runKickstarterLiveSync } from './kickstarterLive';
@@ -106,6 +109,26 @@ const KS_COLLAB_STALE_SEC = Math.max(3600, Number(process.env.KS_COLLAB_STALE_SE
 const KS_COLLAB_BUDGET_MS = Math.max(20_000, Number(process.env.KS_COLLAB_BUDGET_MS ?? 90_000));
 let lastCollabBackfill = 0;
 
+// Isolated "rewards + collaborators backfill" — fully separate from the live
+// core/rich/collab passes. Fixes the detail-page gap where most tracked live
+// projects have no reward tiers / collaborators (those only ever flowed through
+// the heavily-throttled, KS_DIRECT_PRIMARY-gated RICH pass). This pass probes
+// tracked live projects that are still MISSING rewards or collaborators via the
+// worker /project endpoint and stores ONLY those two things — it never writes
+// funding snapshots, touches next_fetch, or changes state, so it cannot affect
+// discovery / CORE / RICH. Runs sequentially inside the locked cycle (after the
+// collab backfill), bounded by its own batch size + wall-clock budget, and only
+// while the worker fleet is healthy with a free lane. Default ON (set
+// KS_REWARD_COLLAB_BACKFILL=0 to disable) since it is capacity-bounded + yields
+// to everything else. Ended projects are intentionally out of scope here — they
+// are backfilled on demand via the admin endpoint.
+const KS_REWARD_COLLAB_BACKFILL = process.env.KS_REWARD_COLLAB_BACKFILL !== '0';
+const KS_REWARD_COLLAB_BATCH = Math.max(1, Number(process.env.KS_REWARD_COLLAB_BATCH ?? 10));
+const KS_REWARD_COLLAB_INTERVAL_MS = Number(process.env.KS_REWARD_COLLAB_INTERVAL_MS ?? 5 * 60 * 1000);
+const KS_REWARD_COLLAB_STALE_SEC = Math.max(3600, Number(process.env.KS_REWARD_COLLAB_STALE_SEC ?? 14 * 24 * 3600));
+const KS_REWARD_COLLAB_BUDGET_MS = Math.max(20_000, Number(process.env.KS_REWARD_COLLAB_BUDGET_MS ?? 90_000));
+let lastRewardCollabBackfill = 0;
+
 export function initTracker() {
   if (started || typeof window !== 'undefined') return;
   if (process.env.NEXT_PHASE === 'phase-production-build') return;
@@ -151,6 +174,7 @@ async function runCycle() {
     await startDiscoveryJobs(now);
     await scrapePrelaunchWatch();
     await scrapeCollabBackfill();
+    await scrapeRewardCollabBackfill();
     runDiagnosticsPrune(now);
   } finally {
     cycleRunning = false;
@@ -638,6 +662,66 @@ async function backfillOneCollab(projectId: string): Promise<boolean> {
   if (!res) return false;
   const stored = storeCollaboratorsFromWorker(projectId, res.collaborators);
   return stored > 0;
+}
+
+// Isolated rewards + collaborators backfill pass. Default ON
+// (KS_REWARD_COLLAB_BACKFILL). Probes tracked live projects that are still
+// missing reward tiers / collaborators via the worker /project endpoint and
+// stores ONLY those two things. Never touches the live core/rich queues, the
+// funding schedule, or project state.
+async function scrapeRewardCollabBackfill() {
+  if (!KS_REWARD_COLLAB_BACKFILL) return;
+  if (isFleetUnhealthy()) return;
+  if (!(await fleetHasFreeLane())) return;
+  const now = Date.now();
+  if (now - lastRewardCollabBackfill <= KS_REWARD_COLLAB_INTERVAL_MS) return;
+  lastRewardCollabBackfill = now;
+  try {
+    const due = getRewardCollabBackfillDue(KS_REWARD_COLLAB_BATCH, Math.floor(Date.now() / 1000) - KS_REWARD_COLLAB_STALE_SEC);
+    if (!due.length) return;
+    console.log(`[tracker] reward+collab backfill: ${due.length} project(s)`);
+    const deadline = Date.now() + KS_REWARD_COLLAB_BUDGET_MS;
+    let filled = 0;
+    let done = 0;
+    for (const row of due) {
+      if (Date.now() >= deadline) {
+        console.log(`[tracker] reward+collab backfill: budget spent after ${done}/${due.length}; deferring the rest`);
+        break;
+      }
+      done++;
+      try {
+        if (await backfillOneRewardCollab(row.project_id)) filled++;
+      } catch (e) {
+        console.error(`[tracker] reward+collab backfill error for ${row.project_id}:`, e);
+      }
+    }
+    if (filled) console.log(`[tracker] reward+collab backfill: ${filled}/${done} project(s) got rewards/collaborators`);
+  } catch (e) {
+    console.error('[tracker] reward+collab backfill error:', e);
+    recordCrawlerError({
+      source: 'tracker',
+      job_type: 'reward_collab_backfill',
+      message: e instanceof Error ? e.message : String(e),
+    });
+  }
+}
+
+// Probe a single project's rewards + collaborators via the worker /project
+// endpoint and store them. Always marks the project as checked (so a project
+// that genuinely has none isn't re-probed every cycle). Returns true if any
+// rewards or collaborators were stored.
+async function backfillOneRewardCollab(projectId: string): Promise<boolean> {
+  const project = await getProjectById(projectId) as { source_url?: string; creator_slug?: string; slug?: string } | null;
+  if (!project) return false;
+  const jsonUrl = buildProjectJsonUrl(project);
+  if (!jsonUrl) {
+    markRewardCollabChecked(projectId);
+    return false;
+  }
+  const pageUrl = jsonUrl.replace(/\.json(?:[?#].*)?$/, '');
+  const res = await backfillRewardsAndCollaborators(projectId, pageUrl);
+  markRewardCollabChecked(projectId);
+  return res.ok && (res.rewardCount > 0 || res.collaboratorCount > 0);
 }
 
 function buildProjectJsonUrl(project: { source_url?: string; creator_slug?: string; slug?: string }) {

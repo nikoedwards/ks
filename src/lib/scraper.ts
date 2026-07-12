@@ -779,6 +779,45 @@ export function storeCollaboratorsFromWorker(
   return normalized.length;
 }
 
+export interface RewardCollabBackfillResult {
+  ok: boolean;
+  rewardCount: number;
+  collaboratorCount: number;
+  message?: string;
+}
+
+/**
+ * ISOLATED rewards + collaborators backfill for a single project.
+ *
+ * Fetches the rich project data via the worker /project endpoint (LOW priority
+ * through the worker gate, so discovery always preempts it) and persists ONLY
+ * the reward tiers + collaborators. It deliberately does NOT write funding
+ * snapshots, touch tracking schedule (next_fetch / consecutive_failures), or
+ * change project state — so it can never perturb the existing discovery / CORE /
+ * RICH / collab crawl logic. Reused by both the flag-gated background pass in
+ * tracker.ts and the admin manual-trigger endpoint.
+ */
+export async function backfillRewardsAndCollaborators(
+  projectId: string,
+  pageUrl: string,
+): Promise<RewardCollabBackfillResult> {
+  const rich = await fetchProjectViaWorker(pageUrl, projectId);
+  if (!rich) return { ok: false, rewardCount: 0, collaboratorCount: 0, message: 'Worker /project returned no data.' };
+
+  const now = Math.floor(Date.now() / 1000);
+  const rewards = normalizeRewards(rich);
+  const collaborators = normalizeCollaborators(projectId, rich, now);
+  if (rewards.length) insertRewardSnapshots(projectId, now, rewards);
+  if (collaborators.length) upsertProjectCollaborators(projectId, collaborators);
+
+  return {
+    ok: true,
+    rewardCount: rewards.length,
+    collaboratorCount: collaborators.length,
+    message: `rewards=${rewards.length}, collaborators=${collaborators.length}`,
+  };
+}
+
 export interface WorkerCoreResult {
   url: string;
   ok: boolean;
