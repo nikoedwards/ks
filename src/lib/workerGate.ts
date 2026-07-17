@@ -33,7 +33,11 @@ function envRaw(name: string): string {
 }
 
 function envNum(name: string, def: number, min: number, max: number): number {
-  const v = Number(envRaw(name));
+  const raw = envRaw(name);
+  // Number('') is 0, so an unset variable must be handled before conversion;
+  // otherwise it silently becomes zero (or the minimum) instead of the default.
+  if (!raw) return def;
+  const v = Number(raw);
   if (!Number.isFinite(v)) return def;
   return Math.max(min, Math.min(v, max));
 }
