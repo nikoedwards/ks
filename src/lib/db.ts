@@ -4841,9 +4841,16 @@ export function getCollabBackfillDue(
         )
       )
     ORDER BY
-      CASE WHEN NOT EXISTS (
-        SELECT 1 FROM project_collaborators pc WHERE pc.project_id = p.id
-      ) THEN 0 ELSE 1 END,
+      CASE
+        -- Retry projects that were checked but still have no rows before
+        -- first-time probes. Otherwise a steady stream of newly discovered
+        -- projects can starve yesterday's incomplete collaborator fetches.
+        WHEN p.collab_checked_at IS NOT NULL AND NOT EXISTS (
+          SELECT 1 FROM project_collaborators pc WHERE pc.project_id = p.id
+        ) THEN 0
+        WHEN p.collab_checked_at IS NULL THEN 1
+        ELSE 2
+      END,
       (p.state = 'live') DESC,
       COALESCE(p.last_seen_at, 0) DESC,
       p.collab_checked_at ASC
