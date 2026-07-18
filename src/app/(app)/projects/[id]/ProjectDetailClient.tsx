@@ -889,40 +889,65 @@ export default function ProjectDetailClient({ initialProject = null }: { initial
 
   const shareFileName = () => `kicksonar-${project.platform || (isIgg ? 'indiegogo' : 'kickstarter')}-${project.id}.png`;
 
-  const shareCaption = (targetLang = shareLang) => targetLang === 'cn'
-    ? `${project.name}｜已筹 ${fmtMoney(displayPledged, displayCurrency)}，${displayBackers.toLocaleString()} 位支持者。来自 Kicksonar 项目数据详情。`
-    : `${project.name} — ${fmtMoney(displayPledged, displayCurrency)} pledged from ${displayBackers.toLocaleString()} backers. Project insights from Kicksonar.`;
+  const shareCaption = (targetLang = shareLang, title = project.name) => targetLang === 'cn'
+    ? `${title}｜已筹 ${fmtMoney(displayPledged, displayCurrency)}，${displayBackers.toLocaleString()} 位支持者。查看 Kicksonar 完整数字曲线。`
+    : `${title} — ${fmtMoney(displayPledged, displayCurrency)} pledged from ${displayBackers.toLocaleString()} backers. See the full data curve on Kicksonar.`;
 
-  const renderProjectShareImage = (targetLang: 'cn' | 'en', logo: HTMLImageElement | null, cover: HTMLImageElement | null) => {
+  const translateProjectForShare = async (targetLang: 'cn' | 'en') => {
+    if (targetLang !== 'cn') return { title: project.name, subtitle: project.blurb || '' };
+    try {
+      const response = await fetch('/api/translate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ texts: [project.name, project.blurb || ''], target: 'zh-CN' }),
+      });
+      const data = await response.json() as { translations?: string[] };
+      return {
+        title: data.translations?.[0] || project.name,
+        subtitle: data.translations?.[1] || project.blurb || '',
+      };
+    } catch {
+      return { title: project.name, subtitle: project.blurb || '' };
+    }
+  };
+
+  const renderProjectShareImage = (
+    targetLang: 'cn' | 'en',
+    logo: HTMLImageElement | null,
+    cover: HTMLImageElement | null,
+    translated: { title: string; subtitle: string },
+  ) => {
     const cn = targetLang === 'cn';
     const canvas = document.createElement('canvas');
     canvas.width = 1080;
-    canvas.height = 1350;
+    canvas.height = 1440;
     const ctx = canvas.getContext('2d');
     if (!ctx) return '';
 
-    const gradient = ctx.createLinearGradient(0, 0, 1080, 1350);
+    const gradient = ctx.createLinearGradient(0, 0, 1080, 1440);
     gradient.addColorStop(0, '#081a13');
     gradient.addColorStop(0.55, '#10231c');
     gradient.addColorStop(1, '#06110d');
     ctx.fillStyle = gradient;
-    ctx.fillRect(0, 0, 1080, 1350);
+    ctx.fillRect(0, 0, 1080, 1440);
     ctx.fillStyle = '#51d88a';
     ctx.beginPath(); ctx.arc(1010, 70, 250, 0, Math.PI * 2); ctx.fill();
     ctx.fillStyle = 'rgba(217,255,146,.12)';
-    ctx.beginPath(); ctx.arc(70, 1260, 300, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(70, 1350, 300, 0, Math.PI * 2); ctx.fill();
 
-    roundedRect(ctx, 54, 48, 430, 84, 22);
+    roundedRect(ctx, 54, 42, 972, 92, 22);
     ctx.fillStyle = '#ffffff'; ctx.fill();
-    if (logo) ctx.drawImage(logo, 82, 72, 50, 36);
+    if (logo) ctx.drawImage(logo, 82, 67, 48, 42);
     ctx.fillStyle = '#10231c';
-    ctx.font = '800 34px Arial, "Microsoft YaHei", sans-serif';
-    ctx.fillText('Kicksonar', 150, 101);
+    ctx.font = '800 36px Arial, "Microsoft YaHei", sans-serif';
+    ctx.fillText('Kicksonar', 148, 101);
     ctx.fillStyle = '#365449';
-    ctx.font = '700 18px Arial, "Microsoft YaHei", sans-serif';
-    ctx.fillText(cn ? '众筹项目数据卡' : 'PROJECT DATA CARD', 325, 99);
+    ctx.font = '700 22px Arial, "Microsoft YaHei", sans-serif';
+    ctx.textAlign = 'right';
+    ctx.fillText(cn ? '众筹项目数据卡' : 'PROJECT DATA CARD', 992, 99);
+    ctx.textAlign = 'left';
 
-    const imageX = 54, imageY = 174, imageW = 972, imageH = 472;
+    const imageX = 54, imageY = 168, imageW = 430, imageH = 330;
     roundedRect(ctx, imageX, imageY, imageW, imageH, 28);
     ctx.save(); ctx.clip();
     if (cover) {
@@ -942,16 +967,63 @@ export default function ProjectDetailClient({ initialProject = null }: { initial
     const platformLabel = isIgg ? 'INDIEGOGO' : 'KICKSTARTER';
     ctx.font = '800 18px Arial, sans-serif';
     const platformW = ctx.measureText(platformLabel).width + 34;
-    roundedRect(ctx, 82, 568, platformW, 40, 20);
+    roundedRect(ctx, 76, 432, platformW, 40, 20);
     ctx.fillStyle = isIgg ? '#eb1478' : '#05ce78'; ctx.fill();
-    ctx.fillStyle = '#ffffff'; ctx.fillText(platformLabel, 99, 595);
+    ctx.fillStyle = '#ffffff'; ctx.fillText(platformLabel, 93, 459);
 
     ctx.fillStyle = '#ffffff';
-    ctx.font = '900 50px Arial, "Microsoft YaHei", sans-serif';
-    drawWrappedText(ctx, project.name, 64, 728, 952, 64, 2);
+    ctx.font = '900 45px Arial, "Microsoft YaHei", sans-serif';
+    drawWrappedText(ctx, translated.title, 526, 210, 474, 57, 3);
     ctx.fillStyle = '#a8b9b2';
-    ctx.font = '500 25px Arial, "Microsoft YaHei", sans-serif';
-    drawWrappedText(ctx, project.blurb || (cn ? '发现值得关注的全球众筹项目' : 'Discover noteworthy crowdfunding projects'), 64, 866, 952, 38, 2);
+    ctx.font = '500 23px Arial, "Microsoft YaHei", sans-serif';
+    drawWrappedText(ctx, translated.subtitle || (cn ? '发现值得关注的全球众筹项目' : 'Discover noteworthy crowdfunding projects'), 526, 398, 474, 34, 3);
+
+    const chartX = 54, chartY = 548, chartW = 972, chartH = 390;
+    roundedRect(ctx, chartX, chartY, chartW, chartH, 28);
+    ctx.fillStyle = '#f4fff7'; ctx.fill();
+    ctx.fillStyle = '#123c2b';
+    ctx.font = '800 27px Arial, "Microsoft YaHei", sans-serif';
+    ctx.fillText(cn ? '众筹金额数字曲线' : 'Funding Curve', chartX + 30, chartY + 48);
+    ctx.fillStyle = '#6b887b';
+    ctx.font = '600 18px Arial, "Microsoft YaHei", sans-serif';
+    ctx.textAlign = 'right';
+    ctx.fillText(cn ? `共 ${snapshots.length} 个数据点` : `${snapshots.length} data points`, chartX + chartW - 30, chartY + 46);
+    ctx.textAlign = 'left';
+
+    const plotX = chartX + 42, plotY = chartY + 88, plotW = chartW - 84, plotH = 218;
+    ctx.strokeStyle = '#d8ebe0'; ctx.lineWidth = 2;
+    for (let row = 0; row <= 3; row++) {
+      const y = plotY + row * (plotH / 3);
+      ctx.beginPath(); ctx.moveTo(plotX, y); ctx.lineTo(plotX + plotW, y); ctx.stroke();
+    }
+    const series = snapshots.filter(item => item.pledged_usd >= 0).slice(-60);
+    if (series.length >= 2) {
+      const values = series.map(item => item.pledged_usd);
+      const minValue = Math.min(...values);
+      const maxValue = Math.max(...values);
+      const range = Math.max(1, maxValue - minValue);
+      const points = series.map((item, index) => ({
+        x: plotX + (index / (series.length - 1)) * plotW,
+        y: plotY + plotH - ((item.pledged_usd - minValue) / range) * plotH,
+      }));
+      const area = ctx.createLinearGradient(0, plotY, 0, plotY + plotH);
+      area.addColorStop(0, 'rgba(5,206,120,.35)'); area.addColorStop(1, 'rgba(5,206,120,.02)');
+      ctx.beginPath(); ctx.moveTo(points[0].x, plotY + plotH);
+      points.forEach(point => ctx.lineTo(point.x, point.y));
+      ctx.lineTo(points[points.length - 1].x, plotY + plotH); ctx.closePath();
+      ctx.fillStyle = area; ctx.fill();
+      ctx.beginPath(); points.forEach((point, index) => index ? ctx.lineTo(point.x, point.y) : ctx.moveTo(point.x, point.y));
+      ctx.strokeStyle = '#05ce78'; ctx.lineWidth = 7; ctx.lineJoin = 'round'; ctx.lineCap = 'round'; ctx.stroke();
+      const last = points[points.length - 1];
+      ctx.beginPath(); ctx.arc(last.x, last.y, 9, 0, Math.PI * 2); ctx.fillStyle = '#05ce78'; ctx.fill();
+      ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 4; ctx.stroke();
+      ctx.fillStyle = '#48685b'; ctx.font = '600 17px Arial, "Microsoft YaHei", sans-serif';
+      ctx.fillText(fmtMoney(minValue, 'USD'), plotX, plotY + plotH + 34);
+      ctx.textAlign = 'right'; ctx.fillText(fmtMoney(maxValue, 'USD'), plotX + plotW, plotY + plotH + 34); ctx.textAlign = 'left';
+    } else {
+      ctx.fillStyle = '#8ba297'; ctx.font = '600 23px Arial, "Microsoft YaHei", sans-serif';
+      ctx.textAlign = 'center'; ctx.fillText(cn ? '持续追踪中，更多曲线数据即将生成' : 'Tracking in progress — more curve data is coming', chartX + chartW / 2, plotY + 110); ctx.textAlign = 'left';
+    }
 
     const stats = [
       { value: fmtMoney(displayPledged, displayCurrency), label: cn ? '已筹金额' : 'PLEDGED' },
@@ -960,27 +1032,27 @@ export default function ProjectDetailClient({ initialProject = null }: { initial
     ];
     stats.forEach((stat, index) => {
       const x = 54 + index * 332;
-      roundedRect(ctx, x, 970, 308, 166, 22);
+      roundedRect(ctx, x, 978, 308, 166, 22);
       ctx.fillStyle = index === 0 ? '#d9ff92' : '#f4fff7'; ctx.fill();
       ctx.fillStyle = '#0d3222';
       ctx.font = '900 42px Arial, "Microsoft YaHei", sans-serif';
-      ctx.fillText(canvasEllipsis(ctx, stat.value, 270), x + 24, 1038);
+      ctx.fillText(canvasEllipsis(ctx, stat.value, 270), x + 24, 1046);
       ctx.fillStyle = '#527064';
       ctx.font = '700 20px Arial, "Microsoft YaHei", sans-serif';
-      ctx.fillText(stat.label, x + 24, 1090);
+      ctx.fillText(stat.label, x + 24, 1098);
     });
 
     ctx.fillStyle = '#7f9b90';
     ctx.font = '600 22px Arial, "Microsoft YaHei", sans-serif';
     const meta = [project.category_parent, project.category_name, project.country_name || project.country].filter(Boolean).join(' · ');
-    ctx.fillText(canvasEllipsis(ctx, meta, 820), 64, 1204);
+    ctx.fillText(canvasEllipsis(ctx, meta, 820), 64, 1210);
     ctx.fillStyle = '#51d88a';
     ctx.font = '800 24px Arial, "Microsoft YaHei", sans-serif';
-    ctx.fillText('kicksonar.com', 64, 1272);
+    ctx.fillText('kicksonar.com', 64, 1368);
     ctx.textAlign = 'right';
     ctx.fillStyle = '#7f9b90';
     ctx.font = '600 19px Arial, "Microsoft YaHei", sans-serif';
-    ctx.fillText(cn ? '扫码/打开链接查看完整数据' : 'Open the link for full insights', 1016, 1270);
+    ctx.fillText(cn ? '打开链接查看完整曲线与项目数据' : 'Open the link for full curves and insights', 1016, 1366);
     ctx.textAlign = 'left';
     return canvas.toDataURL('image/png');
   };
@@ -990,16 +1062,15 @@ export default function ProjectDetailClient({ initialProject = null }: { initial
     setShareGenerating(true);
     setShareImage('');
     setShareHint(null);
-    const [logo, cover] = await Promise.all([
+    const [logo, cover, translated] = await Promise.all([
       loadShareImage('/logo.svg'),
-      loadShareImage(heroImage),
+      loadShareImage(`/api/projects/${encodeURIComponent(project.id)}/share-image`),
+      translateProjectForShare(targetLang),
     ]);
     try {
-      setShareImage(renderProjectShareImage(targetLang, logo, cover));
+      setShareImage(renderProjectShareImage(targetLang, logo, cover, translated));
     } catch {
-      // Some campaign CDNs do not allow canvas export. The card remains useful
-      // with the branded fallback panel instead of failing the whole share flow.
-      setShareImage(renderProjectShareImage(targetLang, logo, null));
+      setShareImage(renderProjectShareImage(targetLang, logo, null, translated));
     } finally {
       setShareGenerating(false);
     }
@@ -1029,6 +1100,36 @@ export default function ProjectDetailClient({ initialProject = null }: { initial
     } catch (error) {
       if ((error as Error)?.name !== 'AbortError') setShareHint(isZhLang(lang) ? '系统分享不可用，请保存图片后分享。' : 'System sharing is unavailable. Save the image to share it.');
     }
+  };
+
+  type SharePlatform = { id: string; label: string; color: string; web?: 'x' | 'facebook' | 'weibo' };
+  const sharePlatforms: SharePlatform[] = shareLang === 'cn'
+    ? [
+        { id: 'wechat', label: '微信', color: '#07C160' },
+        { id: 'xiaohongshu', label: '小红书', color: '#FF2442' },
+        { id: 'weibo', label: '微博', color: '#E6162D', web: 'weibo' },
+      ]
+    : [
+        { id: 'x', label: 'X', color: '#000000', web: 'x' },
+        { id: 'facebook', label: 'Facebook', color: '#1877F2', web: 'facebook' },
+        { id: 'instagram', label: 'Instagram', color: '#E4405F' },
+      ];
+
+  const shareProjectToPlatform = async (platform: SharePlatform) => {
+    setShareHint(null);
+    if (nativeShareReady) {
+      await nativeShareProject();
+      return;
+    }
+    const url = encodeURIComponent(projectShareUrl());
+    const caption = encodeURIComponent(shareCaption());
+    if (platform.web === 'x') window.open(`https://twitter.com/intent/tweet?text=${caption}&url=${url}`, '_blank', 'noopener');
+    else if (platform.web === 'facebook') window.open(`https://www.facebook.com/sharer/sharer.php?u=${url}`, '_blank', 'noopener');
+    else if (platform.web === 'weibo') window.open(`https://service.weibo.com/share/share.php?url=${url}&title=${caption}`, '_blank', 'noopener');
+    downloadProjectShareImage();
+    setShareHint(shareLang === 'cn'
+      ? `分享图已下载${platform.web ? '，同时已打开发布窗口' : ''}，请在「${platform.label}」中上传图片。`
+      : `The share card was downloaded${platform.web ? ' and the post window was opened' : ''}. Upload it to ${platform.label}.`);
   };
 
   return (
@@ -1864,18 +1965,33 @@ export default function ProjectDetailClient({ initialProject = null }: { initial
             </div>
 
             {shareImage && !shareGenerating && (
-              <div className="mt-3 flex flex-wrap gap-2">
-                <button onClick={downloadProjectShareImage} className="inline-flex items-center gap-2 rounded-lg border border-ks-green px-3 py-2 text-sm font-semibold text-ks-green hover:bg-ks-green-light/40">
-                  <Download className="h-4 w-4" />{isZhLang(lang) ? '保存图片' : 'Save Image'}
-                </button>
-                {nativeShareReady && (
-                  <button onClick={nativeShareProject} className="inline-flex items-center gap-2 rounded-lg bg-ks-green px-3 py-2 text-sm font-semibold text-white hover:bg-ks-green-dark">
-                    <Send className="h-4 w-4" />{isZhLang(lang) ? '一键分享' : 'Share'}
+              <div className="mt-4 border-t border-gray-100 pt-4">
+                <div className="flex flex-wrap gap-2">
+                  <button onClick={downloadProjectShareImage} className="inline-flex items-center gap-2 rounded-lg border border-ks-green px-3 py-2 text-sm font-semibold text-ks-green hover:bg-ks-green-light/40">
+                    <Download className="h-4 w-4" />{isZhLang(lang) ? '保存图片' : 'Save Image'}
                   </button>
-                )}
+                  {nativeShareReady && (
+                    <button onClick={nativeShareProject} className="inline-flex items-center gap-2 rounded-lg bg-gray-900 px-3 py-2 text-sm font-semibold text-white hover:bg-gray-700">
+                      <Send className="h-4 w-4" />{isZhLang(lang) ? '一键分享' : 'Share'}
+                    </button>
+                  )}
+                </div>
+                <p className="mb-2 mt-4 text-xs font-semibold text-gray-400">{isZhLang(lang) ? '分享到社交平台' : 'Share to social'}</p>
+                <div className="flex flex-wrap gap-2">
+                  {sharePlatforms.map(platform => (
+                    <button key={platform.id} onClick={() => shareProjectToPlatform(platform)} style={{ backgroundColor: platform.color }}
+                      className="inline-flex items-center gap-1.5 rounded-full px-3.5 py-2 text-sm font-semibold text-white shadow-sm transition-opacity hover:opacity-90">
+                      <Share2 className="h-3.5 w-3.5" />{platform.label}
+                    </button>
+                  ))}
+                </div>
+                <p className="mt-2 text-xs text-gray-400">
+                  {shareHint ?? (isZhLang(lang)
+                    ? '手机端会唤起系统分享；电脑端会打开发布窗口并下载分享图。'
+                    : 'Mobile opens the system share sheet; desktop opens a post window and downloads the card.')}
+                </p>
               </div>
             )}
-            {shareHint && <p className="mt-2 text-xs text-amber-600">{shareHint}</p>}
 
             <div className="mt-4 overflow-hidden rounded-xl border border-gray-100 bg-gray-50">
               {shareGenerating ? (
