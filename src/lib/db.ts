@@ -4818,8 +4818,10 @@ export function markPrelaunchChecked(projectId: string, ts?: number) {
 export function getCollabBackfillDue(
   limit = 10,
   staleBeforeSec?: number,
+  missingRetryBeforeSec?: number,
 ): { project_id: string }[] {
   const stale = staleBeforeSec ?? Math.floor(Date.now() / 1000) - 30 * 24 * 3600;
+  const missingRetry = missingRetryBeforeSec ?? Math.floor(Date.now() / 1000) - 60 * 60;
   return getDB().prepare(`
     SELECT p.id AS project_id
     FROM projects p
@@ -4828,12 +4830,25 @@ export function getCollabBackfillDue(
         OR (p.creator_slug IS NOT NULL AND p.slug IS NOT NULL)
       )
       AND (p.state = 'live' OR p.rewards_synced_at IS NOT NULL)
-      AND (p.collab_checked_at IS NULL OR p.collab_checked_at <= @stale)
-    ORDER BY (p.collab_checked_at IS NOT NULL), p.collab_checked_at ASC,
-             (p.state = 'live') DESC,
-             COALESCE(p.rewards_synced_at, 0) DESC
+      AND (
+        p.collab_checked_at IS NULL
+        OR p.collab_checked_at <= @stale
+        OR (
+          p.collab_checked_at <= @missingRetry
+          AND NOT EXISTS (
+            SELECT 1 FROM project_collaborators pc WHERE pc.project_id = p.id
+          )
+        )
+      )
+    ORDER BY
+      CASE WHEN NOT EXISTS (
+        SELECT 1 FROM project_collaborators pc WHERE pc.project_id = p.id
+      ) THEN 0 ELSE 1 END,
+      (p.state = 'live') DESC,
+      COALESCE(p.last_seen_at, 0) DESC,
+      p.collab_checked_at ASC
     LIMIT @limit
-  `).all({ stale, limit }) as { project_id: string }[];
+  `).all({ stale, missingRetry, limit }) as { project_id: string }[];
 }
 
 export function markCollabChecked(projectId: string, ts?: number) {
@@ -4844,8 +4859,8 @@ export function markCollabChecked(projectId: string, ts?: number) {
 /**
  * Isolated "rewards + collaborators backfill" selection — completely separate
  * from the live core/rich/collab passes. Returns tracked, currently-live
- * projects with a usable Kickstarter URL whose reward tiers OR collaborators are
- * still missing and that haven't been probed by this backfill recently
+ * projects with a usable Kickstarter URL whose reward tiers are still missing
+ * and that haven't been probed by this backfill recently
  * (least-recently-checked first). The backfill pass (gated by
  * KS_REWARD_COLLAB_BACKFILL) probes these via the worker /project endpoint and
  * stores ONLY rewards + collaborators.
@@ -4857,8 +4872,10 @@ export function markCollabChecked(projectId: string, ts?: number) {
 export function getRewardCollabBackfillDue(
   limit = 10,
   staleBeforeSec?: number,
+  missingRetryBeforeSec?: number,
 ): { project_id: string }[] {
   const stale = staleBeforeSec ?? Math.floor(Date.now() / 1000) - 14 * 24 * 3600;
+  const missingRetry = missingRetryBeforeSec ?? Math.floor(Date.now() / 1000) - 60 * 60;
   return getDB().prepare(`
     SELECT p.id AS project_id
     FROM projects p
@@ -4869,15 +4886,16 @@ export function getRewardCollabBackfillDue(
         p.source_url LIKE 'https://www.kickstarter.com/projects/%'
         OR (p.creator_slug IS NOT NULL AND p.slug IS NOT NULL)
       )
+      AND NOT EXISTS (SELECT 1 FROM reward_snapshots rs WHERE rs.project_id = p.id)
       AND (
-        NOT EXISTS (SELECT 1 FROM reward_snapshots rs WHERE rs.project_id = p.id)
-        OR NOT EXISTS (SELECT 1 FROM project_collaborators pc WHERE pc.project_id = p.id)
+        p.reward_collab_checked_at IS NULL
+        OR p.reward_collab_checked_at <= @stale
+        OR p.reward_collab_checked_at <= @missingRetry
       )
-      AND (p.reward_collab_checked_at IS NULL OR p.reward_collab_checked_at <= @stale)
-    ORDER BY (p.reward_collab_checked_at IS NOT NULL), p.reward_collab_checked_at ASC,
-             COALESCE(p.last_seen_at, 0) DESC
+    ORDER BY COALESCE(p.last_seen_at, 0) DESC,
+             p.reward_collab_checked_at ASC
     LIMIT @limit
-  `).all({ stale, limit }) as { project_id: string }[];
+  `).all({ stale, missingRetry, limit }) as { project_id: string }[];
 }
 
 export function markRewardCollabChecked(projectId: string, ts?: number) {

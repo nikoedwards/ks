@@ -32,6 +32,7 @@ import {
   storeCollaboratorsFromWorker,
   storeWorkerCoreResult,
   backfillRewardsAndCollaborators,
+  type ScrapeResult,
 } from './scraper';
 import { normalizeState } from './projectState';
 import { runKickstarterLiveSync } from './kickstarterLive';
@@ -79,6 +80,7 @@ const KS_CORE_BATCH = Math.max(1, Number(process.env.KS_CORE_BATCH_SIZE ?? 60));
 const KS_CORE_CHUNK = Math.max(1, Math.min(Number(process.env.KS_CORE_CHUNK ?? 40), 60));
 const KS_RICH_BATCH = Math.max(0, Number(process.env.KS_RICH_BATCH_SIZE ?? 12));
 const KS_RICH_INTERVAL_SEC = Math.max(3600, Number(process.env.KS_RICH_INTERVAL_SEC ?? 48 * 3600));
+const KS_RICH_RETRY_SEC = Math.max(15 * 60, Number(process.env.KS_RICH_RETRY_SEC ?? 60 * 60));
 // Cap how long the (expensive, serial) RICH pass may run per cycle so it never
 // starves the CORE funding pass that follows it. Default 2 min of a 3-min cycle.
 const KS_RICH_CYCLE_BUDGET_MS = Math.max(20_000, Number(process.env.KS_RICH_CYCLE_BUDGET_MS ?? 120_000));
@@ -106,6 +108,7 @@ const KS_COLLAB_BACKFILL = process.env.KS_COLLAB_BACKFILL === '1';
 const KS_COLLAB_BATCH = Math.max(1, Number(process.env.KS_COLLAB_BATCH ?? 10));
 const KS_COLLAB_INTERVAL_MS = Number(process.env.KS_COLLAB_INTERVAL_MS ?? 20 * 60 * 1000);
 const KS_COLLAB_STALE_SEC = Math.max(3600, Number(process.env.KS_COLLAB_STALE_SEC ?? 30 * 24 * 3600));
+const KS_COLLAB_RETRY_SEC = Math.max(15 * 60, Number(process.env.KS_COLLAB_RETRY_SEC ?? 60 * 60));
 const KS_COLLAB_BUDGET_MS = Math.max(20_000, Number(process.env.KS_COLLAB_BUDGET_MS ?? 90_000));
 let lastCollabBackfill = 0;
 
@@ -126,6 +129,7 @@ const KS_REWARD_COLLAB_BACKFILL = process.env.KS_REWARD_COLLAB_BACKFILL !== '0';
 const KS_REWARD_COLLAB_BATCH = Math.max(1, Number(process.env.KS_REWARD_COLLAB_BATCH ?? 10));
 const KS_REWARD_COLLAB_INTERVAL_MS = Number(process.env.KS_REWARD_COLLAB_INTERVAL_MS ?? 5 * 60 * 1000);
 const KS_REWARD_COLLAB_STALE_SEC = Math.max(3600, Number(process.env.KS_REWARD_COLLAB_STALE_SEC ?? 14 * 24 * 3600));
+const KS_REWARD_COLLAB_RETRY_SEC = Math.max(15 * 60, Number(process.env.KS_REWARD_COLLAB_RETRY_SEC ?? 60 * 60));
 const KS_REWARD_COLLAB_BUDGET_MS = Math.max(20_000, Number(process.env.KS_REWARD_COLLAB_BUDGET_MS ?? 90_000));
 let lastRewardCollabBackfill = 0;
 
@@ -268,10 +272,21 @@ async function enrollLiveProjects(now: number) {
 
 type DueProject = { project_id: string; track_comments: number; track_text_diff: number; consecutive_failures: number };
 
-async function scrapeOneDue(due: DueProject): Promise<boolean> {
+function staleRetryMarker(staleSec: number, retrySec: number): number {
+  return Math.floor(Date.now() / 1000) - staleSec + retrySec;
+}
+
+// Missing-data queues compare the stored timestamp with `now - retrySec`.
+// Store a future-shifted marker when the worker asks for a longer delay, or
+// when a conclusive empty result should wait for the normal stale interval.
+function missingRetryMarker(retrySec: number, desiredDelaySec = retrySec): number {
+  return Math.floor(Date.now() / 1000) + Math.max(0, desiredDelaySec - retrySec);
+}
+
+async function scrapeOneDue(due: DueProject): Promise<ScrapeResult | null> {
   const { project_id, track_comments, track_text_diff } = due;
   const project = await getProjectById(project_id) as { source_url?: string; creator_slug?: string; slug?: string } | null;
-  if (!project) return false;
+  if (!project) return null;
 
   const jsonUrl = buildProjectJsonUrl(project);
   if (!jsonUrl) {
@@ -284,7 +299,7 @@ async function scrapeOneDue(due: DueProject): Promise<boolean> {
       message: 'Cannot build Kickstarter JSON URL for project.',
     });
     upsertTrackingSettings({ project_id, next_fetch: Math.floor(Date.now() / 1000) + 24 * 3600 });
-    return false;
+    return null;
   }
 
   // In KS-direct primary mode the worker /project response carries reward tiers,
@@ -311,7 +326,7 @@ async function scrapeOneDue(due: DueProject): Promise<boolean> {
     });
   }
   // On success, the scrape pipeline already wrote next_fetch + reset consecutive_failures.
-  return result.ok;
+  return result;
 }
 
 function ksPathKey(url: string): string {
@@ -358,17 +373,18 @@ async function scrapeRichDueProjects() {
         break;
       }
       try {
-        const ok = await scrapeOneDue(d);
+        const result = await scrapeOneDue(d);
+        const gotRewards = Boolean(result?.ok && result.rewardCount > 0);
         // Stamp on success → next rich in KS_RICH_INTERVAL_SEC. On failure stamp
-        // a near-past time so it retries rich in ~6h instead of blocking the
-        // NULLS-first queue every cycle (core keeps funding fresh meanwhile).
+        // Funding-only responses are not rich success; retry missing rewards
+        // soon instead of hiding a 429/empty response for the full stale window.
         markRewardsSynced(
           d.project_id,
-          ok ? now : now - KS_RICH_INTERVAL_SEC + 6 * 3600,
+          gotRewards ? now : staleRetryMarker(KS_RICH_INTERVAL_SEC, KS_RICH_RETRY_SEC),
         );
       } catch (e) {
         console.error(`[tracker] rich scrape error for ${d.project_id}:`, e);
-        markRewardsSynced(d.project_id, now - KS_RICH_INTERVAL_SEC + 6 * 3600);
+        markRewardsSynced(d.project_id, staleRetryMarker(KS_RICH_INTERVAL_SEC, KS_RICH_RETRY_SEC));
       }
       done++;
     }
@@ -615,7 +631,12 @@ async function scrapeCollabBackfill() {
   if (now - lastCollabBackfill <= KS_COLLAB_INTERVAL_MS) return;
   lastCollabBackfill = now;
   try {
-    const due = getCollabBackfillDue(KS_COLLAB_BATCH, Math.floor(Date.now() / 1000) - KS_COLLAB_STALE_SEC);
+    const nowSec = Math.floor(Date.now() / 1000);
+    const due = getCollabBackfillDue(
+      KS_COLLAB_BATCH,
+      nowSec - KS_COLLAB_STALE_SEC,
+      nowSec - KS_COLLAB_RETRY_SEC,
+    );
     if (!due.length) return;
     console.log(`[tracker] collab backfill: ${due.length} project(s)`);
     const deadline = Date.now() + KS_COLLAB_BUDGET_MS;
@@ -645,9 +666,9 @@ async function scrapeCollabBackfill() {
 }
 
 // Probe a single project's collaborators via the worker /collab endpoint and
-// store them. Always marks the project as checked (so we don't re-probe it next
-// cycle), even when it has genuinely zero collaborators. Returns true if any
-// collaborators were stored.
+// store them. A conclusive response is checked on the normal stale cadence;
+// blocked/incomplete empty responses are kept near the front for a short retry.
+// Returns true if any collaborators were stored.
 async function backfillOneCollab(projectId: string): Promise<boolean> {
   const project = await getProjectById(projectId) as { source_url?: string; creator_slug?: string; slug?: string } | null;
   if (!project) return false;
@@ -658,9 +679,24 @@ async function backfillOneCollab(projectId: string): Promise<boolean> {
   }
   const pageUrl = jsonUrl.replace(/\.json(?:[?#].*)?$/, '');
   const res = await fetchCollaboratorsViaWorker(pageUrl, projectId);
-  markCollabChecked(projectId);
-  if (!res) return false;
+  if (!res) {
+    markCollabChecked(projectId, missingRetryMarker(KS_COLLAB_RETRY_SEC));
+    return false;
+  }
   const stored = storeCollaboratorsFromWorker(projectId, res.collaborators);
+  const complete = stored > 0 || res.complete;
+  const workerRetrySec = Math.max(
+    KS_COLLAB_RETRY_SEC,
+    res.retryAfterMs ? Math.ceil(res.retryAfterMs / 1000) : 0,
+  );
+  markCollabChecked(
+    projectId,
+    stored > 0
+      ? undefined
+      : complete
+        ? missingRetryMarker(KS_COLLAB_RETRY_SEC, KS_COLLAB_STALE_SEC)
+        : missingRetryMarker(KS_COLLAB_RETRY_SEC, workerRetrySec),
+  );
   return stored > 0;
 }
 
@@ -677,7 +713,12 @@ async function scrapeRewardCollabBackfill() {
   if (now - lastRewardCollabBackfill <= KS_REWARD_COLLAB_INTERVAL_MS) return;
   lastRewardCollabBackfill = now;
   try {
-    const due = getRewardCollabBackfillDue(KS_REWARD_COLLAB_BATCH, Math.floor(Date.now() / 1000) - KS_REWARD_COLLAB_STALE_SEC);
+    const nowSec = Math.floor(Date.now() / 1000);
+    const due = getRewardCollabBackfillDue(
+      KS_REWARD_COLLAB_BATCH,
+      nowSec - KS_REWARD_COLLAB_STALE_SEC,
+      nowSec - KS_REWARD_COLLAB_RETRY_SEC,
+    );
     if (!due.length) return;
     console.log(`[tracker] reward+collab backfill: ${due.length} project(s)`);
     const deadline = Date.now() + KS_REWARD_COLLAB_BUDGET_MS;
@@ -707,9 +748,9 @@ async function scrapeRewardCollabBackfill() {
 }
 
 // Probe a single project's rewards + collaborators via the worker /project
-// endpoint and store them. Always marks the project as checked (so a project
-// that genuinely has none isn't re-probed every cycle). Returns true if any
-// rewards or collaborators were stored.
+// endpoint and store them. Reward success uses the normal stale cadence;
+// missing/blocked reward data is retried soon. Returns true if any rewards or
+// collaborators were stored.
 async function backfillOneRewardCollab(projectId: string): Promise<boolean> {
   const project = await getProjectById(projectId) as { source_url?: string; creator_slug?: string; slug?: string } | null;
   if (!project) return false;
@@ -720,7 +761,12 @@ async function backfillOneRewardCollab(projectId: string): Promise<boolean> {
   }
   const pageUrl = jsonUrl.replace(/\.json(?:[?#].*)?$/, '');
   const res = await backfillRewardsAndCollaborators(projectId, pageUrl);
-  markRewardCollabChecked(projectId);
+  markRewardCollabChecked(
+    projectId,
+    res.ok && res.rewardCount > 0
+      ? undefined
+      : missingRetryMarker(KS_REWARD_COLLAB_RETRY_SEC),
+  );
   return res.ok && (res.rewardCount > 0 || res.collaboratorCount > 0);
 }
 

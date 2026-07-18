@@ -50,6 +50,13 @@ const DEFAULT_TIMEOUT = Number(process.env.BROWSER_FETCH_TIMEOUT_MS || 60000);
 // the time the challenge actually needs. Once cf_clearance is primed (via
 // storageState) clears are ~1 nav, so this large budget only bites cold.
 const RICH_FETCH_TIMEOUT_MS = Number(process.env.BROWSER_RICH_FETCH_TIMEOUT_MS || 170000);
+// Kickstarter applies a shared per-IP limit to /graph. Once a 429 is observed,
+// stop all rich probes for a while instead of letting the tracker amplify the
+// block with hundreds of doomed project/collaborator requests.
+const GRAPHQL_RATE_LIMIT_COOLDOWN_MS = Math.max(
+  5 * 60_000,
+  Math.min(Number(process.env.BROWSER_GRAPHQL_429_COOLDOWN_MS || 45 * 60_000), 6 * 60 * 60_000),
+);
 const MAX_BODY_BYTES = Number(process.env.BROWSER_FETCH_MAX_BYTES || 5_000_000);
 const STORAGE_STATE_PATH = process.env.BROWSER_STORAGE_STATE_PATH
   || path.join(os.tmpdir(), 'kicksonar-browser-worker-storage-state.json');
@@ -74,9 +81,24 @@ const ALLOWED_HOSTS = new Set([
 
 let browserPromise;
 let lastLaunchError = null;
+let graphqlBlockedUntil = 0;
+let graphqlLast429At = 0;
 const launchHistory = [];
 const requestHistory = [];
 let nextRequestId = 1;
+
+function graphqlCooldownRemainingMs() {
+  return Math.max(0, graphqlBlockedUntil - Date.now());
+}
+
+function noteGraphqlStatus(status) {
+  if (Number(status) === 429) {
+    graphqlLast429At = Date.now();
+    graphqlBlockedUntil = Math.max(graphqlBlockedUntil, Date.now() + GRAPHQL_RATE_LIMIT_COOLDOWN_MS);
+  } else if (Number(status) === 200 && graphqlBlockedUntil <= Date.now()) {
+    graphqlBlockedUntil = 0;
+  }
+}
 
 function recordLaunchOutcome(entry) {
   launchHistory.push(entry);
@@ -1056,45 +1078,33 @@ async function extractRewardPageDetails(page) {
 async function extractCreatorPageDetails(page) {
   const collaborators = await page.evaluate(() => {
     const clean = value => (value || '').replace(/\s+/g, ' ').trim();
-    const visible = node => {
-      const rect = node.getBoundingClientRect();
-      const style = window.getComputedStyle(node);
-      return rect.width > 80 && rect.height > 35 && style.visibility !== 'hidden' && style.display !== 'none';
-    };
-    const heading = Array.from(document.querySelectorAll('h1,h2,h3,h4'))
-      .find(node => /^collaborators$/i.test(clean(node.textContent)));
-    if (!heading) return [];
-    const headingRect = heading.getBoundingClientRect();
-    const candidates = Array.from(document.querySelectorAll('a,article,li,section,div'))
-      .map(node => ({ node, text: clean(node.textContent), rect: node.getBoundingClientRect() }))
-      .filter(item => visible(item.node)
-        && item.rect.top > headingRect.bottom - 10
-        && item.rect.left >= headingRect.left - 60
-        && item.rect.width >= 220
-        && item.rect.height >= 55
-        && item.rect.height <= 180
-        && !/^collaborators$/i.test(item.text)
-        && /(collaborator|team member|campaign management|premier partner|full campaign|expert)/i.test(item.text));
-    candidates.sort((a, b) => (a.rect.width * a.rect.height) - (b.rect.width * b.rect.height));
+    // Collaborator cards consistently link to /profile/<id>/about with the
+    // project_creator_tab ref. This is substantially more stable than English
+    // heading/role text and works for custom roles (Agency, Ads, Editor, etc.).
+    const links = Array.from(document.querySelectorAll('a[href*="/profile/"]'))
+      .filter(link => {
+        const href = link.getAttribute('href') || '';
+        return /\/profile\/[^/?#]+\/about(?:[?#]|$)/i.test(href)
+          && /project_creator_tab/i.test(href);
+      });
     const seen = new Set();
-    return candidates.map((item, index) => {
-      const lines = Array.from(new Set(item.text.split(/\n| {2,}/).map(clean).filter(Boolean)));
-      const compactLines = lines.length > 1 ? lines : item.text.split(/(?<=Management|Collaborator|Member|Partner)\s+/).map(clean).filter(Boolean);
-      const first = compactLines[0] || '';
-      const second = compactLines[1] || '';
-      const third = compactLines[2] || '';
-      const firstLooksRole = /(collaborator|team member|campaign management|premier partner|full campaign|expert)/i.test(first);
-      const name = firstLooksRole && second ? second : first;
-      const roleParts = firstLooksRole ? [first, third].filter(Boolean) : [second].filter(Boolean);
-      const role = roleParts.join(' - ') || null;
-      if (!name || /^collaborators$/i.test(name)) return null;
-      const link = item.node.matches('a[href]') ? item.node : item.node.querySelector('a[href]');
-      const href = link?.href || link?.getAttribute('href') || '';
-      const image = item.node.querySelector('img');
+    return links.map((link, index) => {
+      const href = link.href || link.getAttribute('href') || '';
       const slug = href.match(/\/profile\/([^/?#]+)/)?.[1];
+      const role = clean(link.querySelector('h3,h4,strong')?.textContent || '') || null;
+      let name = clean(link.textContent);
+      if (role && name.toLowerCase().startsWith(role.toLowerCase())) {
+        name = clean(name.slice(role.length));
+      }
+      name = clean(name
+        .replace(/premier partner|expert partner/ig, '')
+        .replace(/^collaborator\s+/i, ''));
+      if (!name) name = role || slug || '';
+      if (!name) return null;
       const key = String(slug || name).toLowerCase();
       if (seen.has(key)) return null;
       seen.add(key);
+      const image = link.querySelector('img');
       return {
         id: slug || `${name}-${index}`,
         name,
@@ -1999,7 +2009,10 @@ async function queryProjectGraphql(page, slug) {
     );
   for (const query of [GQL_PROJECT_QUERY, GQL_PROJECT_QUERY_MIN]) {
     const res = await run(query).catch(() => null);
-    if (!res || res.status !== 200) continue;
+    if (!res) continue;
+    noteGraphqlStatus(res.status);
+    if (res.status === 429) break;
+    if (res.status !== 200) continue;
     let json;
     try { json = JSON.parse(res.text); } catch { continue; }
     const project = json?.data?.project;
@@ -2114,9 +2127,29 @@ async function extractCreatorRich(page, creatorSegment, maxWaitMs = 9000) {
       if (sentence && sentence.length > 40 && sentence !== blurb) biography = clean(sentence).slice(0, 600);
     }
     const collaborators = links
-      .map((a) => ({ text: clean(a.textContent), href: a.getAttribute('href') }))
-      .filter((x) => /^Collaborator/i.test(x.text))
-      .map((x) => ({ name: x.text.replace(/^Collaborator/i, '').trim(), slug: (x.href || '').match(/\/profile\/([^/?#]+)/)?.[1] || null }));
+      .filter((a) => {
+        const href = a.getAttribute('href') || '';
+        return /\/profile\/[^/?#]+\/about(?:[?#]|$)/i.test(href)
+          && /project_creator_tab/i.test(href);
+      })
+      .map((a) => {
+        const href = a.getAttribute('href') || '';
+        const role = clean(a.querySelector('h3,h4,strong')?.textContent || '') || null;
+        let collaboratorName = clean(a.textContent);
+        if (role && collaboratorName.toLowerCase().startsWith(role.toLowerCase())) {
+          collaboratorName = clean(collaboratorName.slice(role.length));
+        }
+        collaboratorName = clean(collaboratorName
+          .replace(/premier partner|expert partner/ig, '')
+          .replace(/^collaborator\s+/i, ''));
+        return {
+          name: collaboratorName || role,
+          slug: href.match(/\/profile\/([^/?#]+)/)?.[1] || null,
+          role,
+          profileUrl: href || null,
+        };
+      })
+      .filter((c) => c.name);
     return { name, biography, launched_count: created, backings_count: backed, collaborators };
   }, creatorSegment);
 }
@@ -2183,6 +2216,17 @@ async function fetchKsProject(input) {
   const timeoutMs = Math.max(20_000, Math.min(Number(input.timeoutMs || RICH_FETCH_TIMEOUT_MS), 180_000));
   const clearBudget = Math.max(20_000, Math.min(timeoutMs - 5_000, 120_000));
   const startedAt = Date.now();
+  const cooldownMs = graphqlCooldownRemainingMs();
+  if (cooldownMs > 0) {
+    return {
+      ok: false,
+      status: 429,
+      reason: 'graphql_rate_limited',
+      retryAfterMs: cooldownMs,
+      error: 'Kickstarter GraphQL is cooling down after HTTP 429.',
+      elapsedMs: Date.now() - startedAt,
+    };
+  }
   let context = null;
   try {
     context = await newBrowserContext(contextOptions({
@@ -2228,7 +2272,9 @@ async function fetchKsProject(input) {
     // remaining clear budget so it never blows the rich-fetch timeout.
     let creatorRich = null;
     let collaborators = [];
-    const creatorTabUrl = WANT_CREATOR_TAB ? projectSectionUrl(pageUrl, 'creator') : null;
+    const creatorTabUrl = WANT_CREATOR_TAB && graphqlCooldownRemainingMs() === 0
+      ? projectSectionUrl(pageUrl, 'creator')
+      : null;
     if (creatorTabUrl) {
       // Best-effort only: the context already holds cf_clearance from the main
       // page, so the creator tab is normally a fast same-origin nav. If it still
@@ -2285,7 +2331,8 @@ async function fetchKsProject(input) {
       creator,
       collaborators,
     };
-    console.log(`[project] ${pageUrl} gql=${gql ? 'y' : 'n'} state=${body.state} backers=${body.backers_count} rewards=${rewards.length} creator=${creator.name ? 'y' : 'n'} collabs=${collaborators.length} ${Date.now() - startedAt}ms`);
+    const gqlState = gql ? 'y' : (graphqlCooldownRemainingMs() > 0 ? '429' : 'n');
+    console.log(`[project] ${pageUrl} gql=${gqlState} state=${body.state} backers=${body.backers_count} rewards=${rewards.length} creator=${creator.name ? 'y' : 'n'} collabs=${collaborators.length} ${Date.now() - startedAt}ms`);
     return { ok: true, status: 200, elapsedMs: Date.now() - startedAt, body };
   } catch (err) {
     return { ok: false, status: 0, error: safeError(err).message, elapsedMs: Date.now() - startedAt };
@@ -2396,109 +2443,36 @@ async function fetchDiscover(input) {
 }
 
 // ── ISOLATED collaborator probe (POST /collab) ──────────────────────────────
-// Stable /project leaves collaborators to a fragile creator-tab DOM scrape that
-// is usually skipped (budget-gated) or looks on the wrong page. This isolated
-// endpoint clears the main project page and tries BOTH (a) a GraphQL
-// collaborators query and (b) a main-page DOM parse, returning debug so the
-// first isolated run reveals which source actually works. /project is untouched
-// until this is validated and merged.
-const GQL_COLLAB_QUERIES = [
-  `query($slug:String!){ project(slug:$slug){ collaborators { edges { title node { name url imageUrl } } } } }`,
-  `query($slug:String!){ project(slug:$slug){ collaborators { edges { permissions node { name url imageUrl } } } } }`,
-  `query($slug:String!){ project(slug:$slug){ collaborators { edges { node { name url imageUrl } } } } }`,
-];
-
-async function queryCollaboratorsGraphql(page, slug) {
-  const csrf = await page
-    .evaluate(() => document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || null)
-    .catch(() => null);
-  const debug = { attempts: [] };
-  for (const query of GQL_COLLAB_QUERIES) {
-    const res = await page.evaluate(async ({ query, slug, csrf }) => {
-      try {
-        const r = await fetch('/graph', {
-          method: 'POST',
-          credentials: 'include',
-          headers: { 'Content-Type': 'application/json', Accept: 'application/json', ...(csrf ? { 'X-CSRF-Token': csrf } : {}) },
-          body: JSON.stringify({ query, variables: { slug } }),
-        });
-        return { status: r.status, text: await r.text() };
-      } catch (e) {
-        return { status: 0, text: '', error: String((e && e.message) || e) };
-      }
-    }, { query, slug, csrf }).catch(() => null);
-    if (!res) { debug.attempts.push({ status: 'eval_failed' }); continue; }
-    let json;
-    try { json = JSON.parse(res.text); } catch { debug.attempts.push({ status: res.status, parse: 'fail', preview: (res.text || '').slice(0, 200) }); continue; }
-    const edges = json?.data?.project?.collaborators?.edges;
-    if (Array.isArray(edges)) {
-      const collaborators = edges.map((e) => ({
-        name: e?.node?.name ?? null,
-        slug: (e?.node?.url || '').match(/\/profile\/([^/?#]+)/)?.[1] ?? null,
-        role: e?.title ?? e?.permissions ?? null,
-        profileUrl: e?.node?.url ?? null,
-        avatarUrl: e?.node?.imageUrl ?? null,
-      })).filter((c) => c.name);
-      debug.attempts.push({ status: res.status, ok: true, count: collaborators.length });
-      return { collaborators, debug };
-    }
-    debug.attempts.push({ status: res.status, errors: (json?.errors || []).map((x) => x.message).slice(0, 3) });
-  }
-  return { collaborators: [], debug };
-}
-
-async function extractCollaboratorsDom(page) {
-  const deadline = Date.now() + 6000;
-  while (Date.now() < deadline) {
-    const ready = await page.evaluate(() => /collaborators/i.test(document.body?.innerText || '')).catch(() => false);
-    if (ready) break;
-    await page.waitForTimeout(600);
-  }
-  return page.evaluate(() => {
-    const clean = (s) => (s || '').replace(/\s+/g, ' ').trim();
-    const headings = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,[role="heading"]'));
-    const head = headings.find((h) => /^collaborators\b/i.test(clean(h.textContent)));
-    const collaborators = [];
-    if (head) {
-      const scope = head.closest('section,aside,div') || head.parentElement || document.body;
-      const links = Array.from(scope.querySelectorAll('a[href*="/profile/"]'));
-      const seen = new Set();
-      for (const a of links) {
-        const href = a.getAttribute('href') || '';
-        const slug = (href.match(/\/profile\/([^/?#]+)/) || [])[1] || null;
-        const name = clean(a.textContent);
-        if (!name || name.length > 80) continue;
-        const key = (slug || name).toLowerCase();
-        if (seen.has(key)) continue;
-        seen.add(key);
-        const li = a.closest('li,div');
-        let role = null;
-        if (li) {
-          const txt = clean(li.textContent).replace(name, '').trim();
-          if (txt && txt.length <= 60) role = txt;
-        }
-        const img = a.querySelector('img') || li?.querySelector('img');
-        collaborators.push({ name, slug, role, profileUrl: slug ? `https://www.kickstarter.com/profile/${slug}` : null, avatarUrl: img?.getAttribute('src') || null });
-      }
-    }
-    const allLinks = Array.from(document.querySelectorAll('a[href*="/profile/"]'));
-    const debug = {
-      headingFound: Boolean(head),
-      bodyHasCollaborators: /collaborators/i.test(document.body?.innerText || ''),
-      profileLinkCount: allLinks.length,
-      sampleLinks: allLinks.slice(0, 12).map((a) => ({ t: clean(a.textContent).slice(0, 40), h: a.getAttribute('href') })),
-    };
-    return { collaborators, debug };
-  });
-}
+// Stable /project leaves collaborators to a best-effort creator-tab scrape.
+// This isolated endpoint gives that work a dedicated budget and returns a
+// conclusive/incomplete signal so blocked or half-rendered pages are never
+// persisted as a genuine zero. We intentionally do not issue our own GraphQL
+// query here: the rendered /creator tab already requests the authoritative data
+// and duplicate probes were multiplying Kickstarter's per-IP rate limit.
 
 async function fetchCollaborators(input) {
   const targetUrl = normalizeTarget(input.url);
   const pageUrl = ksProjectPageUrl(targetUrl);
-  const slug = ksProjectSlug(pageUrl);
   const timeoutMs = Math.max(20_000, Math.min(Number(input.timeoutMs || RICH_FETCH_TIMEOUT_MS), 180_000));
   const clearBudget = Math.max(20_000, Math.min(timeoutMs - 5_000, 120_000));
   const startedAt = Date.now();
+  const initialCooldownMs = graphqlCooldownRemainingMs();
+  if (initialCooldownMs > 0) {
+    return {
+      ok: true,
+      status: 200,
+      elapsedMs: 0,
+      body: {
+        url: pageUrl,
+        collaborators: [],
+        complete: false,
+        retryable: true,
+        reason: 'graphql_rate_limited',
+        retryAfterMs: initialCooldownMs,
+        debug: { graphqlCooldownMs: initialCooldownMs },
+      },
+    };
+  }
   let context = null;
   try {
     context = await newBrowserContext(contextOptions({
@@ -2515,19 +2489,112 @@ async function fetchCollaborators(input) {
       if (clearResult.reason === 'login_redirect') return { ok: false, status: 451, reason: 'login_redirect', elapsedMs: Date.now() - startedAt };
       return { ok: false, status: 403, error: 'Cloudflare not cleared', elapsedMs: Date.now() - startedAt };
     }
-    const gql = slug ? await queryCollaboratorsGraphql(page, slug).catch(() => null) : null;
-    const dom = await extractCollaboratorsDom(page).catch(() => null);
-    // Prefer GraphQL when it yields anything; else fall back to the (heading-
-    // scoped) DOM parse. Never union, to avoid pulling in unrelated /profile/
-    // links (e.g. the creator) as fake collaborators.
-    const collaborators = (gql?.collaborators?.length ? gql.collaborators : (dom?.collaborators || []));
-    const gqlInfo = gql?.collaborators?.length ? String(gql.collaborators.length) : 'err/0';
-    console.log(`[collab] ${pageUrl} gql=${gqlInfo} dom=${dom?.collaborators?.length ?? 'n'} -> ${collaborators.length} ${Date.now() - startedAt}ms`);
+    // The collaborator UI lives on /creator, not on the campaign landing page.
+    // Navigate there and parse the rendered cards. The tab itself loads through
+    // GraphQL, so watch that request and never mistake an error/429 response for
+    // a genuine project with zero collaborators.
+    const creatorUrl = projectSectionUrl(pageUrl, 'creator');
+    let creatorRateLimited = false;
+    let creatorGraphqlOk = false;
+    let creatorGraphqlStatus = null;
+    page.on('response', response => {
+      const url = response.url();
+      const status = response.status();
+      if (/kickstarter\.com\/(?:graph|graphql)/i.test(url)) {
+        creatorGraphqlStatus = status;
+        noteGraphqlStatus(status);
+        if (status === 429) creatorRateLimited = true;
+        if (status === 200) creatorGraphqlOk = true;
+      }
+    });
+    let creatorDetails = null;
+    let creatorDebug = null;
+    if (creatorUrl) {
+      await page.goto(creatorUrl, { waitUntil: 'domcontentloaded', timeout: Math.min(timeoutMs, 45_000) });
+      await page.waitForFunction(() => {
+        const body = document.body?.innerText || '';
+        const collaboratorLink = Array.from(document.querySelectorAll('a[href*="/profile/"]'))
+          .some(link => /project_creator_tab/i.test(link.getAttribute('href') || ''));
+        const collaboratorHeading = Array.from(document.querySelectorAll('h1,h2,h3,h4'))
+          .some(node => /^collaborators$/i.test((node.textContent || '').replace(/\s+/g, ' ').trim()));
+        return collaboratorLink
+          || collaboratorHeading
+          || /something went wrong while loading this tab|try again/i.test(body);
+      }, null, { timeout: Math.min(8_000, timeoutMs) }).catch(() => {});
+      await page.waitForTimeout(600);
+      creatorDetails = await extractCreatorPageDetails(page).catch(() => null);
+      creatorDebug = await page.evaluate(() => {
+        const clean = (s) => (s || '').replace(/\s+/g, ' ').trim();
+        const body = clean(document.body?.innerText || '');
+        return {
+          finalUrl: location.href,
+          bodyPreview: body.slice(0, 500),
+          tabError: /something went wrong while loading this tab|try again/i.test(body),
+          hasCreatorContent: /about the creator|[\d,]+\s+(?:created|backed)\s+projects?/i.test(body),
+          hasCollaboratorsHeading: Array.from(document.querySelectorAll('h1,h2,h3,h4'))
+            .some(node => /^collaborators$/i.test(clean(node.textContent))),
+          collaboratorLinkCount: Array.from(document.querySelectorAll('a[href*="/profile/"]'))
+            .filter(link => /project_creator_tab/i.test(link.getAttribute('href') || '')).length,
+        };
+      }).catch(() => null);
+    }
+    if (creatorRateLimited) {
+      const retryAfterMs = graphqlCooldownRemainingMs();
+      console.log(`[collab] ${pageUrl} creator=rate_limited cooldown=${retryAfterMs}ms ${Date.now() - startedAt}ms`);
+      return {
+        ok: true,
+        status: 200,
+        elapsedMs: Date.now() - startedAt,
+        body: {
+          url: pageUrl,
+          collaborators: [],
+          complete: false,
+          retryable: true,
+          reason: 'creator_tab_rate_limited',
+          retryAfterMs,
+          debug: { creator: creatorDebug, graphqlStatus: creatorGraphqlStatus },
+        },
+      };
+    }
+    if (creatorDebug?.tabError) {
+      console.log(`[collab] ${pageUrl} creator=tab_error graphql=${creatorGraphqlStatus ?? 'n'} ${Date.now() - startedAt}ms`);
+      return {
+        ok: true,
+        status: 200,
+        elapsedMs: Date.now() - startedAt,
+        body: {
+          url: pageUrl,
+          collaborators: [],
+          complete: false,
+          retryable: true,
+          reason: 'creator_tab_error',
+          debug: { creator: creatorDebug, graphqlStatus: creatorGraphqlStatus },
+        },
+      };
+    }
+    const collaborators = (creatorDetails?.collaborators || []).map((c) => ({
+      name: c.name ?? null,
+      slug: c.slug ?? null,
+      role: c.role ?? null,
+      profileUrl: c.urls?.web?.user ?? null,
+      avatarUrl: c.avatar?.small ?? c.avatar?.thumb ?? null,
+    })).filter(c => c.name);
+    const complete = collaborators.length > 0
+      || Boolean(creatorDebug?.hasCollaboratorsHeading)
+      || Boolean(creatorGraphqlOk && creatorDebug?.hasCreatorContent);
+    console.log(`[collab] ${pageUrl} graphql=${creatorGraphqlStatus ?? 'n'} creator=${collaborators.length} complete=${complete ? 'y' : 'n'} ${Date.now() - startedAt}ms`);
     return {
       ok: true,
       status: 200,
       elapsedMs: Date.now() - startedAt,
-      body: { url: pageUrl, collaborators, debug: { gql: gql?.debug ?? null, dom: dom?.debug ?? null } },
+      body: {
+        url: pageUrl,
+        collaborators,
+        complete,
+        retryable: !complete,
+        reason: collaborators.length ? 'creator_dom' : (complete ? 'confirmed_empty' : 'creator_incomplete'),
+        debug: { creator: creatorDebug, graphqlStatus: creatorGraphqlStatus },
+      },
     };
   } catch (err) {
     return { ok: false, status: 0, error: safeError(err).message, elapsedMs: Date.now() - startedAt };
@@ -2594,6 +2661,8 @@ function workerEnvSummary() {
       maxConcurrency: MAX_CONCURRENCY,
       activeFetches,
       queuedFetches: fetchWaiters.length,
+      graphqlCooldownMs: graphqlCooldownRemainingMs(),
+      graphqlLast429At: graphqlLast429At ? new Date(graphqlLast429At).toISOString() : null,
     },
     launchEnv: {
       // Helps confirm the E2BIG fix: how much smaller the curated env is vs the
@@ -2755,6 +2824,8 @@ async function handle(req, res) {
       activeFetches,
       queuedFetches: fetchWaiters.length,
       maxConcurrency: MAX_CONCURRENCY,
+      graphqlCooldownMs: graphqlCooldownRemainingMs(),
+      graphqlLast429At: graphqlLast429At ? new Date(graphqlLast429At).toISOString() : null,
       warmup: warmupState,
       lastLaunchError,
     });

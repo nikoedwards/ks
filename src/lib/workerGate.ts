@@ -216,7 +216,14 @@ export async function gatedWorkerFetch(
 // queuedFetches), so we poll it (briefly cached) to decide whether to shed
 // low-priority background work. This is the cross-replica admission control.
 
-interface FleetLoad { freeLane: boolean; active: number; queued: number; concurrency: number; at: number; }
+interface FleetLoad {
+  freeLane: boolean;
+  active: number;
+  queued: number;
+  concurrency: number;
+  graphqlCooldownMs: number;
+  at: number;
+}
 const loadCache = new Map<string, FleetLoad>();
 const LOAD_TTL_MS = () => envNum('WORKER_LOAD_TTL_MS', 8_000, 1_000, 60_000);
 const BUSY_QUEUE_THRESHOLD = () => envNum('WORKER_BUSY_QUEUE_THRESHOLD', 1, 0, 20);
@@ -241,10 +248,14 @@ async function probeBaseLoad(base: string): Promise<FleetLoad | null> {
     const active = Number(body?.activeFetches ?? 0) || 0;
     const queued = Number(body?.queuedFetches ?? 0) || 0;
     const concurrency = Math.max(1, Number(body?.maxConcurrency ?? 1) || 1);
+    const graphqlCooldownMs = Math.max(0, Number(body?.graphqlCooldownMs ?? 0) || 0);
     // A lane is free for new low-priority work only if it isn't already at
-    // capacity AND its queue is below the busy threshold.
-    const freeLane = active < concurrency && queued < BUSY_QUEUE_THRESHOLD();
-    const load: FleetLoad = { active, queued, concurrency, freeLane, at: now };
+    // capacity, its queue is below the busy threshold, and Kickstarter's rich
+    // GraphQL endpoint is not in a shared 429 cooldown.
+    const freeLane = active < concurrency
+      && queued < BUSY_QUEUE_THRESHOLD()
+      && graphqlCooldownMs <= 0;
+    const load: FleetLoad = { active, queued, concurrency, graphqlCooldownMs, freeLane, at: now };
     loadCache.set(base, load);
     return load;
   } catch {

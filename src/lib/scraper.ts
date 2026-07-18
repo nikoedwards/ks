@@ -698,14 +698,21 @@ export interface WorkerCollaborator {
 }
 
 // ── ISOLATED collaborator backfill plumbing (worker /collab) ────────────────
-// Calls the isolated worker endpoint that probes a project's collaborators via
-// GraphQL + main-page DOM. Returns the raw collaborator list (+ debug) so the
+// Calls the isolated worker endpoint that probes a project's rendered Creator
+// tab. Returns the raw collaborator list (+ debug) so the
 // flag-gated backfill pass can store them. Does not touch the stable /project
 // path. `debug` is surfaced for the first isolated validation runs.
 export async function fetchCollaboratorsViaWorker(
   pageUrl: string,
   projectId?: string,
-): Promise<{ collaborators: WorkerCollaborator[]; debug?: unknown } | null> {
+): Promise<{
+  collaborators: WorkerCollaborator[];
+  complete: boolean;
+  retryable: boolean;
+  reason?: string;
+  retryAfterMs?: number;
+  debug?: unknown;
+} | null> {
   const base = getWorkerBaseUrl();
   if (!base) return null;
   const token = getOptionalEnv('BROWSER_WORKER_TOKEN');
@@ -731,7 +738,14 @@ export async function fetchCollaboratorsViaWorker(
     }
     const data = JSON.parse(text) as {
       ok?: boolean; status?: number; reason?: string; error?: string;
-      body?: { collaborators?: WorkerCollaborator[]; debug?: unknown };
+      body?: {
+        collaborators?: WorkerCollaborator[];
+        complete?: boolean;
+        retryable?: boolean;
+        reason?: string;
+        retryAfterMs?: number;
+        debug?: unknown;
+      };
     };
     if (!data.ok || !data.body) {
       if (data.reason === 'login_redirect' && projectId) {
@@ -747,6 +761,10 @@ export async function fetchCollaboratorsViaWorker(
     }
     return {
       collaborators: Array.isArray(data.body.collaborators) ? data.body.collaborators : [],
+      complete: data.body.complete === true,
+      retryable: data.body.retryable !== false,
+      reason: data.body.reason,
+      retryAfterMs: Number(data.body.retryAfterMs) || undefined,
       debug: data.body.debug,
     };
   } catch (err) {
