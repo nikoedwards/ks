@@ -5,6 +5,7 @@ import { useParams, useRouter } from 'next/navigation';
 import {
   ArrowLeft, ExternalLink, TrendingUp, Calendar, Award, Heart,
   Activity, FileText, Layers, RefreshCw, Radio, Gift, Users,
+  Share2, Download, Copy, Send, Image as ImageIcon,
 } from 'lucide-react';
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -166,6 +167,46 @@ function daysLeftAt(deadline: number | null | undefined, capturedAt: number) {
 function avg(values: number[]) {
   const usable = values.filter(v => Number.isFinite(v));
   return usable.length ? usable.reduce((sum, v) => sum + v, 0) / usable.length : 0;
+}
+
+function loadShareImage(src: string | null | undefined) {
+  return new Promise<HTMLImageElement | null>(resolve => {
+    if (!src) { resolve(null); return; }
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => resolve(img);
+    img.onerror = () => resolve(null);
+    img.src = src;
+  });
+}
+
+function roundedRect(ctx: CanvasRenderingContext2D, x: number, y: number, width: number, height: number, radius: number) {
+  ctx.beginPath();
+  ctx.roundRect(x, y, width, height, radius);
+}
+
+function canvasEllipsis(ctx: CanvasRenderingContext2D, value: string, maxWidth: number) {
+  if (ctx.measureText(value).width <= maxWidth) return value;
+  let text = value;
+  while (text.length > 1 && ctx.measureText(`${text}…`).width > maxWidth) text = text.slice(0, -1);
+  return `${text.trimEnd()}…`;
+}
+
+function drawWrappedText(ctx: CanvasRenderingContext2D, value: string, x: number, y: number, maxWidth: number, lineHeight: number, maxLines: number) {
+  const chars = Array.from(value);
+  const lines: string[] = [];
+  let line = '';
+  for (const char of chars) {
+    const next = line + char;
+    if (ctx.measureText(next).width > maxWidth && line) {
+      lines.push(line);
+      line = char;
+      if (lines.length === maxLines) break;
+    } else line = next;
+  }
+  if (lines.length < maxLines && line) lines.push(line);
+  if (lines.length === maxLines && chars.join('') !== lines.join('')) lines[maxLines - 1] = canvasEllipsis(ctx, lines[maxLines - 1], maxWidth);
+  lines.forEach((text, index) => ctx.fillText(text, x, y + index * lineHeight));
 }
 
 function calcDuration(p: Project): number | null {
@@ -368,6 +409,13 @@ export default function ProjectDetailClient({ initialProject = null }: { initial
   const [loading, setLoading] = useState(!initialProject);
   const [notFound, setNotFound] = useState(false);
   const [isFavorited, setIsFavorited] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
+  const [shareImage, setShareImage] = useState('');
+  const [shareGenerating, setShareGenerating] = useState(false);
+  const [shareLang, setShareLang] = useState<'cn' | 'en'>(isZhLang(lang) ? 'cn' : 'en');
+  const [shareCopied, setShareCopied] = useState(false);
+  const [shareHint, setShareHint] = useState<string | null>(null);
+  const [nativeShareReady, setNativeShareReady] = useState(false);
 
   const [activeTab, setActiveTab] = useState<TabId>('overview');
 
@@ -437,6 +485,10 @@ export default function ProjectDetailClient({ initialProject = null }: { initial
   useEffect(() => {
     loadProject();
   }, [loadProject]);
+
+  useEffect(() => {
+    setNativeShareReady(typeof navigator !== 'undefined' && typeof navigator.share === 'function');
+  }, []);
 
   // ── Fetch favorites ────────────────────────────────────────────────────────
   useEffect(() => {
@@ -831,13 +883,167 @@ export default function ProjectDetailClient({ initialProject = null }: { initial
   const maxBandBackers = Math.max(1, ...rewardPriceBands.map(b => b.backers));
   const maxRewardBackers = Math.max(1, ...rewards.map(r => r.backers_count));
 
+  const projectShareUrl = () => typeof window === 'undefined'
+    ? `/projects/${project.id}`
+    : `${window.location.origin}/projects/${project.id}`;
+
+  const shareFileName = () => `kicksonar-${project.platform || (isIgg ? 'indiegogo' : 'kickstarter')}-${project.id}.png`;
+
+  const shareCaption = (targetLang = shareLang) => targetLang === 'cn'
+    ? `${project.name}｜已筹 ${fmtMoney(displayPledged, displayCurrency)}，${displayBackers.toLocaleString()} 位支持者。来自 Kicksonar 项目数据详情。`
+    : `${project.name} — ${fmtMoney(displayPledged, displayCurrency)} pledged from ${displayBackers.toLocaleString()} backers. Project insights from Kicksonar.`;
+
+  const renderProjectShareImage = (targetLang: 'cn' | 'en', logo: HTMLImageElement | null, cover: HTMLImageElement | null) => {
+    const cn = targetLang === 'cn';
+    const canvas = document.createElement('canvas');
+    canvas.width = 1080;
+    canvas.height = 1350;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return '';
+
+    const gradient = ctx.createLinearGradient(0, 0, 1080, 1350);
+    gradient.addColorStop(0, '#081a13');
+    gradient.addColorStop(0.55, '#10231c');
+    gradient.addColorStop(1, '#06110d');
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, 1080, 1350);
+    ctx.fillStyle = '#51d88a';
+    ctx.beginPath(); ctx.arc(1010, 70, 250, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = 'rgba(217,255,146,.12)';
+    ctx.beginPath(); ctx.arc(70, 1260, 300, 0, Math.PI * 2); ctx.fill();
+
+    roundedRect(ctx, 54, 48, 430, 84, 22);
+    ctx.fillStyle = '#ffffff'; ctx.fill();
+    if (logo) ctx.drawImage(logo, 82, 72, 50, 36);
+    ctx.fillStyle = '#10231c';
+    ctx.font = '800 34px Arial, "Microsoft YaHei", sans-serif';
+    ctx.fillText('Kicksonar', 150, 101);
+    ctx.fillStyle = '#365449';
+    ctx.font = '700 18px Arial, "Microsoft YaHei", sans-serif';
+    ctx.fillText(cn ? '众筹项目数据卡' : 'PROJECT DATA CARD', 325, 99);
+
+    const imageX = 54, imageY = 174, imageW = 972, imageH = 472;
+    roundedRect(ctx, imageX, imageY, imageW, imageH, 28);
+    ctx.save(); ctx.clip();
+    if (cover) {
+      const scale = Math.max(imageW / cover.naturalWidth, imageH / cover.naturalHeight);
+      const width = cover.naturalWidth * scale, height = cover.naturalHeight * scale;
+      ctx.drawImage(cover, imageX + (imageW - width) / 2, imageY + (imageH - height) / 2, width, height);
+      const shade = ctx.createLinearGradient(0, imageY + 210, 0, imageY + imageH);
+      shade.addColorStop(0, 'rgba(0,0,0,0)'); shade.addColorStop(1, 'rgba(0,0,0,.72)');
+      ctx.fillStyle = shade; ctx.fillRect(imageX, imageY, imageW, imageH);
+    } else {
+      const fallback = ctx.createLinearGradient(imageX, imageY, imageX + imageW, imageY + imageH);
+      fallback.addColorStop(0, '#143b2c'); fallback.addColorStop(1, '#216b4b');
+      ctx.fillStyle = fallback; ctx.fillRect(imageX, imageY, imageW, imageH);
+    }
+    ctx.restore();
+
+    const platformLabel = isIgg ? 'INDIEGOGO' : 'KICKSTARTER';
+    ctx.font = '800 18px Arial, sans-serif';
+    const platformW = ctx.measureText(platformLabel).width + 34;
+    roundedRect(ctx, 82, 568, platformW, 40, 20);
+    ctx.fillStyle = isIgg ? '#eb1478' : '#05ce78'; ctx.fill();
+    ctx.fillStyle = '#ffffff'; ctx.fillText(platformLabel, 99, 595);
+
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '900 50px Arial, "Microsoft YaHei", sans-serif';
+    drawWrappedText(ctx, project.name, 64, 728, 952, 64, 2);
+    ctx.fillStyle = '#a8b9b2';
+    ctx.font = '500 25px Arial, "Microsoft YaHei", sans-serif';
+    drawWrappedText(ctx, project.blurb || (cn ? '发现值得关注的全球众筹项目' : 'Discover noteworthy crowdfunding projects'), 64, 866, 952, 38, 2);
+
+    const stats = [
+      { value: fmtMoney(displayPledged, displayCurrency), label: cn ? '已筹金额' : 'PLEDGED' },
+      { value: `${fundingRate >= 10000 ? '>10K' : fundingRate.toFixed(0)}%`, label: cn ? '完成率' : 'FUNDED' },
+      { value: displayBackers.toLocaleString(cn ? 'zh-CN' : 'en-US'), label: cn ? '支持者' : 'BACKERS' },
+    ];
+    stats.forEach((stat, index) => {
+      const x = 54 + index * 332;
+      roundedRect(ctx, x, 970, 308, 166, 22);
+      ctx.fillStyle = index === 0 ? '#d9ff92' : '#f4fff7'; ctx.fill();
+      ctx.fillStyle = '#0d3222';
+      ctx.font = '900 42px Arial, "Microsoft YaHei", sans-serif';
+      ctx.fillText(canvasEllipsis(ctx, stat.value, 270), x + 24, 1038);
+      ctx.fillStyle = '#527064';
+      ctx.font = '700 20px Arial, "Microsoft YaHei", sans-serif';
+      ctx.fillText(stat.label, x + 24, 1090);
+    });
+
+    ctx.fillStyle = '#7f9b90';
+    ctx.font = '600 22px Arial, "Microsoft YaHei", sans-serif';
+    const meta = [project.category_parent, project.category_name, project.country_name || project.country].filter(Boolean).join(' · ');
+    ctx.fillText(canvasEllipsis(ctx, meta, 820), 64, 1204);
+    ctx.fillStyle = '#51d88a';
+    ctx.font = '800 24px Arial, "Microsoft YaHei", sans-serif';
+    ctx.fillText('kicksonar.com', 64, 1272);
+    ctx.textAlign = 'right';
+    ctx.fillStyle = '#7f9b90';
+    ctx.font = '600 19px Arial, "Microsoft YaHei", sans-serif';
+    ctx.fillText(cn ? '扫码/打开链接查看完整数据' : 'Open the link for full insights', 1016, 1270);
+    ctx.textAlign = 'left';
+    return canvas.toDataURL('image/png');
+  };
+
+  const generateProjectShareImage = async (targetLang = shareLang) => {
+    setShareOpen(true);
+    setShareGenerating(true);
+    setShareImage('');
+    setShareHint(null);
+    const [logo, cover] = await Promise.all([
+      loadShareImage('/logo.svg'),
+      loadShareImage(heroImage),
+    ]);
+    try {
+      setShareImage(renderProjectShareImage(targetLang, logo, cover));
+    } catch {
+      // Some campaign CDNs do not allow canvas export. The card remains useful
+      // with the branded fallback panel instead of failing the whole share flow.
+      setShareImage(renderProjectShareImage(targetLang, logo, null));
+    } finally {
+      setShareGenerating(false);
+    }
+  };
+
+  const copyProjectShareLink = async () => {
+    await navigator.clipboard?.writeText(projectShareUrl());
+    setShareCopied(true);
+    window.setTimeout(() => setShareCopied(false), 1500);
+  };
+
+  const downloadProjectShareImage = () => {
+    if (!shareImage) return;
+    const link = document.createElement('a');
+    link.href = shareImage; link.download = shareFileName();
+    document.body.appendChild(link); link.click(); link.remove();
+  };
+
+  const nativeShareProject = async () => {
+    if (!shareImage || typeof navigator.share !== 'function') return;
+    try {
+      const blob = await (await fetch(shareImage)).blob();
+      const file = new File([blob], shareFileName(), { type: 'image/png' });
+      const payload: ShareData = { title: project.name, text: shareCaption(), url: projectShareUrl() };
+      if (navigator.canShare?.({ files: [file] })) payload.files = [file];
+      await navigator.share(payload);
+    } catch (error) {
+      if ((error as Error)?.name !== 'AbortError') setShareHint(isZhLang(lang) ? '系统分享不可用，请保存图片后分享。' : 'System sharing is unavailable. Save the image to share it.');
+    }
+  };
+
   return (
     <div className="max-w-6xl mx-auto space-y-0">
-      {/* Back */}
-      <button onClick={goBackToProjectList}
-        className="flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-800 transition-colors mb-4">
-        <ArrowLeft className="w-4 h-4" />{tr.back}
-      </button>
+      {/* Back / share */}
+      <div className="mb-4 flex items-center justify-between gap-4">
+        <button onClick={goBackToProjectList}
+          className="flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-800 transition-colors">
+          <ArrowLeft className="w-4 h-4" />{tr.back}
+        </button>
+        <button onClick={() => generateProjectShareImage(shareLang)}
+          className="inline-flex items-center gap-2 rounded-lg bg-ks-green px-4 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-ks-green-dark">
+          <Share2 className="h-4 w-4" />{isZhLang(lang) ? '生成分享图' : 'Share Image'}
+        </button>
+      </div>
 
       {/* ── Hero header (Social Blade style) ───────────────────────────────── */}
       <div className="bg-gray-900 rounded-t-2xl px-4 pt-5 pb-0 sm:px-6 sm:pt-6">
@@ -1629,6 +1835,64 @@ export default function ProjectDetailClient({ initialProject = null }: { initial
           </div>
         )}
       </div>
+
+      {shareOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setShareOpen(false)}>
+          <div className="max-h-[92vh] w-full max-w-xl overflow-auto rounded-xl bg-white p-5 shadow-2xl" onClick={event => event.stopPropagation()}>
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h3 className="font-bold text-gray-900">{isZhLang(lang) ? '分享项目' : 'Share Project'}</h3>
+                <p className="mt-0.5 text-xs text-gray-400">{isZhLang(lang) ? '生成项目数据卡，保存或直接分享到社交平台。' : 'Generate a project data card to save or share.'}</p>
+              </div>
+              <button onClick={() => setShareOpen(false)} aria-label={isZhLang(lang) ? '关闭' : 'Close'} className="rounded-md px-2 text-2xl leading-none text-gray-400 hover:bg-gray-100 hover:text-gray-700">×</button>
+            </div>
+
+            <div className="mt-4 flex flex-wrap items-center gap-2">
+              <div className="flex rounded-lg bg-gray-100 p-1">
+                {(['cn', 'en'] as const).map(targetLang => (
+                  <button key={targetLang}
+                    onClick={() => { setShareLang(targetLang); generateProjectShareImage(targetLang); }}
+                    disabled={shareGenerating}
+                    className={`rounded-md px-3 py-1.5 text-sm font-bold disabled:opacity-50 ${shareLang === targetLang ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500'}`}>
+                    {targetLang === 'cn' ? '中文' : 'EN'}
+                  </button>
+                ))}
+              </div>
+              <button onClick={copyProjectShareLink} className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm font-semibold text-gray-600 hover:bg-gray-50">
+                <Copy className="h-4 w-4" />{shareCopied ? (isZhLang(lang) ? '已复制' : 'Copied') : (isZhLang(lang) ? '复制链接' : 'Copy Link')}
+              </button>
+            </div>
+
+            {shareImage && !shareGenerating && (
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button onClick={downloadProjectShareImage} className="inline-flex items-center gap-2 rounded-lg border border-ks-green px-3 py-2 text-sm font-semibold text-ks-green hover:bg-ks-green-light/40">
+                  <Download className="h-4 w-4" />{isZhLang(lang) ? '保存图片' : 'Save Image'}
+                </button>
+                {nativeShareReady && (
+                  <button onClick={nativeShareProject} className="inline-flex items-center gap-2 rounded-lg bg-ks-green px-3 py-2 text-sm font-semibold text-white hover:bg-ks-green-dark">
+                    <Send className="h-4 w-4" />{isZhLang(lang) ? '一键分享' : 'Share'}
+                  </button>
+                )}
+              </div>
+            )}
+            {shareHint && <p className="mt-2 text-xs text-amber-600">{shareHint}</p>}
+
+            <div className="mt-4 overflow-hidden rounded-xl border border-gray-100 bg-gray-50">
+              {shareGenerating ? (
+                <div className="flex h-80 items-center justify-center text-gray-400">
+                  <ImageIcon className="mr-2 h-5 w-5 animate-pulse" />{isZhLang(lang) ? '正在生成...' : 'Generating...'}
+                </div>
+              ) : shareImage ? (
+                <img src={shareImage} alt={isZhLang(lang) ? `${project.name} 分享图` : `${project.name} share card`} className="w-full" />
+              ) : (
+                <div className="flex h-80 items-center justify-center text-gray-400">
+                  <ImageIcon className="mr-2 h-5 w-5" />{isZhLang(lang) ? '等待生成' : 'Ready'}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {false && ktDebug && (
         <div className="fixed bottom-4 right-4 z-50 w-[min(620px,calc(100vw-2rem))] max-h-[78vh] overflow-hidden rounded-xl border border-gray-200 bg-white shadow-2xl">
