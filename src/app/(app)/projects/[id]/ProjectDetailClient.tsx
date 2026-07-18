@@ -1,6 +1,6 @@
 ﻿'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
   ArrowLeft, ExternalLink, TrendingUp, Calendar, Award, Heart,
@@ -397,6 +397,8 @@ export default function ProjectDetailClient({ initialProject = null }: { initial
   const [rewards, setRewards] = useState<Reward[]>([]);
   const [textHistory, setTextHistory] = useState<TextChange[]>([]);
   const [collaborators, setCollaborators] = useState<Collaborator[]>([]);
+  const [collaboratorRepairing, setCollaboratorRepairing] = useState(false);
+  const collaboratorRepairAttempted = useRef<string | null>(null);
   const [prediction, setPrediction] = useState<FundingPrediction | null>(null);
   const [deviationSeries, setDeviationSeries] = useState<DeviationPoint[]>([]);
 
@@ -466,11 +468,29 @@ export default function ProjectDetailClient({ initialProject = null }: { initial
       setSnapshots(d.snapshots ?? []);
       setRewards(d.rewards ?? []);
       setTextHistory(d.textHistory ?? []);
-      setCollaborators(d.collaborators ?? []);
+      const loadedCollaborators = Array.isArray(d.collaborators) ? d.collaborators as Collaborator[] : [];
+      setCollaborators(loadedCollaborators);
       setPrediction(d.prediction ?? null);
       setDeviationSeries(d.deviationSeries ?? []);
+
+      // A viewed project should heal its own missing collaborator data instead
+      // of waiting behind the global backfill queue. The server route enforces
+      // retry timing, rate limits, worker admission, and cross-request dedupe.
+      if (!isIgg && loadedCollaborators.length === 0 && collaboratorRepairAttempted.current !== id) {
+        collaboratorRepairAttempted.current = id;
+        setCollaboratorRepairing(true);
+        try {
+          const repairResponse = await fetch(`/api/projects/${id}/collaborators`, { method: 'POST' });
+          const repair = await repairResponse.json().catch(() => ({}));
+          if (Array.isArray(repair.collaborators) && repair.collaborators.length > 0) {
+            setCollaborators(repair.collaborators as Collaborator[]);
+          }
+        } finally {
+          setCollaboratorRepairing(false);
+        }
+      }
     } catch {}
-  }, [id]);
+  }, [id, isIgg]);
 
   useEffect(() => { loadSnapshots(); }, [loadSnapshots]);
 
@@ -1542,9 +1562,13 @@ export default function ProjectDetailClient({ initialProject = null }: { initial
             ) : (
               <div className="rounded-xl border border-gray-100 bg-white p-6 text-center shadow-sm">
                 <p className="text-sm text-gray-400">
-                  {isZhLang(lang)
-                    ? '暂未抓取到合作者数据。若 Kickstarter 页面被服务器环境拦截，下一次成功同步后会自动补充。'
-                    : 'No collaborator data has been captured yet. A successful Kickstarter sync will fill this when the page exposes it.'}
+                  {collaboratorRepairing
+                    ? (isZhLang(lang)
+                        ? '正在为该项目补抓合作者数据，成功后会自动显示。'
+                        : 'Fetching collaborator data for this project. It will appear automatically when complete.')
+                    : (isZhLang(lang)
+                        ? '暂未抓取到合作者数据。系统会在查看项目时自动补抓，并继续按后台队列重试。'
+                        : 'No collaborator data has been captured yet. The project is retried automatically when viewed and by the background queue.')}
                 </p>
               </div>
             )}
