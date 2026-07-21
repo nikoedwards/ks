@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "smoke:core-proxy": "node scripts/smoke-web-core-proxy.mjs"
   },
   "dependencies": {
     "better-sqlite3": "^12.9.0",

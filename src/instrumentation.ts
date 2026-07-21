@@ -70,6 +70,13 @@ async function checkWebrobotsDataset(reason: string) {
 
 export async function register() {
   if (process.env.NEXT_RUNTIME === 'nodejs') {
+    // Web deployments and staging instances are read-only by default. Only the
+    // single production Core writer may explicitly enable scheduled jobs.
+    if (process.env.KICKSONAR_JOBS_ENABLED !== '1') {
+      console.log('[Kicksonar Web] Background jobs are disabled (set KICKSONAR_JOBS_ENABLED=1 only on Core).');
+      return;
+    }
+
     // Start background tracker immediately on server boot.
     initTracker();
     console.log('[Kicksonar] Background tracker initialized');
