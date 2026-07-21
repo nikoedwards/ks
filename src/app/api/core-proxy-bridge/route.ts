@@ -48,7 +48,8 @@ async function proxy(req: NextRequest) {
     return NextResponse.json({ error: 'Core proxy disabled' }, { status: 404 });
   }
 
-  const originalPath = req.nextUrl.searchParams.get(INTERNAL_QUERY_KEY);
+  const originalPath = req.headers.get('x-kicksonar-original-path')
+    ?? req.nextUrl.searchParams.get(INTERNAL_QUERY_KEY);
   const match = originalPath ? matchCoreProxyPath(originalPath) : null;
   if (!match || !configuredCoreProxyGroups().has(match.group)) {
     return NextResponse.json({ error: 'Route is not allowed through the Core proxy' }, { status: 404 });

@@ -10,7 +10,7 @@ to the versioned Core API.
 KICKSONAR_JOBS_ENABLED=0
 KICKSONAR_CORE_PROXY_ENABLED=1
 KICKSONAR_CORE_PROXY_GROUPS=public,account
-KICKSONAR_CORE_BASE_URL=http://kicksonar-core-staging.railway.internal
+KICKSONAR_CORE_BASE_URL=http://kicksonar-core-staging.railway.internal:8080
 ```
 
 `KICKSONAR_CORE_BASE_URL` is server-only. Browser JavaScript continues to call

@@ -13,8 +13,11 @@ export function middleware(req: NextRequest) {
 
   const destination = req.nextUrl.clone();
   destination.pathname = '/api/core-proxy-bridge';
-  destination.searchParams.set('__ks_original_path', req.nextUrl.pathname);
-  return NextResponse.rewrite(destination);
+  const requestHeaders = new Headers(req.headers);
+  requestHeaders.set('x-kicksonar-original-path', req.nextUrl.pathname);
+  return NextResponse.rewrite(destination, {
+    request: { headers: requestHeaders },
+  });
 }
 
 export const config = {
