@@ -12,7 +12,7 @@ export function middleware(req: NextRequest) {
   if (!match || !configuredCoreProxyGroups().has(match.group)) return NextResponse.next();
 
   const destination = req.nextUrl.clone();
-  destination.pathname = '/api/_core-proxy';
+  destination.pathname = '/api/core-proxy-bridge';
   destination.searchParams.set('__ks_original_path', req.nextUrl.pathname);
   return NextResponse.rewrite(destination);
 }
