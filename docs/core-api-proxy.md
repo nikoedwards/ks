@@ -1,9 +1,8 @@
 # Kicksonar Web to Core proxy
 
 Kicksonar Web keeps its existing same-origin `/api/*` browser contract while a
-server-side allowlist forwards selected routes to the versioned Core API. The
-proxy is disabled by default, so merging the code does not switch production
-traffic.
+runtime middleware allowlist forwards selected routes through a Node.js proxy
+to the versioned Core API.
 
 ## Configuration
 
@@ -18,6 +17,12 @@ KICKSONAR_CORE_BASE_URL=http://kicksonar-core-staging.railway.internal
 the Web origin and never receives the Railway private hostname or the Core
 service token.
 
+The dedicated Railway staging hostname is explicitly enabled in middleware so
+staging remains testable even when build-time variables are unavailable. The
+production `kicksonar.com` hostname is not enabled by that rule; it still
+requires the runtime feature flag, so merging this code does not switch live
+traffic.
+
 ## Boundary
 
 - `public` forwards display/search/analysis/project/snapshot routes.
@@ -26,9 +31,9 @@ service token.
 - `/api/admin/*`, `/api/data-quality/*`, `/api/platforms/*`, `/api/sync/*`, and
   `/api/v1/internal/*` are deliberately excluded.
 
-The account routes rely on the normal browser cookie. External Next.js rewrites
-forward the request cookie and return Core's `Set-Cookie` response on the Web
-origin, preserving the existing frontend session contract.
+The account routes rely on the normal browser cookie. The Node proxy forwards
+request cookies and returns Core's `Set-Cookie` response on the Web origin,
+preserving the existing frontend session contract.
 
 ## Safe rollout
 
