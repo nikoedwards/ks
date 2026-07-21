@@ -30,7 +30,12 @@ const health = await expectLocal('Web health stays local', '/api/health');
 assert(health?.service === 'kicksonar-web', 'Web health returned the wrong service identity');
 assert(health?.jobsEnabled === false, 'Web health reports background jobs enabled');
 await expectCore('public stats proxy', '/api/stats', 200);
-await expectCore('account session proxy', '/api/auth/me', 200);
+await expectCore('account session proxy', '/api/auth/me', 401);
+await expectCore('account login body proxy', '/api/auth/login', 401, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ email: 'missing@example.invalid', password: 'invalid-password-1' }),
+});
 await expectCore('account write protection', '/api/track/missing-project', 401, { method: 'POST' });
 await expectLocal('admin route stays out of Web proxy', '/api/admin/users');
 await expectLocal('crawler route stays out of Web proxy', '/api/sync/status');
