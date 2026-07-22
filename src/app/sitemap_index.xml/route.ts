@@ -1,4 +1,4 @@
-import { getIndexableProjectCount, getMaxProjectTimestamp } from '@/lib/db';
+import { loadCoreSitemapMeta } from '@/lib/coreSeo';
 import { absoluteUrl } from '@/lib/seo';
 import { SITEMAP_CHUNK } from '../sitemap';
 
@@ -8,18 +8,14 @@ import { SITEMAP_CHUNK } from '../sitemap';
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
-  let projectChunks = 0;
+  let meta = null;
   try {
-    projectChunks = Math.ceil(getIndexableProjectCount() / SITEMAP_CHUNK);
-  } catch {
-    projectChunks = 0;
-  }
+    meta = await loadCoreSitemapMeta();
+  } catch {}
+  const projectChunks = Math.ceil((meta?.projectCount ?? 0) / SITEMAP_CHUNK);
 
   let lastmod = new Date().toISOString();
-  try {
-    const ts = getMaxProjectTimestamp();
-    if (ts) lastmod = new Date(ts * 1000).toISOString();
-  } catch {}
+  if (meta?.maxProjectTimestamp) lastmod = new Date(meta.maxProjectTimestamp * 1000).toISOString();
 
   const ids = Array.from({ length: projectChunks + 1 }, (_, i) => i);
   const body =

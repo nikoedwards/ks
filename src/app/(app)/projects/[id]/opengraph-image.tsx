@@ -1,6 +1,5 @@
 import { ImageResponse } from 'next/og';
-import { getProjectById } from '@/lib/db';
-import { isIndiegogoId, indiegogoSourceId, getIndiegogoProjectById } from '@/lib/platformProjects';
+import { loadCoreSeoProject } from '@/lib/coreSeo';
 import { SITE_NAME, formatUsdCompact, formatInt } from '@/lib/seo';
 
 export const runtime = 'nodejs';
@@ -10,6 +9,10 @@ export const contentType = 'image/png';
 
 type Row = Record<string, unknown>;
 
+function isIndiegogoId(id: string): boolean {
+  return id.startsWith('igg-');
+}
+
 export default async function ProjectOgImage({ params }: { params: Promise<{ id: string }> }) {
   const { id: rawId } = await params;
   let id = rawId;
@@ -18,9 +21,10 @@ export default async function ProjectOgImage({ params }: { params: Promise<{ id:
   } catch {
     id = rawId;
   }
-  const row: Row | null = isIndiegogoId(id)
-    ? ((getIndiegogoProjectById(indiegogoSourceId(id)) as Row | null) ?? null)
-    : (((await getProjectById(id)) as Row | null) ?? null);
+  let row: Row | null = null;
+  try {
+    row = await loadCoreSeoProject(id);
+  } catch {}
 
   const name = row ? String(row.name ?? '') : 'Project not found';
   const category = row ? [row.category_parent, row.category_name].filter(Boolean).join(' / ') : '';
