@@ -1,4 +1,4 @@
-export type CoreProxyGroup = 'public' | 'account';
+export type CoreProxyGroup = 'public' | 'account' | 'admin' | 'operations';
 
 export type CoreProxyMatch = {
   group: CoreProxyGroup;
@@ -34,6 +34,10 @@ const ACCOUNT_EXACT = new Map<string, string>([
   ['/api/push', '/api/v1/account/push'],
 ]);
 
+function isReadMethod(method: string): boolean {
+  return method === 'GET' || method === 'HEAD' || method === 'OPTIONS';
+}
+
 const PREFIX_ROUTES: Array<{
   group: CoreProxyGroup;
   source: string;
@@ -48,7 +52,47 @@ const PREFIX_ROUTES: Array<{
   { group: 'public', source: '/api/snapshots/', destination: '/api/v1/public/snapshots/' },
 ];
 
-export function matchCoreProxyPath(pathname: string): CoreProxyMatch | null {
+export function matchCoreProxyPath(pathname: string, method = 'GET'): CoreProxyMatch | null {
+  const read = isReadMethod(method.toUpperCase());
+
+  if (pathname.startsWith('/api/admin/')) {
+    const suffix = pathname.slice('/api/admin/'.length);
+    const guardedMutation = !read && (
+      pathname === '/api/admin/diagnostics'
+      || pathname === '/api/admin/reward-collab-backfill'
+    );
+    return {
+      group: guardedMutation ? 'operations' : 'admin',
+      corePath: `/api/v1/admin/${suffix}`,
+    };
+  }
+
+  if (pathname === '/api/data-quality' || pathname.startsWith('/api/data-quality/')) {
+    const suffix = pathname.slice('/api/data-quality'.length);
+    const operation = !read || pathname === '/api/data-quality/debug';
+    return {
+      group: operation ? 'operations' : 'admin',
+      corePath: `/api/v1/admin/data-quality${suffix}`,
+    };
+  }
+
+  if (pathname === '/api/platforms' || pathname.startsWith('/api/platforms/')) {
+    const suffix = pathname.slice('/api/platforms'.length);
+    const operation = !read || pathname.endsWith('/actions');
+    return {
+      group: operation ? 'operations' : 'admin',
+      corePath: `/api/v1/admin/platforms${suffix}`,
+    };
+  }
+
+  if (pathname === '/api/sync' || pathname.startsWith('/api/sync/')) {
+    const suffix = pathname.slice('/api/sync'.length);
+    return {
+      group: read ? 'admin' : 'operations',
+      corePath: `/api/v1/admin/sync${suffix}`,
+    };
+  }
+
   const collaboratorMatch = pathname.match(/^\/api\/projects\/([^/]+)\/collaborators$/);
   if (collaboratorMatch) {
     return {
@@ -79,7 +123,12 @@ export function configuredCoreProxyGroups(): Set<CoreProxyGroup> {
   const configured = (process.env.KICKSONAR_CORE_PROXY_GROUPS ?? 'public')
     .split(',')
     .map((value) => value.trim().toLowerCase())
-    .filter((value): value is CoreProxyGroup => value === 'public' || value === 'account');
+    .filter((value): value is CoreProxyGroup => (
+      value === 'public'
+      || value === 'account'
+      || value === 'admin'
+      || value === 'operations'
+    ));
   return new Set(configured);
 }
 

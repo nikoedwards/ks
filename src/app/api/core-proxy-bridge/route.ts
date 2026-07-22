@@ -20,6 +20,7 @@ const HOP_BY_HOP_HEADERS = [
   'trailer',
   'transfer-encoding',
   'upgrade',
+  'x-kicksonar-original-path',
 ];
 
 function coreBaseUrl(): string | null {
@@ -50,9 +51,17 @@ async function proxy(req: NextRequest) {
 
   const originalPath = req.headers.get('x-kicksonar-original-path')
     ?? req.nextUrl.searchParams.get(INTERNAL_QUERY_KEY);
-  const match = originalPath ? matchCoreProxyPath(originalPath) : null;
-  if (!match || !configuredCoreProxyGroups().has(match.group)) {
+  const match = originalPath ? matchCoreProxyPath(originalPath, req.method) : null;
+  if (!match) {
     return NextResponse.json({ error: 'Route is not allowed through the Core proxy' }, { status: 404 });
+  }
+  if (!configuredCoreProxyGroups().has(match.group)) {
+    const response = NextResponse.json({
+      error: 'Core proxy group is disabled',
+      group: match.group,
+    }, { status: 503 });
+    response.headers.set('x-kicksonar-web-proxy', 'blocked');
+    return response;
   }
 
   const baseUrl = coreBaseUrl();
@@ -67,13 +76,18 @@ async function proxy(req: NextRequest) {
 
   try {
     const hasBody = req.method !== 'GET' && req.method !== 'HEAD';
+    const timeoutMs = match.group === 'operations'
+      ? 600_000
+      : match.group === 'admin'
+        ? 90_000
+        : 20_000;
     const response = await fetch(target, {
       method: req.method,
       headers: forwardedHeaders(req),
       body: hasBody ? await req.arrayBuffer() : undefined,
       redirect: 'manual',
       cache: 'no-store',
-      signal: AbortSignal.timeout(20_000),
+      signal: AbortSignal.timeout(timeoutMs),
     });
 
     const headers = new Headers(response.headers);
