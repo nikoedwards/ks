@@ -64,7 +64,9 @@ export default async function ProjectOgImage({ params }: { params: Promise<{ id:
             K
           </div>
           <div style={{ fontSize: 26, fontWeight: 700 }}>{SITE_NAME}</div>
-          <div style={{ fontSize: 22, color: '#9fb3c8', marginLeft: 8 }}>· {platform}{category ? ` · ${category}` : ''}</div>
+          <div style={{ fontSize: 22, color: '#9fb3c8', marginLeft: 8 }}>
+            {`· ${platform}${category ? ` · ${category}` : ''}`}
+          </div>
         </div>
 
         <div style={{ fontSize: 60, fontWeight: 800, lineHeight: 1.08, maxWidth: 1050, display: 'flex' }}>
