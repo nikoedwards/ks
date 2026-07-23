@@ -1,19 +1,17 @@
 import type { MetadataRoute } from 'next';
 import {
-  getIndexableProjectCount,
-  getIndexableProjectsPage,
-  getCategoryList,
-  getCountryList,
-  getMaxProjectTimestamp,
-} from '@/lib/db';
+  loadCoreSitemapMeta,
+  loadCoreSitemapProjects,
+} from '@/lib/coreSeo';
 import { absoluteUrl, slugify } from '@/lib/seo';
 
-// Read from SQLite per-request; never prerender at build time.
+// Read from Core per-request; never resolve private networking at build time.
 export const dynamic = 'force-dynamic';
 
 // Stay well under the 50k-URL / 50MB per-sitemap limit.
 export const SITEMAP_CHUNK = 45_000;
 const CHUNK = SITEMAP_CHUNK;
+const MAX_PROJECT_SITEMAP_CHUNKS = 100;
 
 const STATIC_ROUTES = [
   '/',
@@ -32,47 +30,46 @@ const STATIC_ROUTES = [
 
 // Sitemap id 0 = static + category/country insight pages; ids 1..N = project chunks.
 export async function generateSitemaps(): Promise<{ id: number }[]> {
-  let chunks = 0;
-  try {
-    chunks = Math.ceil(getIndexableProjectCount() / CHUNK);
-  } catch {
-    chunks = 0;
-  }
-  return Array.from({ length: chunks + 1 }, (_, i) => ({ id: i }));
+  // Railway private DNS is unavailable during image builds. Pre-register a
+  // generous fixed route range, while sitemap_index.xml references only the
+  // chunks that Core reports at runtime.
+  return Array.from({ length: MAX_PROJECT_SITEMAP_CHUNKS + 1 }, (_, i) => ({ id: i }));
 }
 
 export default async function sitemap({ id }: { id: number }): Promise<MetadataRoute.Sitemap> {
   // Next passes the route segment, so `id` arrives as a string at runtime.
   const n = Number(id) || 0;
   if (n === 0) {
-    const lastModified = await safeMaxTimestamp();
+    let meta = null;
+    try {
+      meta = await loadCoreSitemapMeta();
+    } catch {}
+    const lastModified = meta?.maxProjectTimestamp
+      ? new Date(meta.maxProjectTimestamp * 1000)
+      : undefined;
     const entries: MetadataRoute.Sitemap = STATIC_ROUTES.map((path) => ({
       url: absoluteUrl(path),
       lastModified,
       changeFrequency: 'daily',
     }));
 
-    try {
-      const categories = await getCategoryList();
-      for (const c of categories) {
+    if (meta) {
+      for (const c of meta.categories) {
         entries.push({
           url: absoluteUrl(`/categories/${slugify(c)}`),
           lastModified,
           changeFrequency: 'weekly',
         });
       }
-    } catch {}
 
-    try {
-      const countries = await getCountryList();
-      for (const c of countries) {
+      for (const c of meta.countries) {
         entries.push({
           url: absoluteUrl(`/countries/${c.country.toLowerCase()}`),
           lastModified,
           changeFrequency: 'weekly',
         });
       }
-    } catch {}
+    }
 
     return entries;
   }
@@ -80,7 +77,7 @@ export default async function sitemap({ id }: { id: number }): Promise<MetadataR
   // Project detail chunk.
   try {
     const offset = (n - 1) * CHUNK;
-    const rows = getIndexableProjectsPage(CHUNK, offset);
+    const rows = await loadCoreSitemapProjects(CHUNK, offset);
     return rows.map((r) => ({
       url: absoluteUrl(`/projects/${r.id}`),
       lastModified: r.lastmod ? new Date(r.lastmod * 1000) : undefined,
@@ -88,14 +85,5 @@ export default async function sitemap({ id }: { id: number }): Promise<MetadataR
     }));
   } catch {
     return [];
-  }
-}
-
-async function safeMaxTimestamp(): Promise<Date | undefined> {
-  try {
-    const ts = getMaxProjectTimestamp();
-    return ts ? new Date(ts * 1000) : undefined;
-  } catch {
-    return undefined;
   }
 }

@@ -1,6 +1,6 @@
 import { ImageResponse } from 'next/og';
-import { getCategoryList, getCategoryDetailStats } from '@/lib/db';
-import { SITE_NAME, slugify, formatUsdCompact } from '@/lib/seo';
+import { loadCoreCategorySeo } from '@/lib/coreSeo';
+import { SITE_NAME, formatUsdCompact } from '@/lib/seo';
 
 export const runtime = 'nodejs';
 export const alt = 'Kickstarter category statistics on Kicksonar';
@@ -9,10 +9,12 @@ export const contentType = 'image/png';
 
 export default async function CategoryOgImage({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
-  const categories = await getCategoryList();
-  const category = categories.find((c) => slugify(c) === slug) ?? null;
-  const stats = category ? getCategoryDetailStats(category) : null;
-  const label = category ?? 'Kickstarter';
+  let data = null;
+  try {
+    data = await loadCoreCategorySeo(slug);
+  } catch {}
+  const stats = data?.stats ?? null;
+  const label = data?.category ?? 'Kickstarter';
   const totalRaised = stats ? formatUsdCompact(stats.total_pledged_m * 1_000_000) : null;
   const successRate = stats ? `${stats.success_rate}%` : null;
 

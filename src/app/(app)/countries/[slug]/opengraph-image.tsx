@@ -1,5 +1,5 @@
 import { ImageResponse } from 'next/og';
-import { getCountryList, getCountryDetailStats } from '@/lib/db';
+import { loadCoreCountrySeo } from '@/lib/coreSeo';
 import { SITE_NAME, formatUsdCompact } from '@/lib/seo';
 
 export const runtime = 'nodejs';
@@ -9,10 +9,12 @@ export const contentType = 'image/png';
 
 export default async function CountryOgImage({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
-  const countries = await getCountryList();
-  const match = countries.find((c) => c.country.toLowerCase() === slug.toLowerCase()) ?? null;
-  const name = match ? match.country_name || match.country : 'Kickstarter';
-  const stats = match ? getCountryDetailStats(match.country) : null;
+  let data = null;
+  try {
+    data = await loadCoreCountrySeo(slug);
+  } catch {}
+  const name = data?.name ?? 'Kickstarter';
+  const stats = data?.stats ?? null;
   const totalRaised = stats ? formatUsdCompact(stats.total_pledged_m * 1_000_000) : null;
   const successRate = stats ? `${stats.success_rate}%` : null;
 

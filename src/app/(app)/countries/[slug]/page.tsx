@@ -3,16 +3,11 @@ import Link from 'next/link';
 import { cache } from 'react';
 import { notFound } from 'next/navigation';
 import {
-  getCountryList,
-  getCountryDetailStats,
-  getCountryFundingStats,
-  getOverallSuccessRate,
-  getTopProjectsByCountry,
-  getMaxProjectTimestamp,
-  type SeoSegmentStats,
-  type SeoFundingStats,
-  type SeoTopProject,
-} from '@/lib/db';
+  loadCoreCountrySeo,
+  type CoreCountrySeo,
+  type CoreSeoFundingStats,
+  type CoreSeoSegmentStats,
+} from '@/lib/coreSeo';
 import JsonLd from '@/components/JsonLd';
 import {
   SITE_NAME,
@@ -29,27 +24,12 @@ import {
 
 export const dynamic = 'force-dynamic';
 
-interface Loaded {
-  code: string;
-  name: string;
-  stats: SeoSegmentStats;
-  funding: SeoFundingStats | null;
-  overall: number;
-  top: SeoTopProject[];
-  others: { country: string; country_name: string }[];
-}
-
-const load = cache(async (slug: string): Promise<Loaded | null> => {
-  const countries = await getCountryList();
-  const match = countries.find((c) => c.country.toLowerCase() === slug.toLowerCase());
-  if (!match) return null;
-  const stats = getCountryDetailStats(match.country);
-  if (!stats) return null;
-  const funding = getCountryFundingStats(match.country);
-  const overall = getOverallSuccessRate();
-  const top = getTopProjectsByCountry(match.country, 10);
-  const others = countries.filter((c) => c.country !== match.country).slice(0, 24);
-  return { code: match.country, name: match.country_name || match.country, stats, funding, overall, top, others };
+const load = cache(async (slug: string): Promise<CoreCountrySeo | null> => {
+  try {
+    return await loadCoreCountrySeo(slug);
+  } catch {
+    return null;
+  }
 });
 
 const YEAR = new Date().getFullYear();
@@ -58,7 +38,7 @@ function titleFor(name: string): string {
   return `Kickstarter in ${name} — Crowdfunding Statistics ${YEAR} | ${SITE_NAME}`;
 }
 
-function summaryFor(name: string, s: SeoSegmentStats): string {
+function summaryFor(name: string, s: CoreSeoSegmentStats): string {
   return (
     `Kicksonar has tracked ${formatInt(s.total)} ended Kickstarter campaigns from ${name}. ` +
     `${formatInt(s.successful)} were successfully funded — a ${s.success_rate}% success rate — ` +
@@ -68,11 +48,11 @@ function summaryFor(name: string, s: SeoSegmentStats): string {
   );
 }
 
-function avgBackers(s: SeoSegmentStats): number {
+function avgBackers(s: CoreSeoSegmentStats): number {
   return s.total ? Math.round(s.total_backers / s.total) : 0;
 }
 
-function hardnessAnswer(name: string, s: SeoSegmentStats, overall: number): string {
+function hardnessAnswer(name: string, s: CoreSeoSegmentStats, overall: number): string {
   const diff = Number((s.success_rate - overall).toFixed(1));
   const rel = diff >= 2 ? 'above' : diff <= -2 ? 'below' : 'in line with';
   const cmp = diff >= 2 ? 'easier' : diff <= -2 ? 'harder' : 'about as hard';
@@ -84,7 +64,7 @@ function hardnessAnswer(name: string, s: SeoSegmentStats, overall: number): stri
   );
 }
 
-function goalAnswer(name: string, f: SeoFundingStats | null): string {
+function goalAnswer(name: string, f: CoreSeoFundingStats | null): string {
   if (!f || !f.median_pledged_successful) {
     return `Funding outcomes for campaigns from ${name} vary widely; review the top campaigns below for concrete reference points.`;
   }
@@ -95,7 +75,7 @@ function goalAnswer(name: string, f: SeoFundingStats | null): string {
   );
 }
 
-function buildFaq(name: string, s: SeoSegmentStats, f: SeoFundingStats | null): FaqItem[] {
+function buildFaq(name: string, s: CoreSeoSegmentStats, f: CoreSeoFundingStats | null): FaqItem[] {
   const faq: FaqItem[] = [
     {
       question: `What percentage of Kickstarter campaigns from ${name} succeed?`,
@@ -144,7 +124,7 @@ export default async function CountryStatsPage({ params }: { params: Promise<{ s
   if (!data) notFound();
   const { code, name, stats, funding, overall, top, others } = data;
   const path = `/countries/${code.toLowerCase()}`;
-  const dateModified = getMaxProjectTimestamp();
+  const dateModified = data.maxProjectTimestamp;
   const faq = buildFaq(name, stats, funding);
 
   const cards = [

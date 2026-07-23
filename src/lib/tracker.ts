@@ -136,6 +136,10 @@ let lastRewardCollabBackfill = 0;
 export function initTracker() {
   if (started || typeof window !== 'undefined') return;
   if (process.env.NEXT_PHASE === 'phase-production-build') return;
+  // Some legacy route modules initialize the tracker at import time. Keep the
+  // no-jobs invariant here as a second boundary so a stateless Web process can
+  // never become an accidental database writer.
+  if (process.env.KICKSONAR_JOBS_ENABLED !== '1') return;
   started = true;
 
   setTimeout(() => {

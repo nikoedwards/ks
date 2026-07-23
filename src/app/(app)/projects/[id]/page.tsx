@@ -1,8 +1,8 @@
 ﻿import type { Metadata } from 'next';
-import { getProjectById } from '@/lib/db';
-import { isIndiegogoId, indiegogoSourceId, getIndiegogoProjectById } from '@/lib/platformProjects';
+import { cache } from 'react';
 import JsonLd from '@/components/JsonLd';
 import ProjectDetailClient, { type Project } from './ProjectDetailClient';
+import { loadCoreSeoProject } from '@/lib/coreSeo';
 import {
   SITE_NAME,
   WEBSITE_ID,
@@ -15,15 +15,15 @@ import {
   formatInt,
 } from '@/lib/seo';
 
-// Detail pages read per-request from SQLite, so render dynamically (never try to
-// statically prerender at build time when the data volume may be absent).
+// Detail pages read per-request from Core, so render dynamically (never try to
+// resolve Railway private networking during the Web image build).
 export const dynamic = 'force-dynamic';
 
 type Row = Record<string, unknown>;
 
 // Page server components can receive the dynamic segment still percent-encoded
 // (e.g. a "kt:" id arrives as "kt%3A..."), unlike route handlers. Decode so the
-// DB lookup matches the stored id.
+// Core lookup matches the stored id.
 function decodeId(raw: string): string {
   try {
     return decodeURIComponent(raw);
@@ -32,16 +32,17 @@ function decodeId(raw: string): string {
   }
 }
 
-async function loadRow(id: string): Promise<Row | null> {
+function isIndiegogoId(id: string): boolean {
+  return id.startsWith('igg-');
+}
+
+const loadRow = cache(async (id: string): Promise<Row | null> => {
   try {
-    if (isIndiegogoId(id)) {
-      return (getIndiegogoProjectById(indiegogoSourceId(id)) as Row | null) ?? null;
-    }
-    return ((await getProjectById(id)) as Row | null) ?? null;
+    return await loadCoreSeoProject(id);
   } catch {
     return null;
   }
-}
+});
 
 function str(v: unknown): string {
   return v == null ? '' : String(v);

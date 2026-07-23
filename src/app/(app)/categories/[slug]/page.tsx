@@ -3,16 +3,11 @@ import Link from 'next/link';
 import { cache } from 'react';
 import { notFound } from 'next/navigation';
 import {
-  getCategoryList,
-  getCategoryDetailStats,
-  getCategoryFundingStats,
-  getOverallSuccessRate,
-  getTopProjectsByCategory,
-  getMaxProjectTimestamp,
-  type SeoSegmentStats,
-  type SeoFundingStats,
-  type SeoTopProject,
-} from '@/lib/db';
+  loadCoreCategorySeo,
+  type CoreCategorySeo,
+  type CoreSeoFundingStats,
+  type CoreSeoSegmentStats,
+} from '@/lib/coreSeo';
 import JsonLd from '@/components/JsonLd';
 import {
   SITE_NAME,
@@ -29,26 +24,12 @@ import {
 
 export const dynamic = 'force-dynamic';
 
-interface Loaded {
-  category: string;
-  stats: SeoSegmentStats;
-  funding: SeoFundingStats | null;
-  overall: number;
-  top: SeoTopProject[];
-  others: string[];
-}
-
-const load = cache(async (slug: string): Promise<Loaded | null> => {
-  const categories = await getCategoryList();
-  const category = categories.find((c) => slugify(c) === slug);
-  if (!category) return null;
-  const stats = getCategoryDetailStats(category);
-  if (!stats) return null;
-  const funding = getCategoryFundingStats(category);
-  const overall = getOverallSuccessRate();
-  const top = getTopProjectsByCategory(category, 10);
-  const others = categories.filter((c) => c !== category);
-  return { category, stats, funding, overall, top, others };
+const load = cache(async (slug: string): Promise<CoreCategorySeo | null> => {
+  try {
+    return await loadCoreCategorySeo(slug);
+  } catch {
+    return null;
+  }
 });
 
 const YEAR = new Date().getFullYear();
@@ -57,7 +38,7 @@ function titleFor(category: string): string {
   return `Kickstarter ${category} Statistics ${YEAR} — Success Rate & Funding | ${SITE_NAME}`;
 }
 
-function summaryFor(category: string, s: SeoSegmentStats): string {
+function summaryFor(category: string, s: CoreSeoSegmentStats): string {
   return (
     `Kicksonar has tracked ${formatInt(s.total)} ended Kickstarter ${category} campaigns. ` +
     `${formatInt(s.successful)} reached their funding goal — a ${s.success_rate}% success rate — ` +
@@ -67,11 +48,11 @@ function summaryFor(category: string, s: SeoSegmentStats): string {
   );
 }
 
-function avgBackers(s: SeoSegmentStats): number {
+function avgBackers(s: CoreSeoSegmentStats): number {
   return s.total ? Math.round(s.total_backers / s.total) : 0;
 }
 
-function hardnessAnswer(category: string, s: SeoSegmentStats, overall: number): string {
+function hardnessAnswer(category: string, s: CoreSeoSegmentStats, overall: number): string {
   const diff = Number((s.success_rate - overall).toFixed(1));
   const rel = diff >= 2 ? 'above' : diff <= -2 ? 'below' : 'in line with';
   const cmp = diff >= 2 ? 'easier' : diff <= -2 ? 'harder' : 'about as hard';
@@ -83,7 +64,7 @@ function hardnessAnswer(category: string, s: SeoSegmentStats, overall: number): 
   );
 }
 
-function goalAnswer(category: string, f: SeoFundingStats | null): string {
+function goalAnswer(category: string, f: CoreSeoFundingStats | null): string {
   if (!f || !f.median_pledged_successful) {
     return `Funding outcomes for ${category} campaigns vary widely; review the top campaigns below for concrete reference points.`;
   }
@@ -95,7 +76,7 @@ function goalAnswer(category: string, f: SeoFundingStats | null): string {
   );
 }
 
-function buildFaq(category: string, s: SeoSegmentStats, f: SeoFundingStats | null): FaqItem[] {
+function buildFaq(category: string, s: CoreSeoSegmentStats, f: CoreSeoFundingStats | null): FaqItem[] {
   const faq: FaqItem[] = [
     {
       question: `What percentage of Kickstarter ${category} projects succeed?`,
@@ -144,7 +125,7 @@ export default async function CategoryStatsPage({ params }: { params: Promise<{ 
   if (!data) notFound();
   const { category, stats, funding, overall, top, others } = data;
   const path = `/categories/${slug}`;
-  const dateModified = getMaxProjectTimestamp();
+  const dateModified = data.maxProjectTimestamp;
   const faq = buildFaq(category, stats, funding);
 
   const cards = [
